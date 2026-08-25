@@ -32,12 +32,17 @@ class RendererPool(
         val session: BrowserEngineSession,
         var lastUsed: Long,
         var keepRendererAlive: Boolean,
+        var pinned: Boolean,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val factory = SystemWebViewFactory(context.applicationContext)
     private val residents = LinkedHashMap<TabId, Resident>()
-    private val warmBudget = calculateWarmBudget(context)
+    private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    private val memoryPolicy = RendererMemoryPolicy(activityManager.memoryClass)
+
+    private var memoryMode = RendererMemoryMode.BALANCED
+    private var memoryPressure = RendererMemoryPressure.NORMAL
 
     var listener: RendererPoolListener? = null
 
@@ -50,6 +55,7 @@ class RendererPool(
     private var activeTabId: TabId? = null
 
     fun hasLiveRenderer(tabId: TabId): Boolean = residents.containsKey(tabId)
+    fun liveRendererCount(): Int = residents.size
 
     suspend fun activate(tab: Tab): RendererActivation {
         checkMainThread()
@@ -57,6 +63,7 @@ class RendererPool(
         if (existing != null) {
             existing.lastUsed = now()
             existing.keepRendererAlive = tab.keepRendererAlive
+            existing.pinned = tab.pinned
             existing.session.setUserAgentMode(tab.userAgentMode)
             activeTabId = tab.id
             mutableActiveWebView.value = existing.session.webView
@@ -66,7 +73,12 @@ class RendererPool(
         }
 
         val session = factory.create(tab, this)
-        residents[tab.id] = Resident(session, now(), tab.keepRendererAlive)
+        residents[tab.id] = Resident(
+            session = session,
+            lastUsed = now(),
+            keepRendererAlive = tab.keepRendererAlive,
+            pinned = tab.pinned,
+        )
         activeTabId = tab.id
         mutableActiveWebView.value = session.webView
         mutableActivePageState.value = session.pageState.value
@@ -83,13 +95,19 @@ class RendererPool(
         if (existing != null) {
             existing.lastUsed = now()
             existing.keepRendererAlive = tab.keepRendererAlive
+            existing.pinned = tab.pinned
             existing.session.setUserAgentMode(tab.userAgentMode)
             trimWarmRenderers()
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
         }
 
         val session = factory.create(tab, this)
-        residents[tab.id] = Resident(session, now(), tab.keepRendererAlive)
+        residents[tab.id] = Resident(
+            session = session,
+            lastUsed = now(),
+            keepRendererAlive = tab.keepRendererAlive,
+            pinned = tab.pinned,
+        )
         val restored = stateStore.restore(tab.id, session.webView)
         if (!restored) session.loadUrl(tab.lastCommittedUrl)
         trimWarmRenderers()
@@ -119,6 +137,29 @@ class RendererPool(
         checkMainThread()
         residents[tabId]?.keepRendererAlive = enabled
         if (!enabled) trimWarmRenderers()
+    }
+
+    suspend fun setMemoryMode(mode: RendererMemoryMode) {
+        checkMainThread()
+        if (memoryMode == mode) return
+        memoryMode = mode
+        stateStore.setTotalBudgetBytes(memoryPolicy.snapshotBudgetBytes(memoryMode, memoryPressure))
+        trimWarmRenderers()
+    }
+
+    suspend fun onTrimMemory(level: Int) {
+        applyMemoryPressure(RendererMemoryPolicy.pressureForTrimLevel(level))
+    }
+
+    suspend fun onLowMemory() {
+        applyMemoryPressure(RendererMemoryPressure.CRITICAL)
+    }
+
+    private suspend fun applyMemoryPressure(pressure: RendererMemoryPressure) {
+        checkMainThread()
+        memoryPressure = pressure
+        stateStore.setTotalBudgetBytes(memoryPolicy.snapshotBudgetBytes(memoryMode, memoryPressure))
+        trimWarmRenderers()
     }
 
     suspend fun release(tabId: TabId, discardSavedState: Boolean) {
@@ -161,11 +202,17 @@ class RendererPool(
     }
 
     private suspend fun trimWarmRenderers() {
-        while (evictableWarmCount() > warmBudget) {
+        val budget = memoryPolicy.warmBudget(memoryMode, memoryPressure)
+        while (evictableWarmCount() > budget) {
             val candidate = residents.entries
                 .asSequence()
                 .filter { it.key != activeTabId && !it.value.keepRendererAlive }
-                .minByOrNull { it.value.lastUsed }
+                .minWithOrNull(
+                    compareBy<Map.Entry<TabId, Resident>>(
+                        { if (it.value.pinned) 1 else 0 },
+                        { it.value.lastUsed },
+                    ),
+                )
                 ?: return
             residents.remove(candidate.key)
             val saved = stateStore.save(candidate.key, candidate.value.session.webView)
@@ -191,14 +238,4 @@ class RendererPool(
     }
 
     private fun now(): Long = android.os.SystemClock.elapsedRealtime()
-
-    private fun calculateWarmBudget(context: Context): Int {
-        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        return when {
-            manager.memoryClass >= 512 -> 4
-            manager.memoryClass >= 256 -> 3
-            manager.memoryClass >= 192 -> 2
-            else -> 1
-        }
-    }
 }

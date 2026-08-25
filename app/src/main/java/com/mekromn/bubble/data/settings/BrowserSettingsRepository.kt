@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.mekromn.bubble.browser.session.RendererMemoryMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -18,6 +19,7 @@ enum class SearchEngine(val queryTemplate: String) {
 data class BrowserSettings(
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
     val restorePreviousSession: Boolean = true,
+    val rendererMemoryMode: RendererMemoryMode = RendererMemoryMode.BALANCED,
 )
 
 class BrowserSettingsRepository(
@@ -26,6 +28,7 @@ class BrowserSettingsRepository(
     private object Keys {
         val searchEngine = stringPreferencesKey("search_engine")
         val restorePreviousSession = booleanPreferencesKey("restore_previous_session")
+        val rendererMemoryMode = stringPreferencesKey("renderer_memory_mode")
     }
 
     val settings: Flow<BrowserSettings> = context.browserSettingsDataStore.data.map { prefs ->
@@ -34,6 +37,9 @@ class BrowserSettingsRepository(
                 ?.let { stored -> SearchEngine.entries.firstOrNull { it.name == stored } }
                 ?: SearchEngine.GOOGLE,
             restorePreviousSession = prefs[Keys.restorePreviousSession] ?: true,
+            rendererMemoryMode = prefs[Keys.rendererMemoryMode]
+                ?.let { stored -> RendererMemoryMode.entries.firstOrNull { it.name == stored } }
+                ?: RendererMemoryMode.BALANCED,
         )
     }
 
@@ -43,5 +49,9 @@ class BrowserSettingsRepository(
 
     suspend fun setRestorePreviousSession(enabled: Boolean) {
         context.browserSettingsDataStore.edit { it[Keys.restorePreviousSession] = enabled }
+    }
+
+    suspend fun setRendererMemoryMode(mode: RendererMemoryMode) {
+        context.browserSettingsDataStore.edit { it[Keys.rendererMemoryMode] = mode.name }
     }
 }

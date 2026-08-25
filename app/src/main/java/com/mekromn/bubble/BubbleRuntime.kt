@@ -8,6 +8,8 @@ import com.mekromn.bubble.data.AppContainer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class BubbleRuntime(
@@ -27,5 +29,19 @@ class BubbleRuntime(
 
     init {
         scope.launch { sessions.initialize() }
+        scope.launch {
+            container.settings.settings
+                .map { it.rendererMemoryMode }
+                .distinctUntilChanged()
+                .collect { rendererPool.setMemoryMode(it) }
+        }
+    }
+
+    fun onTrimMemory(level: Int) {
+        scope.launch { rendererPool.onTrimMemory(level) }
+    }
+
+    fun onLowMemory() {
+        scope.launch { rendererPool.onLowMemory() }
     }
 }

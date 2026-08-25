@@ -13,6 +13,13 @@ import kotlinx.coroutines.withContext
 
 class WebViewStateStore(context: Context) {
     private val root = File(context.filesDir, "webview-state")
+    @Volatile
+    private var totalBudgetBytes: Long = DEFAULT_TOTAL_STATE_BYTES
+
+    suspend fun setTotalBudgetBytes(bytes: Long) {
+        totalBudgetBytes = bytes.coerceAtLeast(MAX_STATE_BYTES.toLong())
+        pruneToBudget()
+    }
 
     suspend fun save(tabId: TabId, webView: WebView): Boolean {
         val bundle = Bundle()
@@ -42,14 +49,17 @@ class WebViewStateStore(context: Context) {
                     target.writeBytes(bytes)
                     temporary.delete()
                 }
+                target.setLastModified(System.currentTimeMillis())
+                pruneToBudgetOnIoThread(preserve = target)
                 true
             }.getOrDefault(false)
         }
     }
 
     suspend fun restore(tabId: TabId, webView: WebView): Boolean {
+        val file = fileFor(tabId)
         val bytes = withContext(Dispatchers.IO) {
-            runCatching { fileFor(tabId).takeIf(File::isFile)?.readBytes() }.getOrNull()
+            runCatching { file.takeIf(File::isFile)?.readBytes() }.getOrNull()
         } ?: return false
         if (bytes.isEmpty() || bytes.size > MAX_STATE_BYTES) {
             delete(tabId)
@@ -64,10 +74,35 @@ class WebViewStateStore(context: Context) {
                 delete(tabId)
                 false
             }
+            .also { restored ->
+                if (restored) {
+                    withContext(Dispatchers.IO) { file.setLastModified(System.currentTimeMillis()) }
+                }
+            }
     }
 
     suspend fun delete(tabId: TabId) {
         withContext(Dispatchers.IO) { fileFor(tabId).delete() }
+    }
+
+    private suspend fun pruneToBudget() {
+        withContext(Dispatchers.IO) { pruneToBudgetOnIoThread(preserve = null) }
+    }
+
+    private fun pruneToBudgetOnIoThread(preserve: File?) {
+        if (!root.isDirectory) return
+        val snapshots = root.listFiles { file -> file.isFile && file.extension == "bin" }
+            ?.sortedBy(File::lastModified)
+            .orEmpty()
+        var total = snapshots.sumOf(File::length)
+        if (total <= totalBudgetBytes) return
+
+        snapshots.forEach { candidate ->
+            if (total <= totalBudgetBytes) return
+            if (preserve != null && candidate == preserve) return@forEach
+            val size = candidate.length()
+            if (candidate.delete()) total -= size
+        }
     }
 
     private fun fileFor(tabId: TabId): File = File(root, "${tabId.value}.bin")
@@ -98,5 +133,6 @@ class WebViewStateStore(context: Context) {
     companion object {
         const val MAX_STATE_BYTES = 512 * 1024
         const val INCLUDE_FORWARD_HISTORY = true
+        const val DEFAULT_TOTAL_STATE_BYTES = 16L * 1024L * 1024L
     }
 }

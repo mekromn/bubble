@@ -15,4 +15,14 @@ class BubbleApplication : Application() {
         container = AppContainer(this)
         runtime = BubbleRuntime(this, container)
     }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (::runtime.isInitialized) runtime.onTrimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (::runtime.isInitialized) runtime.onLowMemory()
+    }
 }
