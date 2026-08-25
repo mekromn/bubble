@@ -42,6 +42,10 @@ android {
         abortOnError = true
         checkDependencies = true
         warningsAsErrors = true
+        // Bubble's 2026 production contract deliberately targets Android 16 / API 36.
+        // API 37 is not a v1 target yet, so suppress this single policy warning rather
+        // than weakening lint globally or creating a baseline that could hide defects.
+        disable += "OldTargetApi"
     }
 
     testOptions {
