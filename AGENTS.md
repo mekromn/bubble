@@ -34,6 +34,7 @@ The old `r01-floating-head-core` branch is a provisional abandoned scaffold and 
 - Chrome-compatible Mobile is the default per-tab UA mode. Keep Chrome Mobile / Chrome Desktop / System WebView switching durable per tab, and never claim WebView is perfectly indistinguishable from standalone Chrome.
 - Support Android HTTP/HTTPS `VIEW`, normal URL sharing, and an explicit **Open in Bubble head** share target through the same durable session pipeline.
 - Support reusable named saved sessions/workspaces. Private tabs must never be included in durable saved-session snapshots. Restore must create fresh `TabId`s.
+- High-refresh rendering defaults to **120+**: request the highest supported rate at or above 120 Hz, falling back to the display's highest rate. Auto/60/90/120+/Highest must remain capability-aware, and Android 16 should propagate the requested rate through the browser view hierarchy without claiming to override system thermal/battery/display policy.
 - Never commit signing keys, passwords, tokens, or secrets.
 - Do not call a user-facing/overlay phase complete without runtime validation.
 - Production application ID/namespace is `com.mekromn.bubble` unless the specification is deliberately amended.
