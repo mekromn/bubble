@@ -64,6 +64,12 @@ class FloatingHeadService : Service() {
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Visible heads are restored only from explicit, platform-legal user-visible flows.
+        // Never ask Android to resurrect this overlay foreground service after process death.
+        return START_NOT_STICKY
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -159,7 +165,11 @@ class FloatingHeadService : Service() {
                 startActivity(
                     Intent(this@FloatingHeadService, BrowserActivity::class.java)
                         .putExtra(BrowserActivity.EXTRA_RESTORE_TAB_ID, tab.id.value)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                        .addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                        ),
                 )
             }
         }
