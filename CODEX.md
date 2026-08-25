@@ -17,8 +17,11 @@ Read these files completely before editing code:
 5. `docs/PLATFORM_SECURITY.md`
 6. `docs/TEST_RELEASE.md`
 7. `docs/ROADMAP.md`
+8. `docs/IMPLEMENTATION_ISSUES.md`
 
-If the provisional scaffold conflicts with the specification, the specification wins. You may rewrite or remove provisional scaffold code/build configuration.
+GitHub issues #2 through #9 are mirrored in `docs/IMPLEMENTATION_ISSUES.md`. Live GitHub issue access is useful but is **not required to continue implementation**.
+
+If provisional scaffold conflicts with the specification, the specification wins. You may rewrite or remove provisional scaffold code/build configuration.
 
 ## Required architectural rule
 
@@ -28,27 +31,31 @@ Do not create one permanently resident WebView for every tab/head. Implement a d
 
 Do not add `MAX_TABS`, `MAX_HEADS` or an equivalent arbitrary cap.
 
-## Implementation strategy
+## Requested long-horizon execution
 
-Work in small version-controlled phases matching `docs/ROADMAP.md`.
+When asked to implement issues #2 through #9 in one PR, use one branch based on `main`, implement the phases in order, and make coherent phase-sized commits. Do **not** stop merely because the environment cannot reach GitHub, cannot create a PR, cannot download Gradle/SDK packages, or lacks an emulator/device.
+
+External capability failures are validation/publication blockers, not automatic coding blockers.
 
 For each phase:
 
-1. inspect existing implementation and tests;
-2. create/continue a focused feature branch;
-3. implement the smallest complete slice;
-4. add tests;
-5. run lint/unit/build plus relevant instrumentation/manual validation;
-6. fix failures rather than weakening requirements;
-7. commit atomically;
-8. open/update a PR with exact validation performed and known gaps;
-9. do not move to the next phase while the current phase gate is knowingly broken.
+1. inspect existing implementation, tests, authoritative docs and the mirrored issue contract;
+2. implement the complete phase without knowingly carrying a design defect into the next one;
+3. add tests and migrations with the implementation;
+4. run every available local/static check;
+5. if a required build/runtime/CI/GitHub check cannot run because infrastructure is unavailable, record the exact command and blocker in `docs/VALIDATION_STATUS.md`;
+6. continue sequentially when no known implementation defect blocks the next phase;
+7. commit each coherent phase/slice;
+8. once external access is available, execute all deferred validation, fix resulting defects, and publish/update the requested single PR.
+
+Never claim a blocked check passed. Never lower acceptance criteria to make a phase appear complete. The final v1.0 production claim remains gated on real build/runtime/CI evidence.
 
 ## Production requirements
 
 - Kotlin Android app.
-- Modern AndroidX libraries.
-- Target API 36 for the 2026 production line; compile against a proven current stable SDK.
+- Modern stable AndroidX libraries.
+- Production namespace/application ID `com.mekromn.bubble`.
+- Target API 36 for the 2026 production line; compile against a proven stable SDK.
 - First-class Android 16 and Pixel 9 Pro XL behavior.
 - Edge-to-edge and predictive back.
 - `SYSTEM_ALERT_WINDOW` overlay heads using small independent overlay windows.
@@ -57,18 +64,18 @@ For each phase:
 - DataStore settings.
 - Renderer death recovery.
 - Bounded WebView state saving.
-- true profile isolation for private mode or no private-mode claim.
+- True profile isolation for private mode or no private-mode claim.
 - Android Autofill/password-manager integration; no home-grown password vault.
-- no unsafe TLS bypass.
-- no unrestricted JavaScript interface.
-- no broad storage permission when scoped APIs suffice.
-- no hidden telemetry dependency.
+- No unsafe TLS bypass.
+- No unrestricted JavaScript interface.
+- No broad storage permission when scoped APIs suffice.
+- No hidden telemetry dependency.
 
 ## Important correction to provisional scaffold
 
 Bubble is a browser and must support normal `http://` navigation. Do not retain a global `usesCleartextTraffic="false"` configuration that prevents HTTP browsing. Show insecure-page UI instead.
 
-Also verify all Gradle, AGP, Kotlin, SDK and build-tools versions against actually available stable toolchains before committing them. The existing scaffold values are placeholders, not requirements.
+Verify Gradle, AGP, Kotlin, SDK and build-tools versions against stable/currently supportable toolchains before calling the final build validated. If the coding environment cannot download or execute those tools, keep the versions internally consistent, configure CI to prove them later, and record the deferred verification rather than stopping all implementation.
 
 ## Head service rule
 
@@ -89,9 +96,7 @@ One overlay foreground service manages lightweight native head windows. Renderer
 
 ## Validation non-negotiables
 
-Do not call a feature complete without runtime proof for UI/overlay behavior.
-
-At minimum validate:
+Final production completion requires runtime proof for UI/overlay behavior. At minimum the deferred/final validation matrix includes:
 
 - fresh install;
 - overlay permission denied/granted/revoked;
@@ -105,6 +110,8 @@ At minimum validate:
 - low-memory tab hibernation;
 - API 36 behavior;
 - current Pixel device when available.
+
+If those cannot run in the current sandbox, implement the testability/hooks and continue, but list them as **BLOCKED / NOT YET PROVEN** in `docs/VALIDATION_STATUS.md`.
 
 ## Security non-negotiables
 
@@ -124,4 +131,4 @@ Do not:
 
 The project is complete only when the production gates in `docs/TEST_RELEASE.md` pass and a reproducible release candidate can be built from repository source.
 
-Do not stop at a demo-quality floating-head prototype and call the project finished.
+Do not stop at a demo-quality floating-head prototype and call the project finished; conversely, do not stop implementation solely because the current Codex sandbox lacks remote publication or Android runtime infrastructure.
