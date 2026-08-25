@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mekromn.bubble.BubbleApplication
 import com.mekromn.bubble.browser.session.TabId
+import com.mekromn.bubble.browser.session.UserAgentMode
+import com.mekromn.bubble.data.db.SavedSessionRestoreMode
 import kotlinx.coroutines.launch
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -15,6 +17,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val sessionState = sessionManager.state
     val activeWebView = rendererPool.activeWebView
     val pageState = rendererPool.activePageState
+    val savedSessions = sessionManager.savedSessions
 
     init {
         viewModelScope.launch { sessionManager.initialize() }
@@ -48,6 +51,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             sessionManager.minimizeSelectedToHead()?.let(onReady)
         }
+    }
+
+    fun setUserAgentMode(tabId: TabId, mode: UserAgentMode) {
+        viewModelScope.launch { sessionManager.setUserAgentMode(tabId, mode) }
+    }
+
+    fun saveCurrentSession(name: String, onSaved: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            onSaved(sessionManager.saveCurrentSession(name))
+        }
+    }
+
+    fun restoreSavedSession(
+        id: String,
+        mode: SavedSessionRestoreMode,
+        onRestored: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            onRestored(sessionManager.restoreSavedSession(id, mode))
+        }
+    }
+
+    fun deleteSavedSession(id: String) {
+        viewModelScope.launch { sessionManager.deleteSavedSession(id) }
     }
 
     fun goBack(): Boolean = sessionManager.goBack()
