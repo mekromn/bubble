@@ -34,6 +34,7 @@ object TabStateMachine {
         ),
         ResidencyState.RECOVERING to setOf(
             ResidencyState.ACTIVE,
+            ResidencyState.WARM,
             ResidencyState.SAVED,
             ResidencyState.HIBERNATED,
         ),
