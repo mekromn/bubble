@@ -1,16 +1,17 @@
 package com.mekromn.bubble.browser.engine
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.http.SslError
 import android.os.Build
 import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.net.http.SslError
-import android.webkit.WebSettings
 import com.mekromn.bubble.BuildConfig
 import com.mekromn.bubble.browser.session.TabId
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,12 +36,12 @@ private class SystemWebViewSession(
     private val mutablePageState = MutableStateFlow(EnginePageState())
     override val pageState: StateFlow<EnginePageState> = mutablePageState
 
-    override val webView: WebView = WebView(context).apply {
+    override val webView: WebView = WebView(context).apply webView@{
         configureSettings(settings)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(this@apply, true)
+            setAcceptThirdPartyCookies(this@webView, true)
         }
         webViewClient = createWebViewClient()
         webChromeClient = createChromeClient()
@@ -77,7 +78,7 @@ private class SystemWebViewSession(
             return scheme != "http" && scheme != "https" && scheme != "about"
         }
 
-        override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+        override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
             publish(
                 mutablePageState.value.copy(
                     url = url.orEmpty(),
@@ -120,7 +121,7 @@ private class SystemWebViewSession(
             publishFromWebView(view, title = title)
         }
 
-        override fun onReceivedIcon(view: WebView, icon: android.graphics.Bitmap?) {
+        override fun onReceivedIcon(view: WebView, icon: Bitmap?) {
             publish(mutablePageState.value.copy(favicon = icon))
         }
     }
@@ -150,9 +151,7 @@ private class SystemWebViewSession(
     }
 
     override fun loadUrl(url: String) = webView.loadUrl(url)
-
     override fun reload() = webView.reload()
-
     override fun stop() = webView.stopLoading()
 
     override fun goBack(): Boolean {

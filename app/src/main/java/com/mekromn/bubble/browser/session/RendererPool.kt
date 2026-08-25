@@ -83,11 +83,7 @@ class RendererPool(
     suspend fun release(tabId: TabId, discardSavedState: Boolean) {
         checkMainThread()
         val resident = residents.remove(tabId)
-        if (activeTabId == tabId) {
-            activeTabId = null
-            mutableActiveWebView.value = null
-            mutableActivePageState.value = EnginePageState()
-        }
+        if (activeTabId == tabId) clearActiveProjection()
         resident?.session?.destroy()
         if (discardSavedState) stateStore.delete(tabId)
     }
@@ -97,12 +93,15 @@ class RendererPool(
         val resident = residents.remove(tabId) ?: return false
         val saved = stateStore.save(tabId, resident.session.webView)
         resident.session.destroy()
-        if (activeTabId == tabId) {
-            activeTabId = null
-            mutableActiveWebView.value = null
-            mutableActivePageState.value = EnginePageState()
-        }
+        if (activeTabId == tabId) clearActiveProjection()
         return saved
+    }
+
+    fun destroyAll() {
+        checkMainThread()
+        residents.values.forEach { resident -> runCatching { resident.session.destroy() } }
+        residents.clear()
+        clearActiveProjection()
     }
 
     override fun onPageState(tabId: TabId, state: EnginePageState) {
@@ -113,11 +112,7 @@ class RendererPool(
 
     override fun onRendererGone(tabId: TabId, didCrash: Boolean) {
         val dead = residents.remove(tabId)
-        if (activeTabId == tabId) {
-            activeTabId = null
-            mutableActiveWebView.value = null
-            mutableActivePageState.value = EnginePageState()
-        }
+        if (activeTabId == tabId) clearActiveProjection()
         listener?.onRendererGone(tabId, didCrash)
         if (dead != null) {
             mainHandler.post { runCatching { dead.session.destroy() } }
@@ -136,6 +131,12 @@ class RendererPool(
             candidate.value.session.destroy()
             listener?.onRendererEvicted(candidate.key, saved)
         }
+    }
+
+    private fun clearActiveProjection() {
+        activeTabId = null
+        mutableActiveWebView.value = null
+        mutableActivePageState.value = EnginePageState()
     }
 
     private fun activeSession(): BrowserEngineSession? = activeTabId?.let { residents[it]?.session }
