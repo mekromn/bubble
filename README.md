@@ -16,7 +16,7 @@ Production work is on `implementation-v1`, with phase-sized commits correspondin
 - Kotlin 2.4.10
 - compileSdk / targetSdk 36
 - minSdk 26
-- Compose BOM 2026.08.00
+- Compose BOM 2026.06.00 (stable Compose 1.11 generation; Compose 1.12 requires compileSdk 37)
 - AndroidX WebKit 1.16.0
 - package / namespace `com.mekromn.bubble`
 
