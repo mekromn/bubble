@@ -17,6 +17,17 @@ import androidx.core.view.isVisible
 import com.mekromn.bubble.browser.session.Tab
 import kotlin.math.abs
 
+private class AccessibleHeadView(
+    context: Context,
+    private val onRestore: () -> Unit,
+) : TextView(context) {
+    override fun performClick(): Boolean {
+        super.performClick()
+        onRestore()
+        return true
+    }
+}
+
 class HeadOverlayController(
     private val context: Context,
     private val windowManager: WindowManager,
@@ -54,13 +65,7 @@ class HeadOverlayController(
         gravity = Gravity.CENTER_VERTICAL
     }
 
-    private val headView = object : TextView(context) {
-        override fun performClick(): Boolean {
-            super.performClick()
-            callbacks.onRestore(tab)
-            return true
-        }
-    }.apply {
+    private val headView = AccessibleHeadView(context) { callbacks.onRestore(tab) }.apply {
         gravity = Gravity.CENTER
         textSize = 22f
         setTextColor(Color.WHITE)
