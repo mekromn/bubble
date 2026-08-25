@@ -14,9 +14,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewFeature
 import com.mekromn.bubble.BuildConfig
 import com.mekromn.bubble.browser.downloads.SystemDownloadHandler
@@ -155,7 +155,7 @@ private class SystemWebViewSession(
             .setFullVersion(full)
             .build()
 
-    private fun createWebViewClient(): WebViewClient = object : WebViewClient() {
+    private fun createWebViewClient(): WebViewClientCompat = object : WebViewClientCompat() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val decision = ExternalNavigationPolicy.classify(
                 rawUrl = request.url.toString(),
@@ -280,7 +280,8 @@ private class SystemWebViewSession(
         webView.stopLoading()
         webView.setDownloadListener(null)
         webView.webChromeClient = null
-        webView.webViewClient = WebViewClient()
+        // Keep the crash-aware client attached until destroy(); replacing it with a bare
+        // WebViewClient would reintroduce an unhandled renderer-termination path.
         webView.removeAllViews()
         webView.destroy()
     }
