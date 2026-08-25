@@ -2,6 +2,7 @@ package com.mekromn.bubble.data.db
 
 import com.mekromn.bubble.browser.session.TabId
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 data class HeadPlacement(
     val tabId: TabId,
@@ -21,7 +22,7 @@ interface HeadPlacementRepository {
 class RoomHeadPlacementRepository(
     private val dao: HeadPlacementDao,
 ) : HeadPlacementRepository {
-    override fun observeAll(): Flow<List<HeadPlacement>> = kotlinx.coroutines.flow.map(dao.observeAll()) { rows ->
+    override fun observeAll(): Flow<List<HeadPlacement>> = dao.observeAll().map { rows ->
         rows.map { row ->
             HeadPlacement(
                 tabId = TabId(row.tabId),
