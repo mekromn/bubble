@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.mekromn.bubble.browser.session.RendererMemoryMode
+import com.mekromn.bubble.display.RefreshRateMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -20,6 +21,7 @@ data class BrowserSettings(
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
     val restorePreviousSession: Boolean = true,
     val rendererMemoryMode: RendererMemoryMode = RendererMemoryMode.BALANCED,
+    val refreshRateMode: RefreshRateMode = RefreshRateMode.HZ_120_PLUS,
 )
 
 class BrowserSettingsRepository(
@@ -29,6 +31,7 @@ class BrowserSettingsRepository(
         val searchEngine = stringPreferencesKey("search_engine")
         val restorePreviousSession = booleanPreferencesKey("restore_previous_session")
         val rendererMemoryMode = stringPreferencesKey("renderer_memory_mode")
+        val refreshRateMode = stringPreferencesKey("refresh_rate_mode")
     }
 
     val settings: Flow<BrowserSettings> = context.browserSettingsDataStore.data.map { prefs ->
@@ -40,6 +43,9 @@ class BrowserSettingsRepository(
             rendererMemoryMode = prefs[Keys.rendererMemoryMode]
                 ?.let { stored -> RendererMemoryMode.entries.firstOrNull { it.name == stored } }
                 ?: RendererMemoryMode.BALANCED,
+            refreshRateMode = prefs[Keys.refreshRateMode]
+                ?.let { stored -> RefreshRateMode.entries.firstOrNull { it.name == stored } }
+                ?: RefreshRateMode.HZ_120_PLUS,
         )
     }
 
@@ -53,5 +59,9 @@ class BrowserSettingsRepository(
 
     suspend fun setRendererMemoryMode(mode: RendererMemoryMode) {
         context.browserSettingsDataStore.edit { it[Keys.rendererMemoryMode] = mode.name }
+    }
+
+    suspend fun setRefreshRateMode(mode: RefreshRateMode) {
+        context.browserSettingsDataStore.edit { it[Keys.refreshRateMode] = mode.name }
     }
 }
