@@ -16,6 +16,9 @@ import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.mekromn.bubble.BuildConfig
+import com.mekromn.bubble.browser.downloads.SystemDownloadHandler
+import com.mekromn.bubble.browser.navigation.ExternalNavigationPolicy
+import com.mekromn.bubble.browser.navigation.SystemExternalNavigator
 import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.browser.session.UserAgentMode
@@ -34,17 +37,20 @@ class SystemWebViewFactory(
 }
 
 private class SystemWebViewSession(
-    private val context: Context,
+    context: Context,
     tab: Tab,
     private val events: BrowserEngineEvents,
 ) : BrowserEngineSession {
+    private val appContext = context.applicationContext
     override val tabId: TabId = tab.id
     private val mutablePageState = MutableStateFlow(EnginePageState())
     override val pageState: StateFlow<EnginePageState> = mutablePageState
-    private val systemUserAgent = WebSettings.getDefaultUserAgent(context)
+    private val systemUserAgent = WebSettings.getDefaultUserAgent(appContext)
     private val webViewPackageVersion = WebView.getCurrentWebViewPackage()?.versionName
+    private val externalNavigator = SystemExternalNavigator(appContext)
+    private val downloadHandler = SystemDownloadHandler(appContext)
 
-    override val webView: WebView = WebView(context).apply webView@{
+    override val webView: WebView = WebView(appContext).apply webView@{
         configureSettings(settings)
         applyUserAgent(settings, tab.userAgentMode)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
@@ -54,6 +60,15 @@ private class SystemWebViewSession(
         }
         webViewClient = createWebViewClient()
         webChromeClient = createChromeClient()
+        setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            downloadHandler.enqueue(
+                url = url,
+                userAgent = userAgent ?: settings.userAgentString,
+                contentDisposition = contentDisposition,
+                mimeType = mimeType,
+                referer = this@webView.url,
+            )
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -76,9 +91,7 @@ private class SystemWebViewSession(
         javaScriptCanOpenWindowsAutomatically = false
         mediaPlaybackRequiresUserGesture = true
         cacheMode = WebSettings.LOAD_DEFAULT
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            safeBrowsingEnabled = true
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
     }
 
     override fun setUserAgentMode(mode: UserAgentMode) {
@@ -93,7 +106,6 @@ private class SystemWebViewSession(
         )
 
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
-
         val metadata = when (mode) {
             UserAgentMode.SYSTEM -> UserAgentMetadata.Builder().build()
             UserAgentMode.MOBILE -> chromeMetadata(mobile = true)
@@ -120,11 +132,8 @@ private class SystemWebViewSession(
         if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA_FORM_FACTORS)) {
             builder.setFormFactors(
                 listOf(
-                    if (mobile) {
-                        UserAgentMetadata.FORM_FACTOR_MOBILE
-                    } else {
-                        UserAgentMetadata.FORM_FACTOR_DESKTOP
-                    },
+                    if (mobile) UserAgentMetadata.FORM_FACTOR_MOBILE
+                    else UserAgentMetadata.FORM_FACTOR_DESKTOP,
                 ),
             )
         }
@@ -140,8 +149,11 @@ private class SystemWebViewSession(
 
     private fun createWebViewClient(): WebViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            val scheme = request.url.scheme?.lowercase()
-            return scheme != "http" && scheme != "https" && scheme != "about"
+            val decision = ExternalNavigationPolicy.classify(
+                rawUrl = request.url.toString(),
+                hasUserGesture = request.hasGesture(),
+            )
+            return externalNavigator.handle(decision) { fallback -> view.loadUrl(fallback) }
         }
 
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
@@ -233,6 +245,7 @@ private class SystemWebViewSession(
 
     override fun destroy() {
         webView.stopLoading()
+        webView.setDownloadListener(null)
         webView.webChromeClient = null
         webView.webViewClient = WebViewClient()
         webView.removeAllViews()
