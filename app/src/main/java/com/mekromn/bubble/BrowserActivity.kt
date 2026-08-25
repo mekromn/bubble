@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -46,8 +48,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -145,11 +145,13 @@ private fun BrowserToolbar(
         if (page.url.isNotBlank()) omnibox = page.url
     }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+    ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(
@@ -181,19 +183,11 @@ private fun BrowserToolbar(
                 )
                 Spacer(Modifier.size(4.dp))
             }
-            OutlinedTextField(
-                value = omnibox,
-                onValueChange = { omnibox = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                label = { Text(if (page.url.startsWith("http://")) "Insecure HTTP" else "Search or address") },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(
-                    onGo = {
-                        focusManager.clearFocus()
-                        onNavigate(omnibox)
-                    },
-                ),
+            Text(
+                text = page.title.takeIf { it.isNotBlank() } ?: "Bubble",
+                maxLines = 1,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 8.dp),
             )
             TextButton(onClick = onNewTab) {
                 Text("+", style = MaterialTheme.typography.headlineSmall)
@@ -204,14 +198,20 @@ private fun BrowserToolbar(
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
         }
-        if (page.title.isNotBlank()) {
-            Text(
-                text = page.title,
-                maxLines = 1,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-            )
-        }
+        OutlinedTextField(
+            value = omnibox,
+            onValueChange = { omnibox = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(if (page.url.startsWith("http://")) "Insecure HTTP" else "Search or address") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(
+                onGo = {
+                    focusManager.clearFocus()
+                    onNavigate(omnibox)
+                },
+            ),
+        )
     }
 }
 
