@@ -109,7 +109,10 @@ class RendererPool(
 
     fun setUserAgentMode(tabId: TabId, mode: UserAgentMode) {
         checkMainThread()
-        residents[tabId]?.session?.setUserAgentMode(mode)
+        residents[tabId]?.session?.let { session ->
+            session.setUserAgentMode(mode)
+            session.reload()
+        }
     }
 
     suspend fun setKeepRendererAlive(tabId: TabId, enabled: Boolean) {
