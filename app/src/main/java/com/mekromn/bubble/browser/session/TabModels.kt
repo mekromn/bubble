@@ -43,6 +43,7 @@ data class Tab(
     val presentationState: PresentationState = PresentationState.BROWSER,
     val residencyState: ResidencyState = ResidencyState.HIBERNATED,
     val pinned: Boolean = false,
+    val keepRendererAlive: Boolean = false,
     val isPrivate: Boolean = false,
     val userAgentMode: UserAgentMode = UserAgentMode.MOBILE,
     val zoomPercent: Int = DEFAULT_ZOOM_PERCENT,

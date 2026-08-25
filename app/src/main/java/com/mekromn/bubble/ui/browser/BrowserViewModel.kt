@@ -4,22 +4,13 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mekromn.bubble.BubbleApplication
-import com.mekromn.bubble.browser.engine.WebViewStateStore
-import com.mekromn.bubble.browser.session.RendererPool
 import com.mekromn.bubble.browser.session.TabId
-import com.mekromn.bubble.browser.session.TabSessionManager
 import kotlinx.coroutines.launch
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
     private val bubbleApplication = application as BubbleApplication
-    private val stateStore = WebViewStateStore(application)
-    private val rendererPool = RendererPool(application, stateStore)
-    private val sessionManager = TabSessionManager(
-        repository = bubbleApplication.container.tabs,
-        settings = bubbleApplication.container.settings,
-        rendererPool = rendererPool,
-        scope = viewModelScope,
-    )
+    private val sessionManager = bubbleApplication.runtime.sessions
+    private val rendererPool = bubbleApplication.runtime.rendererPool
 
     val sessionState = sessionManager.state
     val activeWebView = rendererPool.activeWebView
@@ -53,13 +44,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { sessionManager.moveTab(tabId, newIndex) }
     }
 
+    fun minimizeActiveToHead(onReady: (TabId) -> Unit) {
+        viewModelScope.launch {
+            sessionManager.minimizeSelectedToHead()?.let(onReady)
+        }
+    }
+
     fun goBack(): Boolean = sessionManager.goBack()
     fun goForward(): Boolean = sessionManager.goForward()
     fun reload() = sessionManager.reload()
     fun stop() = sessionManager.stop()
-
-    override fun onCleared() {
-        rendererPool.destroyAll()
-        super.onCleared()
-    }
 }

@@ -1,12 +1,17 @@
 package com.mekromn.bubble
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -44,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -54,6 +61,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mekromn.bubble.browser.engine.EnginePageState
 import com.mekromn.bubble.browser.session.BrowserSessionState
 import com.mekromn.bubble.browser.session.Tab
+import com.mekromn.bubble.heads.service.FloatingHeadService
 import com.mekromn.bubble.ui.browser.BrowserViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
@@ -78,6 +86,10 @@ class BrowserActivity : ComponentActivity() {
             }
         }
     }
+
+    companion object {
+        const val EXTRA_RESTORE_TAB_ID = "com.mekromn.bubble.extra.RESTORE_TAB_ID"
+    }
 }
 
 @Composable
@@ -85,6 +97,51 @@ private fun BrowserScreen(viewModel: BrowserViewModel) {
     val session by viewModel.sessionState.collectAsState()
     val page by viewModel.pageState.collectAsState()
     val webView by viewModel.activeWebView.collectAsState()
+    val context = LocalContext.current
+    var explainOverlay by remember { mutableStateOf(false) }
+    var minimizeAfterPermission by remember { mutableStateOf(false) }
+
+    fun minimizeNow() {
+        viewModel.minimizeActiveToHead {
+            FloatingHeadService.start(context)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        if (minimizeAfterPermission && Settings.canDrawOverlays(context)) minimizeNow()
+        minimizeAfterPermission = false
+    }
+
+    if (explainOverlay) {
+        AlertDialog(
+            onDismissRequest = { explainOverlay = false },
+            title = { Text("Allow floating heads") },
+            text = {
+                Text(
+                    "Bubble needs Android's display-over-other-apps permission only to show the draggable tab heads you create. The browser works without it.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        explainOverlay = false
+                        minimizeAfterPermission = true
+                        permissionLauncher.launch(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}"),
+                            ),
+                        )
+                    },
+                ) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { explainOverlay = false }) { Text("Not now") }
+            },
+        )
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -104,9 +161,12 @@ private fun BrowserScreen(viewModel: BrowserViewModel) {
                 onReload = viewModel::reload,
                 onStop = viewModel::stop,
                 onNewTab = viewModel::createTab,
+                onMinimize = {
+                    if (Settings.canDrawOverlays(context)) minimizeNow() else explainOverlay = true
+                },
             )
             TabStrip(
-                tabs = session.tabs,
+                tabs = session.tabs.filter { it.presentationState == com.mekromn.bubble.browser.session.PresentationState.BROWSER },
                 onActivate = viewModel::activate,
                 onClose = viewModel::close,
             )
@@ -138,6 +198,7 @@ private fun BrowserToolbar(
     onReload: () -> Unit,
     onStop: () -> Unit,
     onNewTab: () -> Unit,
+    onMinimize: () -> Unit,
 ) {
     var omnibox by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
@@ -189,6 +250,10 @@ private fun BrowserToolbar(
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
+            IconButton(
+                onClick = onMinimize,
+                modifier = Modifier.semantics { contentDescription = "Minimize tab to floating head" },
+            ) { Text("●") }
             TextButton(onClick = onNewTab) {
                 Text("+", style = MaterialTheme.typography.headlineSmall)
             }

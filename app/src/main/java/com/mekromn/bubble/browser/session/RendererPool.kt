@@ -31,6 +31,7 @@ class RendererPool(
     private data class Resident(
         val session: BrowserEngineSession,
         var lastUsed: Long,
+        var keepRendererAlive: Boolean,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -55,6 +56,7 @@ class RendererPool(
         val existing = residents[tab.id]
         if (existing != null) {
             existing.lastUsed = now()
+            existing.keepRendererAlive = tab.keepRendererAlive
             activeTabId = tab.id
             mutableActiveWebView.value = existing.session.webView
             mutableActivePageState.value = existing.session.pageState.value
@@ -63,11 +65,29 @@ class RendererPool(
         }
 
         val session = factory.create(tab.id, this)
-        residents[tab.id] = Resident(session, now())
+        residents[tab.id] = Resident(session, now(), tab.keepRendererAlive)
         activeTabId = tab.id
         mutableActiveWebView.value = session.webView
         mutableActivePageState.value = session.pageState.value
 
+        val restored = stateStore.restore(tab.id, session.webView)
+        if (!restored) session.loadUrl(tab.lastCommittedUrl)
+        trimWarmRenderers()
+        return RendererActivation(restoredSavedState = restored, reusedLiveRenderer = false)
+    }
+
+    suspend fun warm(tab: Tab): RendererActivation {
+        checkMainThread()
+        val existing = residents[tab.id]
+        if (existing != null) {
+            existing.lastUsed = now()
+            existing.keepRendererAlive = tab.keepRendererAlive
+            trimWarmRenderers()
+            return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
+        }
+
+        val session = factory.create(tab.id, this)
+        residents[tab.id] = Resident(session, now(), tab.keepRendererAlive)
         val restored = stateStore.restore(tab.id, session.webView)
         if (!restored) session.loadUrl(tab.lastCommittedUrl)
         trimWarmRenderers()
@@ -79,6 +99,17 @@ class RendererPool(
     fun reload() = activeSession()?.reload()
     fun stop() = activeSession()?.stop()
     fun loadUrl(url: String) = activeSession()?.loadUrl(url)
+
+    fun deactivate(tabId: TabId) {
+        checkMainThread()
+        if (activeTabId == tabId) clearActiveProjection()
+    }
+
+    suspend fun setKeepRendererAlive(tabId: TabId, enabled: Boolean) {
+        checkMainThread()
+        residents[tabId]?.keepRendererAlive = enabled
+        if (!enabled) trimWarmRenderers()
+    }
 
     suspend fun release(tabId: TabId, discardSavedState: Boolean) {
         checkMainThread()
@@ -120,10 +151,10 @@ class RendererPool(
     }
 
     private suspend fun trimWarmRenderers() {
-        while (residents.size > warmBudget + 1) {
+        while (evictableWarmCount() > warmBudget) {
             val candidate = residents.entries
                 .asSequence()
-                .filter { it.key != activeTabId }
+                .filter { it.key != activeTabId && !it.value.keepRendererAlive }
                 .minByOrNull { it.value.lastUsed }
                 ?: return
             residents.remove(candidate.key)
@@ -131,6 +162,10 @@ class RendererPool(
             candidate.value.session.destroy()
             listener?.onRendererEvicted(candidate.key, saved)
         }
+    }
+
+    private fun evictableWarmCount(): Int = residents.count { (tabId, resident) ->
+        tabId != activeTabId && !resident.keepRendererAlive
     }
 
     private fun clearActiveProjection() {

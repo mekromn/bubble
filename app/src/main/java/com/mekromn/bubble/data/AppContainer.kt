@@ -3,6 +3,7 @@ package com.mekromn.bubble.data
 import android.content.Context
 import androidx.room.Room
 import com.mekromn.bubble.data.db.BubbleDatabase
+import com.mekromn.bubble.data.db.RoomHeadPlacementRepository
 import com.mekromn.bubble.data.db.RoomTabRepository
 import com.mekromn.bubble.data.settings.BrowserSettingsRepository
 
@@ -14,9 +15,13 @@ class AppContainer(context: Context) {
             appContext,
             BubbleDatabase::class.java,
             BubbleDatabase.FILE_NAME,
-        ).build()
+        ).addMigrations(BubbleDatabase.MIGRATION_1_2)
+            .build()
     }
 
     val tabs: RoomTabRepository by lazy { RoomTabRepository(database.tabDao()) }
+    val headPlacements: RoomHeadPlacementRepository by lazy {
+        RoomHeadPlacementRepository(database.headPlacementDao())
+    }
     val settings: BrowserSettingsRepository by lazy { BrowserSettingsRepository(appContext) }
 }
