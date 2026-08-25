@@ -86,7 +86,27 @@ Head placement remains normalized so sessions remain useful across rotation, dis
 
 Saved sessions must be listable, restorable, renameable, overwriteable/updatable, duplicable and deletable by the production release. Initial implementation may land save/list/restore/delete first, but rename/update/duplicate remain part of the v1 contract.
 
-## 5. Validation additions
+## 5. High refresh-rate rendering
+
+Bubble should strongly prefer high-refresh rendering for its interactive browser UI and WebView content.
+
+Default behavior is **120 Hz or greater when the active display exposes such a rate**, otherwise the highest supported rate on that display. The implementation must remain capability-aware rather than assuming every device has a 120 Hz mode.
+
+Required persisted modes:
+
+- **Auto** — defer to Android.
+- **60 Hz**.
+- **90 Hz**.
+- **120+** — choose the highest supported rate at or above 120 Hz, falling back to the display's highest rate when no 120+ mode exists. This is the default.
+- **Highest available** — request the display's highest exposed refresh rate regardless of threshold.
+
+Use the window-level refresh-rate preference as the baseline. On Android 16 / API 36, also propagate the selected requested frame rate through the browser view hierarchy with force override so Compose/browser chrome and WebView do not independently fall back to a lower app-requested category.
+
+This remains a best-effort platform request. Android may override app preferences because of thermal state, battery saver, display limitations, multi-window policy, or compositor scheduling. Bubble must never claim it can bypass those system constraints.
+
+Do not use `preferredDisplayModeId` merely to chase refresh rate when `preferredRefreshRate`/frame-rate APIs are sufficient, because Bubble should not accidentally request a different display resolution.
+
+## 6. Validation additions
 
 Production validation must include:
 
@@ -99,4 +119,7 @@ Production validation must include:
 - UA mode persists across tab hibernation, process reconstruction and named-session restore;
 - save a mixed browser/head workspace, rotate/change display size, then restore with usable head positions;
 - Replace, Merge and Add-all session semantics verified;
-- private tabs proven absent from saved-session database snapshots.
+- private tabs proven absent from saved-session database snapshots;
+- on a 120 Hz-capable device, Bubble 120+ mode requests at least 120 Hz and browser scrolling/animations are observed at the system-selected high refresh rate when platform conditions permit;
+- Auto clears Bubble's explicit frame-rate preference;
+- 60/90/120+/Highest selections persist and fall back safely on displays that do not expose the requested rate.
