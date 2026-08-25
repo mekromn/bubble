@@ -1,6 +1,5 @@
 package com.mekromn.bubble.heads.service
 
-import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -487,11 +486,11 @@ class FloatingHeadService : Service() {
             return try {
                 context.startForegroundService(Intent(context, FloatingHeadService::class.java))
                 true
-            } catch (_: ForegroundServiceStartNotAllowedException) {
-                false
             } catch (_: SecurityException) {
                 false
             } catch (_: IllegalStateException) {
+                // Includes the API 31+ ForegroundServiceStartNotAllowedException subclass
+                // without introducing a direct new-API type reference on minSdk 26.
                 false
             }
         }
