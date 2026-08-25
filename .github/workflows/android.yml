@@ -36,6 +36,15 @@ jobs:
           cmdline-tools-version: '11076708'
           packages: platform-tools
 
+      # Keep the development signing identity stable across clean GitHub runners
+      # without storing a keystore in the repository. The first successful run
+      # seeds this cache; later debug APKs can then install as normal updates.
+      - name: Restore stable debug signing identity
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: bubble-debug-signing-v1
+
       - name: Install API 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
