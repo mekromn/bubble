@@ -2,6 +2,7 @@ package com.mekromn.bubble
 
 import android.app.Application
 import com.mekromn.bubble.browser.engine.WebViewStateStore
+import com.mekromn.bubble.browser.session.BrowsingDataRecorder
 import com.mekromn.bubble.browser.session.RendererPool
 import com.mekromn.bubble.browser.session.TabSessionManager
 import com.mekromn.bubble.data.AppContainer
@@ -24,6 +25,11 @@ class BubbleRuntime(
         headPlacements = container.headPlacements,
         savedSessionRepository = container.savedSessions,
         rendererPool = rendererPool,
+        scope = scope,
+    )
+    private val browsingDataRecorder = BrowsingDataRecorder(
+        sessions = sessions,
+        browsingData = container.browsingData,
         scope = scope,
     )
 

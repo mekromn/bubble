@@ -12,8 +12,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         HeadPlacementEntity::class,
         SavedSessionEntity::class,
         SavedSessionTabEntity::class,
+        HistoryEntryEntity::class,
+        BookmarkEntity::class,
+        ClosedTabEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(TabTypeConverters::class)
@@ -21,6 +24,7 @@ abstract class BubbleDatabase : RoomDatabase() {
     abstract fun tabDao(): TabDao
     abstract fun headPlacementDao(): HeadPlacementDao
     abstract fun savedSessionDao(): SavedSessionDao
+    abstract fun browsingDataDao(): BrowsingDataDao
 
     companion object {
         const val FILE_NAME = "bubble.db"
@@ -87,6 +91,63 @@ abstract class BubbleDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_saved_session_tabs_sessionId ON saved_session_tabs(sessionId)",
+                )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS history_entries (
+                        url TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        lastVisitedAt INTEGER NOT NULL,
+                        visitCount INTEGER NOT NULL,
+                        PRIMARY KEY(url)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_history_entries_lastVisitedAt ON history_entries(lastVisitedAt)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS bookmarks (
+                        url TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(url)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_bookmarks_createdAt ON bookmarks(createdAt)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_bookmarks_updatedAt ON bookmarks(updatedAt)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS closed_tabs (
+                        id TEXT NOT NULL,
+                        originalTabId TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        closedAt INTEGER NOT NULL,
+                        presentationState TEXT NOT NULL,
+                        userAgentMode TEXT NOT NULL,
+                        zoomPercent INTEGER NOT NULL,
+                        pinned INTEGER NOT NULL,
+                        keepRendererAlive INTEGER NOT NULL,
+                        groupId TEXT,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_closed_tabs_closedAt ON closed_tabs(closedAt)",
                 )
             }
         }
