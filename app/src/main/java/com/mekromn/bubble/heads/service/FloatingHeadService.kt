@@ -28,6 +28,7 @@ import com.mekromn.bubble.browser.session.PresentationState
 import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.data.db.HeadPlacement
+import com.mekromn.bubble.heads.model.HeadCollisionResolver
 import com.mekromn.bubble.heads.model.HeadPlacementMath
 import com.mekromn.bubble.heads.model.NormalizedPoint
 import com.mekromn.bubble.heads.model.PixelPoint
@@ -46,6 +47,7 @@ class FloatingHeadService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var app: BubbleApplication
     private val controllers = LinkedHashMap<TabId, HeadOverlayController>()
+    private val localPositions = LinkedHashMap<TabId, PixelPoint>()
     private val restoring = mutableSetOf<TabId>()
     private val closing = mutableSetOf<TabId>()
     private var deleteTarget: TextView? = null
@@ -55,7 +57,10 @@ class FloatingHeadService : Service() {
         app = application as BubbleApplication
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         ensureNotificationChannel()
-        startAsForeground()
+        if (!startAsForegroundSafely()) {
+            stopSelf()
+            return
+        }
 
         serviceScope.launch {
             app.runtime.sessions.initialize()
@@ -66,17 +71,14 @@ class FloatingHeadService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Visible heads are restored only from explicit, platform-legal user-visible flows.
-        // Never ask Android to resurrect this overlay foreground service after process death.
-        return START_NOT_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         controllers.values.forEach(HeadOverlayController::removeImmediately)
         controllers.clear()
+        localPositions.clear()
         restoring.clear()
         closing.clear()
         hideDeleteTarget(immediate = true)
@@ -90,9 +92,10 @@ class FloatingHeadService : Service() {
             val heads = app.runtime.sessions.state.value.tabs.filter {
                 it.presentationState == PresentationState.HEAD
             }
-            heads.forEach { tab ->
+            localPositions.clear()
+            heads.forEachIndexed { index, tab ->
                 val placement = app.container.headPlacements.get(tab.id)
-                positionController(tab.id, placement)
+                positionController(tab.id, placement, index)
             }
         }
     }
@@ -101,32 +104,38 @@ class FloatingHeadService : Service() {
         if (!Settings.canDrawOverlays(this)) {
             controllers.values.forEach(HeadOverlayController::removeImmediately)
             controllers.clear()
+            localPositions.clear()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
 
-        val wanted = heads.distinctBy(Tab::id).associateBy(Tab::id)
+        val distinctHeads = heads.distinctBy(Tab::id)
+        val wanted = distinctHeads.associateBy(Tab::id)
         val removed = controllers.keys.filter { it !in wanted.keys }
         removed.forEach { id ->
             restoring.remove(id)
             closing.remove(id)
+            localPositions.remove(id)
             controllers.remove(id)?.remove()
         }
 
-        heads.distinctBy(Tab::id).forEachIndexed { index, tab ->
+        distinctHeads.forEachIndexed { index, tab ->
             val existing = controllers[tab.id]
             if (existing != null) {
                 existing.update(tab)
             } else {
                 val placement = app.container.headPlacements.get(tab.id)
-                val created = createController(tab, placement, index) ?: return@forEachIndexed
+                val area = safeArea()
+                val headSize = dp(58)
+                val local = resolveInitialPosition(placement, index, area, headSize)
+                val created = createController(tab, local, area) ?: return@forEachIndexed
                 val previous = controllers.putIfAbsent(tab.id, created)
                 if (previous != null) {
-                    // Defensive idempotency: if a second creation ever races in, keep only
-                    // the registered controller and immediately remove the duplicate view.
                     created.removeImmediately()
                     previous.update(tab)
+                } else {
+                    localPositions[tab.id] = local
                 }
             }
         }
@@ -137,14 +146,13 @@ class FloatingHeadService : Service() {
         }
     }
 
-    private fun createController(
-        tab: Tab,
+    private fun resolveInitialPosition(
         placement: HeadPlacement?,
         index: Int,
-    ): HeadOverlayController? {
-        val area = safeArea()
-        val headSize = dp(58)
-        val local = placement?.let {
+        area: SafeArea,
+        headSize: Int,
+    ): PixelPoint {
+        val preferred = placement?.let {
             HeadPlacementMath.denormalize(
                 NormalizedPoint(it.normalizedX, it.normalizedY),
                 area.width,
@@ -154,21 +162,33 @@ class FloatingHeadService : Service() {
             )
         } ?: defaultPlacement(index, area, headSize)
 
-        return runCatching {
-            HeadOverlayController(
-                context = this,
-                windowManager = windowManager,
-                initialTab = tab,
-                initialX = area.left + local.x,
-                initialY = area.top + local.y,
-                callbacks = callbacks,
-            )
-        }.getOrElse {
-            // Overlay permission can be revoked between the permission check and addView().
-            // Keep the logical HEAD state intact and stop safely instead of crashing.
-            if (!Settings.canDrawOverlays(this)) stopSelf()
-            null
-        }
+        return HeadCollisionResolver.resolve(
+            preferred = preferred,
+            occupied = localPositions.values.toList(),
+            areaWidth = area.width,
+            areaHeight = area.height,
+            headWidth = headSize,
+            headHeight = headSize,
+            gap = dp(10),
+        )
+    }
+
+    private fun createController(
+        tab: Tab,
+        local: PixelPoint,
+        area: SafeArea,
+    ): HeadOverlayController? = runCatching {
+        HeadOverlayController(
+            context = this,
+            windowManager = windowManager,
+            initialTab = tab,
+            initialX = area.left + local.x,
+            initialY = area.top + local.y,
+            callbacks = callbacks,
+        )
+    }.getOrElse {
+        if (!Settings.canDrawOverlays(this)) stopSelf()
+        null
     }
 
     private fun defaultPlacement(index: Int, area: SafeArea, headSize: Int): PixelPoint {
@@ -301,6 +321,7 @@ class FloatingHeadService : Service() {
             headSize,
             headSize,
         )
+        localPositions[tabId] = local
         val normalized = HeadPlacementMath.normalize(
             local,
             area.width,
@@ -320,11 +341,11 @@ class FloatingHeadService : Service() {
         controllers[tabId]?.setPosition(area.left + local.x, area.top + local.y)
     }
 
-    private fun positionController(tabId: TabId, placement: HeadPlacement?) {
+    private fun positionController(tabId: TabId, placement: HeadPlacement?, index: Int) {
         val controller = controllers[tabId] ?: return
         val area = safeArea()
         val size = controller.headSizePx()
-        val local = placement?.let {
+        val preferred = placement?.let {
             HeadPlacementMath.denormalize(
                 NormalizedPoint(it.normalizedX, it.normalizedY),
                 area.width,
@@ -332,9 +353,18 @@ class FloatingHeadService : Service() {
                 size,
                 size,
             )
-        } ?: PixelPoint(area.width - size - dp(10), dp(20))
-        val clamped = HeadPlacementMath.clamp(local, area.width, area.height, size, size)
-        controller.setPosition(area.left + clamped.x, area.top + clamped.y)
+        } ?: defaultPlacement(index, area, size)
+        val local = HeadCollisionResolver.resolve(
+            preferred = preferred,
+            occupied = localPositions.filterKeys { it != tabId }.values.toList(),
+            areaWidth = area.width,
+            areaHeight = area.height,
+            headWidth = size,
+            headHeight = size,
+            gap = dp(10),
+        )
+        localPositions[tabId] = local
+        controller.setPosition(area.left + local.x, area.top + local.y)
     }
 
     private fun showDeleteTarget(active: Boolean) {
@@ -376,11 +406,7 @@ class FloatingHeadService : Service() {
             setColor(if (active) Color.rgb(171, 45, 54) else Color.rgb(62, 65, 74))
         }
         val scale = if (active) 1.14f else 1f
-        target.animate()
-            .scaleX(scale)
-            .scaleY(scale)
-            .setDuration(90L)
-            .start()
+        target.animate().scaleX(scale).scaleY(scale).setDuration(90L).start()
     }
 
     private fun hideDeleteTarget(immediate: Boolean) {
@@ -449,7 +475,7 @@ class FloatingHeadService : Service() {
         )
     }
 
-    private fun startAsForeground() {
+    private fun startAsForegroundSafely(): Boolean = try {
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -473,6 +499,13 @@ class FloatingHeadService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        true
+    } catch (_: SecurityException) {
+        false
+    } catch (_: IllegalStateException) {
+        false
+    } catch (_: IllegalArgumentException) {
+        false
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -489,8 +522,6 @@ class FloatingHeadService : Service() {
             } catch (_: SecurityException) {
                 false
             } catch (_: IllegalStateException) {
-                // Includes the API 31+ ForegroundServiceStartNotAllowedException subclass
-                // without introducing a direct new-API type reference on minSdk 26.
                 false
             }
         }
