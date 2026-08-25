@@ -53,7 +53,10 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
+    // Compose 1.12 is compiled against API 37. Keep the v1/API-36 production
+    // line on the stable Compose 1.11 generation until API 37 becomes an
+    // explicitly validated project target.
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
