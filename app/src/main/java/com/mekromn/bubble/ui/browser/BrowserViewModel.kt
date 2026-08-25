@@ -50,9 +50,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { sessionManager.moveTab(tabId, newIndex) }
     }
 
-    fun minimizeActiveToHead(onReady: (TabId) -> Unit) {
+    fun minimizeActiveToHead(onComplete: (TabId?) -> Unit) {
         viewModelScope.launch {
-            sessionManager.minimizeSelectedToHead()?.let(onReady)
+            onComplete(sessionManager.minimizeSelectedToHead())
         }
     }
 
