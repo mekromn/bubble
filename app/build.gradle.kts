@@ -73,7 +73,9 @@ dependencies {
     // the newest stable line whose documented baseline remains API 36.
     //noinspection GradleDependency
     implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.compose.animation:animation")
     implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
