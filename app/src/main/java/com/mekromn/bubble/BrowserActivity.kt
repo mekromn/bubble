@@ -1,7 +1,6 @@
 package com.mekromn.bubble
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.ViewGroup
@@ -62,6 +61,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mekromn.bubble.browser.engine.EnginePageState
@@ -121,7 +121,7 @@ class BrowserActivity : ComponentActivity() {
 
             val url = when (incoming.action) {
                 Intent.ACTION_VIEW -> incoming.dataString?.takeIf { value ->
-                    val scheme = runCatching { Uri.parse(value).scheme }.getOrNull()
+                    val scheme = runCatching { value.toUri().scheme }.getOrNull()
                     scheme.equals("http", true) || scheme.equals("https", true)
                 }
                 Intent.ACTION_SEND -> SharedUrlExtractor.extract(
@@ -194,7 +194,7 @@ private fun BrowserScreen(viewModel: BrowserViewModel) {
                         permissionLauncher.launch(
                             Intent(
                                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}"),
+                                "package:${context.packageName}".toUri(),
                             ),
                         )
                     },

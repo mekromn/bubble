@@ -2,11 +2,11 @@ package com.mekromn.bubble
 
 import android.app.AlertDialog
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import com.mekromn.bubble.browser.navigation.SharedUrlExtractor
 import com.mekromn.bubble.heads.service.FloatingHeadService
@@ -51,7 +51,7 @@ class ShareHeadActivity : ComponentActivity() {
                 overlayPermissionLauncher.launch(
                     Intent(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName"),
+                        "package:$packageName".toUri(),
                     ),
                 )
             }

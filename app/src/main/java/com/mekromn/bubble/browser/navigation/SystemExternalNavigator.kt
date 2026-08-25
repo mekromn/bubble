@@ -2,7 +2,7 @@ package com.mekromn.bubble.browser.navigation
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import androidx.core.net.toUri
 
 class SystemExternalNavigator(
     private val context: Context,
@@ -23,12 +23,12 @@ class SystemExternalNavigator(
     }
 
     private fun launchViewIntent(rawUri: String) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(rawUri)).apply {
+        val intent = Intent(Intent.ACTION_VIEW, rawUri.toUri()).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        if (intent.resolveActivity(context.packageManager) != null) {
-            runCatching { context.startActivity(intent) }
-        }
+        // startActivity() itself does not require package visibility. A missing handler is
+        // handled as an ordinary failure rather than querying the user's installed apps.
+        runCatching { context.startActivity(intent) }
     }
 
     private fun launchIntentScheme(rawUri: String, loadFallback: (String) -> Unit) {
@@ -47,13 +47,12 @@ class SystemExternalNavigator(
             ).inv()
         parsed.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-        val resolvable = parsed.resolveActivity(context.packageManager) != null
-        if (resolvable && runCatching { context.startActivity(parsed) }.isSuccess) return
+        if (runCatching { context.startActivity(parsed) }.isSuccess) return
         fallback?.let(loadFallback)
     }
 
     private fun isHttpUrl(value: String): Boolean {
-        val scheme = runCatching { Uri.parse(value).scheme }.getOrNull()
+        val scheme = runCatching { value.toUri().scheme }.getOrNull()
         return scheme.equals("http", true) || scheme.equals("https", true)
     }
 }

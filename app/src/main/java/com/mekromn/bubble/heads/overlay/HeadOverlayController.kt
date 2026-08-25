@@ -12,6 +12,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.net.toUri
+import androidx.core.view.isVisible
 import com.mekromn.bubble.browser.session.Tab
 import kotlin.math.abs
 
@@ -41,6 +43,7 @@ class HeadOverlayController(
     private val headSizePx = dp(56)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var dragging = false
+    private var longPressed = false
     private var downRawX = 0f
     private var downRawY = 0f
     private var downX = initialX
@@ -51,7 +54,13 @@ class HeadOverlayController(
         gravity = Gravity.CENTER_VERTICAL
     }
 
-    private val headView = TextView(context).apply {
+    private val headView = object : TextView(context) {
+        override fun performClick(): Boolean {
+            super.performClick()
+            callbacks.onRestore(tab)
+            return true
+        }
+    }.apply {
         gravity = Gravity.CENTER
         textSize = 22f
         setTextColor(Color.WHITE)
@@ -90,13 +99,11 @@ class HeadOverlayController(
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
 
-            override fun onSingleTapUp(e: MotionEvent): Boolean {
-                if (!dragging) callbacks.onRestore(tab)
-                return true
-            }
-
             override fun onLongPress(e: MotionEvent) {
-                if (!dragging) toggleMenu()
+                if (!dragging) {
+                    longPressed = true
+                    toggleMenu()
+                }
             }
         },
     )
@@ -120,7 +127,7 @@ class HeadOverlayController(
     fun update(updated: Tab) {
         tab = updated
         headView.text = fallbackLabel(updated)
-        headView.contentDescription = "${updated.title.ifBlank { "Floating tab" }}. Double tap to restore; long press for actions."
+        headView.contentDescription = "${updated.title.ifBlank { "Floating tab" }}. Tap to restore; long press for actions."
         pinButton.text = if (updated.pinned) "Unpin" else "Pin"
         liveButton.text = if (updated.keepRendererAlive) "Stop keeping live" else "Keep live"
     }
@@ -138,11 +145,12 @@ class HeadOverlayController(
     fun headSizePx(): Int = headSizePx
 
     private fun bindDragGesture() {
-        headView.setOnTouchListener { _, event ->
+        headView.setOnTouchListener { view, event ->
             detector.onTouchEvent(event)
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     dragging = false
+                    longPressed = false
                     downRawX = event.rawX
                     downRawY = event.rawY
                     downX = params.x
@@ -154,7 +162,8 @@ class HeadOverlayController(
                     val dy = event.rawY - downRawY
                     if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
                         dragging = true
-                        menu.visibility = View.GONE
+                        longPressed = false
+                        menu.isVisible = false
                         callbacks.onDragStart(tab)
                     }
                     if (dragging) {
@@ -165,7 +174,24 @@ class HeadOverlayController(
                     }
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP -> {
+                    if (dragging) {
+                        callbacks.onDragEnd(
+                            tab = tab,
+                            rawX = event.rawX,
+                            rawY = event.rawY,
+                            x = params.x,
+                            y = params.y,
+                            headSize = headSizePx,
+                        )
+                    } else if (!longPressed) {
+                        view.performClick()
+                    }
+                    dragging = false
+                    longPressed = false
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
                         callbacks.onDragEnd(
                             tab = tab,
@@ -177,6 +203,7 @@ class HeadOverlayController(
                         )
                     }
                     dragging = false
+                    longPressed = false
                     true
                 }
                 else -> true
@@ -185,7 +212,7 @@ class HeadOverlayController(
     }
 
     private fun toggleMenu() {
-        menu.visibility = if (menu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        menu.isVisible = !menu.isVisible
         updateLayout()
     }
 
@@ -203,7 +230,7 @@ class HeadOverlayController(
 
     private fun fallbackLabel(tab: Tab): String {
         val value = tab.title.trim().firstOrNull()
-            ?: runCatching { android.net.Uri.parse(tab.lastCommittedUrl).host?.firstOrNull() }.getOrNull()
+            ?: runCatching { tab.lastCommittedUrl.toUri().host?.firstOrNull() }.getOrNull()
             ?: 'B'
         return value.uppercaseChar().toString()
     }

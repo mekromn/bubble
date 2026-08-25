@@ -2,11 +2,11 @@ package com.mekromn.bubble.browser.downloads
 
 import android.app.DownloadManager
 import android.content.Context
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.webkit.CookieManager
 import android.webkit.URLUtil
+import androidx.core.net.toUri
 
 class SystemDownloadHandler(context: Context) {
     private val appContext = context.applicationContext
@@ -19,7 +19,7 @@ class SystemDownloadHandler(context: Context) {
         mimeType: String?,
         referer: String?,
     ): Long? {
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        val uri = runCatching { url.toUri() }.getOrNull() ?: return null
         if (!uri.scheme.equals("http", true) && !uri.scheme.equals("https", true)) return null
 
         val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
@@ -47,7 +47,7 @@ class SystemDownloadHandler(context: Context) {
     }
 
     private fun isHttpUrl(value: String): Boolean {
-        val scheme = runCatching { Uri.parse(value).scheme }.getOrNull()
+        val scheme = runCatching { value.toUri().scheme }.getOrNull()
         return scheme.equals("http", true) || scheme.equals("https", true)
     }
 }

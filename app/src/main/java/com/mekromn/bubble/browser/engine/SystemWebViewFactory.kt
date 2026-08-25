@@ -1,5 +1,6 @@
 package com.mekromn.bubble.browser.engine
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.http.SslError
@@ -75,8 +76,12 @@ private class SystemWebViewSession(
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     @Suppress("DEPRECATION")
     private fun configureSettings(settings: WebSettings) = with(settings) {
+        // JavaScript is a core requirement for a general-purpose modern browser. Bubble does
+        // not expose a JavaScript bridge to arbitrary web content, and TLS errors are never
+        // bypassed, so the lint warning is reviewed rather than globally disabled.
         javaScriptEnabled = true
         domStorageEnabled = true
         databaseEnabled = true
@@ -96,7 +101,7 @@ private class SystemWebViewSession(
         javaScriptCanOpenWindowsAutomatically = false
         mediaPlaybackRequiresUserGesture = true
         cacheMode = WebSettings.LOAD_DEFAULT
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
+        safeBrowsingEnabled = true
     }
 
     override fun setUserAgentMode(mode: UserAgentMode) {
