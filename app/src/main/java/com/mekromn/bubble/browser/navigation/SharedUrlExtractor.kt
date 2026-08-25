@@ -1,6 +1,6 @@
 package com.mekromn.bubble.browser.navigation
 
-import android.net.Uri
+import java.net.URI
 
 object SharedUrlExtractor {
     private val webUrl = Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE)
@@ -21,7 +21,7 @@ object SharedUrlExtractor {
 
     private fun looksLikeWebUrl(value: String): Boolean {
         return runCatching {
-            val uri = Uri.parse(value)
+            val uri = URI(value)
             (uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) &&
                 !uri.host.isNullOrBlank()
         }.getOrDefault(false)
