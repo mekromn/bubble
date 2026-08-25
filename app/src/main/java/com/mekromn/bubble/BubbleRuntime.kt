@@ -19,6 +19,8 @@ class BubbleRuntime(
     val sessions = TabSessionManager(
         repository = container.tabs,
         settings = container.settings,
+        headPlacements = container.headPlacements,
+        savedSessionRepository = container.savedSessions,
         rendererPool = rendererPool,
         scope = scope,
     )
