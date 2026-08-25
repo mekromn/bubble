@@ -42,9 +42,9 @@ jobs:
       - name: Unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 
-      - name: Android lint
-        run: gradle --no-daemon :app:lintDebug
-
+      # Build and preserve a testable artifact before static-analysis gating. A red
+      # lint result still blocks production acceptance, but should not prevent
+      # device testing of code that already compiles and passes unit tests.
       - name: Debug APK
         run: gradle --no-daemon :app:assembleDebug
 
@@ -57,6 +57,19 @@ jobs:
           name: Bubble-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Android lint
+        run: gradle --no-daemon :app:lintDebug
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bubble-lint-reports
+          path: |
+            app/build/reports/lint-results-debug.*
+            app/build/intermediates/lint_intermediate_text_report/**/lint-results-debug.txt
+          if-no-files-found: warn
 
       - name: Upload Room schemas
         if: always()
