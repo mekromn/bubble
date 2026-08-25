@@ -47,4 +47,13 @@ class TabStateMachineTest {
         )
         assertEquals(ResidencyState.ACTIVE, recovered.residencyState)
     }
+
+    @Test
+    fun recoveringKeepLiveHeadCanBecomeWarm() {
+        val warmed = TabStateMachine.reduce(
+            tab(ResidencyState.RECOVERING),
+            TabEvent.SetResidency(ResidencyState.WARM),
+        )
+        assertEquals(ResidencyState.WARM, warmed.residencyState)
+    }
 }
