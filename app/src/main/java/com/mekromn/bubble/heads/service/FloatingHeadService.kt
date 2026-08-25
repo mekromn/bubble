@@ -1,5 +1,6 @@
 package com.mekromn.bubble.heads.service
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -19,6 +20,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.widget.TextView
 import android.widget.Toast
 import com.mekromn.bubble.BrowserActivity
@@ -35,7 +37,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 class FloatingHeadService : Service() {
@@ -45,8 +47,9 @@ class FloatingHeadService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var app: BubbleApplication
     private val controllers = LinkedHashMap<TabId, HeadOverlayController>()
+    private val restoring = mutableSetOf<TabId>()
+    private val closing = mutableSetOf<TabId>()
     private var deleteTarget: TextView? = null
-    private var deleteTargetParams: WindowManager.LayoutParams? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -57,8 +60,8 @@ class FloatingHeadService : Service() {
 
         serviceScope.launch {
             app.runtime.sessions.initialize()
-            app.runtime.sessions.state.collectLatest { state ->
-                if (!state.initialized) return@collectLatest
+            app.runtime.sessions.state.collect { state ->
+                if (!state.initialized) return@collect
                 syncHeads(state.tabs.filter { it.presentationState == PresentationState.HEAD })
             }
         }
@@ -73,9 +76,11 @@ class FloatingHeadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        controllers.values.forEach(HeadOverlayController::remove)
+        controllers.values.forEach(HeadOverlayController::removeImmediately)
         controllers.clear()
-        hideDeleteTarget()
+        restoring.clear()
+        closing.clear()
+        hideDeleteTarget(immediate = true)
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -95,24 +100,35 @@ class FloatingHeadService : Service() {
 
     private suspend fun syncHeads(heads: List<Tab>) {
         if (!Settings.canDrawOverlays(this)) {
-            controllers.values.forEach(HeadOverlayController::remove)
+            controllers.values.forEach(HeadOverlayController::removeImmediately)
             controllers.clear()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
 
-        val wanted = heads.associateBy(Tab::id)
+        val wanted = heads.distinctBy(Tab::id).associateBy(Tab::id)
         val removed = controllers.keys.filter { it !in wanted.keys }
-        removed.forEach { id -> controllers.remove(id)?.remove() }
+        removed.forEach { id ->
+            restoring.remove(id)
+            closing.remove(id)
+            controllers.remove(id)?.remove()
+        }
 
-        heads.forEachIndexed { index, tab ->
+        heads.distinctBy(Tab::id).forEachIndexed { index, tab ->
             val existing = controllers[tab.id]
             if (existing != null) {
                 existing.update(tab)
             } else {
                 val placement = app.container.headPlacements.get(tab.id)
-                val controller = createController(tab, placement, index)
-                controllers[tab.id] = controller
+                val created = createController(tab, placement, index) ?: return@forEachIndexed
+                val previous = controllers.putIfAbsent(tab.id, created)
+                if (previous != null) {
+                    // Defensive idempotency: if a second creation ever races in, keep only
+                    // the registered controller and immediately remove the duplicate view.
+                    created.removeImmediately()
+                    previous.update(tab)
+                }
             }
         }
 
@@ -126,9 +142,9 @@ class FloatingHeadService : Service() {
         tab: Tab,
         placement: HeadPlacement?,
         index: Int,
-    ): HeadOverlayController {
+    ): HeadOverlayController? {
         val area = safeArea()
-        val headSize = dp(56)
+        val headSize = dp(58)
         val local = placement?.let {
             HeadPlacementMath.denormalize(
                 NormalizedPoint(it.normalizedX, it.normalizedY),
@@ -137,45 +153,76 @@ class FloatingHeadService : Service() {
                 headSize,
                 headSize,
             )
-        } ?: HeadPlacementMath.clamp(
-            PixelPoint(
-                x = area.width - headSize - dp(12),
-                y = dp(80) + (index * dp(18)),
-            ),
+        } ?: defaultPlacement(index, area, headSize)
+
+        return runCatching {
+            HeadOverlayController(
+                context = this,
+                windowManager = windowManager,
+                initialTab = tab,
+                initialX = area.left + local.x,
+                initialY = area.top + local.y,
+                callbacks = callbacks,
+            )
+        }.getOrElse {
+            // Overlay permission can be revoked between the permission check and addView().
+            // Keep the logical HEAD state intact and stop safely instead of crashing.
+            if (!Settings.canDrawOverlays(this)) stopSelf()
+            null
+        }
+    }
+
+    private fun defaultPlacement(index: Int, area: SafeArea, headSize: Int): PixelPoint {
+        val gap = dp(10)
+        val topInset = dp(20)
+        val step = headSize + gap
+        val usableHeight = (area.height - topInset - dp(20)).coerceAtLeast(step)
+        val rows = (usableHeight / step).coerceAtLeast(1)
+        val row = index % rows
+        val column = index / rows
+        val x = area.width - headSize - dp(10) - column * step
+        val y = topInset + row * step
+        return HeadPlacementMath.clamp(
+            PixelPoint(x, y),
             area.width,
             area.height,
             headSize,
             headSize,
         )
-
-        return HeadOverlayController(
-            context = this,
-            windowManager = windowManager,
-            initialTab = tab,
-            initialX = area.left + local.x,
-            initialY = area.top + local.y,
-            callbacks = callbacks,
-        )
     }
 
     private val callbacks = object : HeadOverlayController.Callbacks {
         override fun onRestore(tab: Tab) {
+            if (!restoring.add(tab.id)) return
             serviceScope.launch {
-                app.runtime.sessions.activate(tab.id)
-                startActivity(
-                    Intent(this@FloatingHeadService, BrowserActivity::class.java)
-                        .putExtra(BrowserActivity.EXTRA_RESTORE_TAB_ID, tab.id.value)
-                        .addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                Intent.FLAG_ACTIVITY_SINGLE_TOP,
-                        ),
-                )
+                try {
+                    app.runtime.sessions.activate(tab.id)
+                    runCatching {
+                        startActivity(
+                            Intent(this@FloatingHeadService, BrowserActivity::class.java)
+                                .putExtra(BrowserActivity.EXTRA_RESTORE_TAB_ID, tab.id.value)
+                                .addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                                ),
+                        )
+                    }
+                } finally {
+                    restoring.remove(tab.id)
+                }
             }
         }
 
         override fun onClose(tab: Tab) {
-            serviceScope.launch { app.runtime.sessions.close(tab.id) }
+            if (!closing.add(tab.id)) return
+            serviceScope.launch {
+                try {
+                    app.runtime.sessions.close(tab.id)
+                } finally {
+                    closing.remove(tab.id)
+                }
+            }
         }
 
         override fun onPinToggle(tab: Tab) {
@@ -197,20 +244,22 @@ class FloatingHeadService : Service() {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_TEXT, tab.lastCommittedUrl)
             }
-            startActivity(
-                Intent.createChooser(share, "Share URL")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
+            runCatching {
+                startActivity(
+                    Intent.createChooser(share, "Share address")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
         }
 
         override fun onCopy(tab: Tab) {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("Bubble URL", tab.lastCommittedUrl))
-            Toast.makeText(this@FloatingHeadService, "URL copied", Toast.LENGTH_SHORT).show()
+            clipboard.setPrimaryClip(ClipData.newPlainText("Bubble address", tab.lastCommittedUrl))
+            Toast.makeText(this@FloatingHeadService, "Address copied", Toast.LENGTH_SHORT).show()
         }
 
         override fun onInfo(tab: Tab) {
-            val live = if (tab.keepRendererAlive) "keep live" else tab.residencyState.name.lowercase()
+            val live = if (tab.keepRendererAlive) "kept live" else tab.residencyState.name.lowercase()
             Toast.makeText(
                 this@FloatingHeadService,
                 "${tab.title}\n${tab.lastCommittedUrl}\n$live",
@@ -235,9 +284,9 @@ class FloatingHeadService : Service() {
             headSize: Int,
         ) {
             val close = isInsideDeleteTarget(rawX, rawY)
-            hideDeleteTarget()
+            hideDeleteTarget(immediate = false)
             if (close) {
-                serviceScope.launch { app.runtime.sessions.close(tab.id) }
+                onClose(tab)
             } else {
                 serviceScope.launch { persistPosition(tab.id, x, y, headSize) }
             }
@@ -284,7 +333,7 @@ class FloatingHeadService : Service() {
                 size,
                 size,
             )
-        } ?: PixelPoint(area.width - size - dp(12), dp(80))
+        } ?: PixelPoint(area.width - size - dp(10), dp(20))
         val clamped = HeadPlacementMath.clamp(local, area.width, area.height, size, size)
         controller.setPosition(area.left + clamped.x, area.top + clamped.y)
     }
@@ -296,39 +345,67 @@ class FloatingHeadService : Service() {
             textSize = 34f
             setTextColor(Color.WHITE)
             contentDescription = "Drag here to close tab"
+            alpha = 0f
+            scaleX = 0.75f
+            scaleY = 0.75f
         }.also { view ->
-            deleteTarget = view
             val params = WindowManager.LayoutParams(
-                dp(72),
-                dp(72),
+                dp(76),
+                dp(76),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                 android.graphics.PixelFormat.TRANSLUCENT,
             ).apply {
                 gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                y = dp(40)
+                y = dp(38)
             }
-            deleteTargetParams = params
-            runCatching { windowManager.addView(view, params) }
+            val added = runCatching { windowManager.addView(view, params) }.isSuccess
+            if (added) {
+                deleteTarget = view
+                view.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(140L)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            }
         }
         target.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(if (active) Color.rgb(155, 35, 35) else Color.rgb(60, 62, 68))
+            setColor(if (active) Color.rgb(171, 45, 54) else Color.rgb(62, 65, 74))
         }
+        val scale = if (active) 1.14f else 1f
+        target.animate()
+            .scaleX(scale)
+            .scaleY(scale)
+            .setDuration(90L)
+            .start()
     }
 
-    private fun hideDeleteTarget() {
-        deleteTarget?.let { runCatching { windowManager.removeViewImmediate(it) } }
+    private fun hideDeleteTarget(immediate: Boolean) {
+        val target = deleteTarget ?: return
         deleteTarget = null
-        deleteTargetParams = null
+        target.animate().cancel()
+        if (immediate) {
+            runCatching { windowManager.removeViewImmediate(target) }
+            return
+        }
+        target.animate()
+            .alpha(0f)
+            .scaleX(0.72f)
+            .scaleY(0.72f)
+            .setDuration(110L)
+            .withEndAction { runCatching { windowManager.removeViewImmediate(target) } }
+            .start()
     }
 
     private fun isInsideDeleteTarget(rawX: Float, rawY: Float): Boolean {
         val metrics = resources.displayMetrics
         val centerX = metrics.widthPixels / 2f
         val centerY = metrics.heightPixels - dp(76).toFloat()
-        val radius = dp(64).toFloat()
+        val radius = dp(68).toFloat()
         val dx = rawX - centerX
         val dy = rawY - centerY
         return dx * dx + dy * dy <= radius * radius
@@ -368,7 +445,7 @@ class FloatingHeadService : Service() {
                 "Floating browser heads",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Keeps your user-created floating browser tab heads available over other apps."
+                description = "Keeps your floating browser tab heads available over other apps."
             },
         )
     }
@@ -405,9 +482,18 @@ class FloatingHeadService : Service() {
         private const val CHANNEL_ID = "bubble_heads"
         private const val NOTIFICATION_ID = 4101
 
-        fun start(context: Context) {
-            val intent = Intent(context, FloatingHeadService::class.java)
-            context.startForegroundService(intent)
+        fun start(context: Context): Boolean {
+            if (!Settings.canDrawOverlays(context)) return false
+            return try {
+                context.startForegroundService(Intent(context, FloatingHeadService::class.java))
+                true
+            } catch (_: ForegroundServiceStartNotAllowedException) {
+                false
+            } catch (_: SecurityException) {
+                false
+            } catch (_: IllegalStateException) {
+                false
+            }
         }
     }
 }
