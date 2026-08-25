@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bubble</string>
+    <string name="overlay_permission_title">Allow Bubble to appear on top</string>
+    <string name="overlay_permission_message">Floating tab heads need Android's “display over other apps” permission.</string>
+</resources>
