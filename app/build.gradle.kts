@@ -71,13 +71,16 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     // Core 1.18+ moved its compile baseline above plain API 36. Core 1.17 is
     // the newest stable line whose documented baseline remains API 36.
+    //noinspection GradleDependency
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     // Lifecycle 2.11 requires compileSdk 37; keep the API-36-compatible 2.10 line.
+    //noinspection GradleDependency
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    //noinspection GradleDependency
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.room:room-runtime:2.8.4")
