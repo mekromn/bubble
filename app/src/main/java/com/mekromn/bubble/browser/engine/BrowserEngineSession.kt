@@ -3,6 +3,7 @@ package com.mekromn.bubble.browser.engine
 import android.graphics.Bitmap
 import android.webkit.WebView
 import com.mekromn.bubble.browser.session.TabId
+import com.mekromn.bubble.browser.session.UserAgentMode
 import kotlinx.coroutines.flow.StateFlow
 
 data class EnginePageState(
@@ -30,5 +31,6 @@ interface BrowserEngineSession {
     fun stop()
     fun goBack(): Boolean
     fun goForward(): Boolean
+    fun setUserAgentMode(mode: UserAgentMode)
     fun destroy()
 }

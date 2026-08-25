@@ -27,8 +27,14 @@ enum class ResidencyState {
 }
 
 enum class UserAgentMode {
+    /** Chrome-compatible mobile identity. This is Bubble's default. */
     MOBILE,
+
+    /** Chrome-compatible desktop identity for sites that hide desktop UI on mobile. */
     DESKTOP,
+
+    /** Unmodified Android System WebView user-agent and client-hint identity. */
+    SYSTEM,
 }
 
 data class Tab(

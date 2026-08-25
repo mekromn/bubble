@@ -57,6 +57,7 @@ class RendererPool(
         if (existing != null) {
             existing.lastUsed = now()
             existing.keepRendererAlive = tab.keepRendererAlive
+            existing.session.setUserAgentMode(tab.userAgentMode)
             activeTabId = tab.id
             mutableActiveWebView.value = existing.session.webView
             mutableActivePageState.value = existing.session.pageState.value
@@ -64,7 +65,7 @@ class RendererPool(
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
         }
 
-        val session = factory.create(tab.id, this)
+        val session = factory.create(tab, this)
         residents[tab.id] = Resident(session, now(), tab.keepRendererAlive)
         activeTabId = tab.id
         mutableActiveWebView.value = session.webView
@@ -82,11 +83,12 @@ class RendererPool(
         if (existing != null) {
             existing.lastUsed = now()
             existing.keepRendererAlive = tab.keepRendererAlive
+            existing.session.setUserAgentMode(tab.userAgentMode)
             trimWarmRenderers()
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
         }
 
-        val session = factory.create(tab.id, this)
+        val session = factory.create(tab, this)
         residents[tab.id] = Resident(session, now(), tab.keepRendererAlive)
         val restored = stateStore.restore(tab.id, session.webView)
         if (!restored) session.loadUrl(tab.lastCommittedUrl)
@@ -103,6 +105,11 @@ class RendererPool(
     fun deactivate(tabId: TabId) {
         checkMainThread()
         if (activeTabId == tabId) clearActiveProjection()
+    }
+
+    fun setUserAgentMode(tabId: TabId, mode: UserAgentMode) {
+        checkMainThread()
+        residents[tabId]?.session?.setUserAgentMode(mode)
     }
 
     suspend fun setKeepRendererAlive(tabId: TabId, enabled: Boolean) {

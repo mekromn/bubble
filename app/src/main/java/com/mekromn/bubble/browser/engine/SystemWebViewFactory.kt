@@ -12,32 +12,41 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import com.mekromn.bubble.BuildConfig
+import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
+import com.mekromn.bubble.browser.session.UserAgentMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 class SystemWebViewFactory(
     private val context: Context,
 ) {
-    fun create(tabId: TabId, events: BrowserEngineEvents): BrowserEngineSession {
+    fun create(tab: Tab, events: BrowserEngineEvents): BrowserEngineSession {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "WebView sessions must be created on the main thread"
         }
-        return SystemWebViewSession(context, tabId, events)
+        return SystemWebViewSession(context, tab, events)
     }
 }
 
 private class SystemWebViewSession(
-    context: Context,
-    override val tabId: TabId,
+    private val context: Context,
+    tab: Tab,
     private val events: BrowserEngineEvents,
 ) : BrowserEngineSession {
+    override val tabId: TabId = tab.id
     private val mutablePageState = MutableStateFlow(EnginePageState())
     override val pageState: StateFlow<EnginePageState> = mutablePageState
+    private val systemUserAgent = WebSettings.getDefaultUserAgent(context)
+    private val webViewPackageVersion = WebView.getCurrentWebViewPackage()?.versionName
 
     override val webView: WebView = WebView(context).apply webView@{
         configureSettings(settings)
+        applyUserAgent(settings, tab.userAgentMode)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -72,6 +81,63 @@ private class SystemWebViewSession(
         }
     }
 
+    override fun setUserAgentMode(mode: UserAgentMode) {
+        applyUserAgent(webView.settings, mode)
+    }
+
+    private fun applyUserAgent(settings: WebSettings, mode: UserAgentMode) {
+        settings.userAgentString = UserAgentPolicy.userAgentString(
+            systemUserAgent = systemUserAgent,
+            webViewPackageVersion = webViewPackageVersion,
+            mode = mode,
+        )
+
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+
+        val metadata = when (mode) {
+            UserAgentMode.SYSTEM -> UserAgentMetadata.Builder().build()
+            UserAgentMode.MOBILE -> chromeMetadata(mobile = true)
+            UserAgentMode.DESKTOP -> chromeMetadata(mobile = false)
+        }
+        WebSettingsCompat.setUserAgentMetadata(settings, metadata)
+    }
+
+    private fun chromeMetadata(mobile: Boolean): UserAgentMetadata {
+        val version = UserAgentPolicy.chromeVersion(systemUserAgent, webViewPackageVersion)
+        val brands = listOf(
+            brand("Not_A Brand", "99", "99.0.0.0"),
+            brand("Chromium", version.major, version.full),
+            brand("Google Chrome", version.major, version.full),
+        )
+        val builder = UserAgentMetadata.Builder()
+            .setBrandVersionList(brands)
+            .setFullVersion(version.full)
+            .setMobile(mobile)
+            .setPlatform(if (mobile) "Android" else "Windows")
+            .setPlatformVersion(if (mobile) Build.VERSION.RELEASE else "10.0.0")
+            .setModel(if (mobile) Build.MODEL else "")
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA_FORM_FACTORS)) {
+            builder.setFormFactors(
+                listOf(
+                    if (mobile) {
+                        UserAgentMetadata.FORM_FACTOR_MOBILE
+                    } else {
+                        UserAgentMetadata.FORM_FACTOR_DESKTOP
+                    },
+                ),
+            )
+        }
+        return builder.build()
+    }
+
+    private fun brand(brand: String, major: String, full: String): UserAgentMetadata.BrandVersion =
+        UserAgentMetadata.BrandVersion.Builder()
+            .setBrand(brand)
+            .setMajorVersion(major)
+            .setFullVersion(full)
+            .build()
+
     private fun createWebViewClient(): WebViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val scheme = request.url.scheme?.lowercase()
@@ -98,7 +164,6 @@ private class SystemWebViewSession(
         }
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-            // A browser may display a certificate error UI, but Bubble never bypasses TLS failures.
             handler.cancel()
             publish(mutablePageState.value.copy(loading = false))
         }
