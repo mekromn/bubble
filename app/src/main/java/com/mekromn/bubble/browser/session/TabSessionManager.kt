@@ -3,8 +3,15 @@ package com.mekromn.bubble.browser.session
 import com.mekromn.bubble.browser.engine.EnginePageState
 import com.mekromn.bubble.browser.navigation.NavigationResolver
 import com.mekromn.bubble.browser.navigation.ResolvedNavigation
+import com.mekromn.bubble.data.db.HeadPlacement
+import com.mekromn.bubble.data.db.HeadPlacementRepository
+import com.mekromn.bubble.data.db.SavedSessionRepository
+import com.mekromn.bubble.data.db.SavedSessionRestoreMode
+import com.mekromn.bubble.data.db.SavedSessionSnapshot
+import com.mekromn.bubble.data.db.SavedSessionTabSnapshot
 import com.mekromn.bubble.data.db.TabRepository
 import com.mekromn.bubble.data.settings.BrowserSettingsRepository
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +30,8 @@ data class BrowserSessionState(
 class TabSessionManager(
     private val repository: TabRepository,
     private val settings: BrowserSettingsRepository,
+    private val headPlacements: HeadPlacementRepository,
+    private val savedSessionRepository: SavedSessionRepository,
     private val rendererPool: RendererPool,
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -30,6 +39,7 @@ class TabSessionManager(
     private val mutex = Mutex()
     private val mutableState = MutableStateFlow(BrowserSessionState())
     val state: StateFlow<BrowserSessionState> = mutableState
+    val savedSessions = savedSessionRepository.observeSummaries()
 
     init {
         rendererPool.listener = this
@@ -56,14 +66,18 @@ class TabSessionManager(
             val now = clock()
             val current = mutableState.value.tabs
             val demoted = current.map { tab ->
-                if (tab.selected) tab.copy(
-                    selected = false,
-                    residencyState = if (tab.residencyState == ResidencyState.ACTIVE) {
-                        ResidencyState.WARM
-                    } else {
-                        tab.residencyState
-                    },
-                ) else tab
+                if (tab.selected) {
+                    tab.copy(
+                        selected = false,
+                        residencyState = if (tab.residencyState == ResidencyState.ACTIVE) {
+                            ResidencyState.WARM
+                        } else {
+                            tab.residencyState
+                        },
+                    )
+                } else {
+                    tab
+                }
             }
             val newTab = newTabRecord(
                 sortIndex = (demoted.maxOfOrNull(Tab::sortIndex) ?: -1L) + 1L,
@@ -147,12 +161,16 @@ class TabSessionManager(
                             lastActivatedAt = now,
                         )
                     }
-                    tab.selected -> tab.copy(
-                        selected = false,
-                        residencyState = if (tab.residencyState == ResidencyState.ACTIVE) {
-                            ResidencyState.WARM
-                        } else tab.residencyState,
-                    )
+                    tab.selected -> {
+                        tab.copy(
+                            selected = false,
+                            residencyState = if (tab.residencyState == ResidencyState.ACTIVE) {
+                                ResidencyState.WARM
+                            } else {
+                                tab.residencyState
+                            },
+                        )
+                    }
                     else -> tab
                 }
             }
@@ -250,8 +268,15 @@ class TabSessionManager(
 
             if (enabled && source.presentationState == PresentationState.HEAD) {
                 if (!rendererPool.hasLiveRenderer(tabId)) rendererPool.warm(updatedTab)
-                updatedTab = updatedTab.copy(residencyState = ResidencyState.WARM)
-            } else if (!enabled && source.presentationState == PresentationState.HEAD && rendererPool.hasLiveRenderer(tabId)) {
+                updatedTab = TabStateMachine.reduce(
+                    updatedTab.copy(residencyState = ResidencyState.RECOVERING),
+                    TabEvent.SetResidency(ResidencyState.WARM),
+                )
+            } else if (
+                !enabled &&
+                source.presentationState == PresentationState.HEAD &&
+                rendererPool.hasLiveRenderer(tabId)
+            ) {
                 val saved = rendererPool.saveAndRelease(tabId)
                 updatedTab = updatedTab.copy(
                     residencyState = if (saved) ResidencyState.SAVED else ResidencyState.HIBERNATED,
@@ -262,6 +287,151 @@ class TabSessionManager(
             repository.applyChanges(listOf(updatedTab))
             publish(updated)
         }
+    }
+
+    suspend fun setUserAgentMode(tabId: TabId, mode: UserAgentMode) {
+        mutex.withLock {
+            val tabs = mutableState.value.tabs
+            val index = tabs.indexOfFirst { it.id == tabId }
+            if (index < 0) return@withLock
+            val source = tabs[index]
+            if (source.userAgentMode == mode) return@withLock
+            val updatedTab = source.copy(userAgentMode = mode)
+            val updated = tabs.toMutableList().also { it[index] = updatedTab }
+            repository.applyChanges(listOf(updatedTab))
+            publish(updated)
+            rendererPool.setUserAgentMode(tabId, mode)
+        }
+    }
+
+    suspend fun saveCurrentSession(name: String): String {
+        return mutex.withLock {
+            val now = clock()
+            val id = UUID.randomUUID().toString()
+            val normalizedName = name.trim().take(80).ifBlank { "Saved session" }
+            val snapshots = mutableListOf<SavedSessionTabSnapshot>()
+            for (tab in mutableState.value.tabs.filterNot(Tab::isPrivate).sortedBy(Tab::sortIndex)) {
+                val placement = if (tab.presentationState == PresentationState.HEAD) {
+                    headPlacements.get(tab.id)
+                } else {
+                    null
+                }
+                snapshots += SavedSessionTabSnapshot(
+                    lastCommittedUrl = tab.lastCommittedUrl,
+                    title = tab.title,
+                    presentationState = tab.presentationState,
+                    pinned = tab.pinned,
+                    keepRendererAlive = tab.keepRendererAlive,
+                    userAgentMode = tab.userAgentMode,
+                    zoomPercent = tab.zoomPercent,
+                    groupKey = tab.groupId,
+                    normalizedHeadX = placement?.normalizedX,
+                    normalizedHeadY = placement?.normalizedY,
+                )
+            }
+            savedSessionRepository.save(
+                SavedSessionSnapshot(
+                    id = id,
+                    name = normalizedName,
+                    createdAt = now,
+                    updatedAt = now,
+                    tabs = snapshots,
+                ),
+            )
+            id
+        }
+    }
+
+    suspend fun restoreSavedSession(id: String, mode: SavedSessionRestoreMode): Boolean {
+        val snapshot = savedSessionRepository.load(id) ?: return false
+        return mutex.withLock {
+            val current = mutableState.value.tabs
+            val replacing = mode == SavedSessionRestoreMode.REPLACE
+            if (replacing) {
+                for (tab in current) {
+                    rendererPool.release(tab.id, discardSavedState = true)
+                }
+            }
+
+            val base = if (replacing) mutableListOf() else current.toMutableList()
+            val existingKeys = if (mode == SavedSessionRestoreMode.MERGE) {
+                base.mapTo(mutableSetOf()) { tab ->
+                    tab.lastCommittedUrl.trim() to tab.presentationState
+                }
+            } else {
+                mutableSetOf()
+            }
+
+            val groupRemap = mutableMapOf<String, String>()
+            val restoredPairs = mutableListOf<Pair<Tab, SavedSessionTabSnapshot>>()
+            var nextSort = (base.maxOfOrNull(Tab::sortIndex) ?: -1L) + 1L
+            val now = clock()
+
+            for ((offset, savedTab) in snapshot.tabs.withIndex()) {
+                val key = savedTab.lastCommittedUrl.trim() to savedTab.presentationState
+                if (mode == SavedSessionRestoreMode.MERGE && key in existingKeys) continue
+                existingKeys += key
+                val groupId = savedTab.groupKey?.let { old ->
+                    groupRemap.getOrPut(old) { UUID.randomUUID().toString() }
+                }
+                val restored = Tab(
+                    id = TabId.newId(),
+                    createdAt = now + offset,
+                    lastActivatedAt = now,
+                    sortIndex = nextSort++,
+                    lastCommittedUrl = savedTab.lastCommittedUrl,
+                    title = savedTab.title,
+                    presentationState = savedTab.presentationState,
+                    residencyState = if (
+                        savedTab.presentationState == PresentationState.HEAD && savedTab.keepRendererAlive
+                    ) {
+                        ResidencyState.RECOVERING
+                    } else {
+                        ResidencyState.HIBERNATED
+                    },
+                    pinned = savedTab.pinned,
+                    keepRendererAlive = savedTab.keepRendererAlive,
+                    userAgentMode = savedTab.userAgentMode,
+                    zoomPercent = savedTab.zoomPercent,
+                    groupId = groupId,
+                    selected = false,
+                )
+                base += restored
+                restoredPairs += restored to savedTab
+            }
+
+            var updated = ensureSelectedBrowserTab(base)
+            val deletes = if (replacing) current.map(Tab::id) else emptyList()
+            repository.applyChanges(updated, deletes = deletes)
+
+            for ((restored, savedTab) in restoredPairs) {
+                if (
+                    restored.presentationState == PresentationState.HEAD &&
+                    savedTab.normalizedHeadX != null &&
+                    savedTab.normalizedHeadY != null
+                ) {
+                    headPlacements.save(
+                        HeadPlacement(
+                            tabId = restored.id,
+                            normalizedX = savedTab.normalizedHeadX,
+                            normalizedY = savedTab.normalizedHeadY,
+                            displayId = null,
+                            updatedAt = now,
+                        ),
+                    )
+                }
+            }
+
+            publish(updated)
+            activateSelectedRenderer(updated)
+            updated = warmExplicitKeepAliveHeads(updated)
+            publish(updated)
+            true
+        }
+    }
+
+    suspend fun deleteSavedSession(id: String) {
+        savedSessionRepository.delete(id)
     }
 
     suspend fun close(tabId: TabId) {
@@ -368,7 +538,10 @@ class TabSessionManager(
                     }
                     recovering.keepRendererAlive && recovering.presentationState == PresentationState.HEAD -> {
                         rendererPool.warm(recovering)
-                        val warm = recovering.copy(residencyState = ResidencyState.WARM)
+                        val warm = TabStateMachine.reduce(
+                            recovering,
+                            TabEvent.SetResidency(ResidencyState.WARM),
+                        )
                         updated[index] = warm
                         repository.applyChanges(listOf(warm))
                         publish(updated)
@@ -398,17 +571,40 @@ class TabSessionManager(
     }
 
     private suspend fun activateSelectedRenderer(tabs: List<Tab>) {
-        val selected = tabs.firstOrNull { it.selected && it.presentationState == PresentationState.BROWSER } ?: return
+        val selected = tabs.firstOrNull {
+            it.selected && it.presentationState == PresentationState.BROWSER
+        } ?: return
         rendererPool.activate(selected)
-        markRecoveredLocked(selected.id)
+        if (selected.residencyState == ResidencyState.RECOVERING) {
+            markRecoveredLocked(selected.id)
+        }
     }
 
-    private suspend fun warmExplicitKeepAliveHeads(tabs: List<Tab>) {
-        tabs.asSequence()
-            .filter { it.presentationState == PresentationState.HEAD && it.keepRendererAlive }
-            .forEach { tab ->
-                rendererPool.warm(tab)
+    private suspend fun warmExplicitKeepAliveHeads(tabs: List<Tab>): List<Tab> {
+        val mutable = tabs.toMutableList()
+        var changed = false
+        for (index in mutable.indices) {
+            val tab = mutable[index]
+            if (tab.presentationState != PresentationState.HEAD || !tab.keepRendererAlive) continue
+            rendererPool.warm(tab)
+            val warm = if (tab.residencyState == ResidencyState.WARM) {
+                tab
+            } else {
+                val recovering = if (tab.residencyState == ResidencyState.RECOVERING) {
+                    tab
+                } else {
+                    tab.copy(residencyState = ResidencyState.RECOVERING)
+                }
+                TabStateMachine.reduce(recovering, TabEvent.SetResidency(ResidencyState.WARM))
             }
+            if (warm != tab) {
+                mutable[index] = warm
+                repository.applyChanges(listOf(warm))
+                changed = true
+            }
+        }
+        if (changed) publish(mutable)
+        return mutable
     }
 
     private suspend fun markRecoveredLocked(tabId: TabId) {
@@ -426,6 +622,33 @@ class TabSessionManager(
         publish(updated)
     }
 
+    private fun ensureSelectedBrowserTab(input: MutableList<Tab>): List<Tab> {
+        val browserTabs = input.filter { it.presentationState == PresentationState.BROWSER }
+        var selectedId = browserTabs.firstOrNull(Tab::selected)?.id
+            ?: browserTabs.maxByOrNull(Tab::lastActivatedAt)?.id
+
+        if (selectedId == null) {
+            val newTab = newTabRecord(
+                sortIndex = (input.maxOfOrNull(Tab::sortIndex) ?: -1L) + 1L,
+                selected = true,
+            ).copy(residencyState = ResidencyState.RECOVERING)
+            input += newTab
+            selectedId = newTab.id
+        }
+
+        return input.map { tab ->
+            val selected = tab.id == selectedId
+            when {
+                selected && rendererPool.hasLiveRenderer(tab.id) -> {
+                    tab.copy(selected = true, residencyState = ResidencyState.ACTIVE)
+                }
+                selected -> tab.copy(selected = true, residencyState = ResidencyState.RECOVERING)
+                tab.selected -> tab.copy(selected = false)
+                else -> tab
+            }
+        }
+    }
+
     private fun reconstructAfterProcessStart(loaded: List<Tab>): List<Tab> {
         val browserTabs = loaded.filter { it.presentationState == PresentationState.BROWSER }
         val selected = browserTabs.filter(Tab::selected).maxByOrNull(Tab::lastActivatedAt)
@@ -434,7 +657,9 @@ class TabSessionManager(
             val selectedNow = selected != null && tab.id == selected.id
             val residency = when {
                 selectedNow -> ResidencyState.RECOVERING
-                tab.presentationState == PresentationState.HEAD && tab.keepRendererAlive -> ResidencyState.RECOVERING
+                tab.presentationState == PresentationState.HEAD && tab.keepRendererAlive -> {
+                    ResidencyState.RECOVERING
+                }
                 tab.residencyState == ResidencyState.SAVED -> ResidencyState.SAVED
                 else -> ResidencyState.HIBERNATED
             }
@@ -455,15 +680,17 @@ class TabSessionManager(
         selected: Boolean,
         url: String = NavigationResolver.NEW_TAB_URL,
         now: Long = clock(),
-    ): Tab = Tab(
-        id = TabId.newId(),
-        createdAt = now,
-        lastActivatedAt = now,
-        sortIndex = sortIndex,
-        lastCommittedUrl = url,
-        selected = selected,
-        residencyState = if (selected) ResidencyState.RECOVERING else ResidencyState.HIBERNATED,
-    )
+    ): Tab {
+        return Tab(
+            id = TabId.newId(),
+            createdAt = now,
+            lastActivatedAt = now,
+            sortIndex = sortIndex,
+            lastCommittedUrl = url,
+            selected = selected,
+            residencyState = if (selected) ResidencyState.RECOVERING else ResidencyState.HIBERNATED,
+        )
+    }
 
     private fun publish(tabs: List<Tab>) {
         mutableState.value = BrowserSessionState(
