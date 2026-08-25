@@ -6,6 +6,8 @@ import android.net.http.SslError
 import android.os.Build
 import android.os.Looper
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -19,6 +21,8 @@ import com.mekromn.bubble.BuildConfig
 import com.mekromn.bubble.browser.downloads.SystemDownloadHandler
 import com.mekromn.bubble.browser.navigation.ExternalNavigationPolicy
 import com.mekromn.bubble.browser.navigation.SystemExternalNavigator
+import com.mekromn.bubble.browser.requests.BrowserFileChooserBroker
+import com.mekromn.bubble.browser.requests.BrowserPermissionBroker
 import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.browser.session.UserAgentMode
@@ -76,6 +80,7 @@ private class SystemWebViewSession(
         javaScriptEnabled = true
         domStorageEnabled = true
         databaseEnabled = true
+        setGeolocationEnabled(true)
         allowFileAccess = false
         allowContentAccess = false
         allowFileAccessFromFileURLs = false
@@ -104,7 +109,6 @@ private class SystemWebViewSession(
             webViewPackageVersion = webViewPackageVersion,
             mode = mode,
         )
-
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
         val metadata = when (mode) {
             UserAgentMode.SYSTEM -> UserAgentMetadata.Builder().build()
@@ -128,7 +132,6 @@ private class SystemWebViewSession(
             .setPlatform(if (mobile) "Android" else "Windows")
             .setPlatformVersion(if (mobile) Build.VERSION.RELEASE else "10.0.0")
             .setModel(if (mobile) Build.MODEL else "")
-
         if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA_FORM_FACTORS)) {
             builder.setFormFactors(
                 listOf(
@@ -200,6 +203,31 @@ private class SystemWebViewSession(
 
         override fun onReceivedIcon(view: WebView, icon: Bitmap?) {
             publish(mutablePageState.value.copy(favicon = icon))
+        }
+
+        override fun onShowFileChooser(
+            webView: WebView,
+            filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>,
+            fileChooserParams: FileChooserParams,
+        ): Boolean = BrowserFileChooserBroker.launch(
+            appContext,
+            filePathCallback,
+            fileChooserParams,
+        )
+
+        override fun onPermissionRequest(request: PermissionRequest) {
+            BrowserPermissionBroker.requestMedia(appContext, request)
+        }
+
+        override fun onPermissionRequestCanceled(request: PermissionRequest) {
+            BrowserPermissionBroker.cancel(request)
+        }
+
+        override fun onGeolocationPermissionsShowPrompt(
+            origin: String,
+            callback: GeolocationPermissions.Callback,
+        ) {
+            BrowserPermissionBroker.requestGeolocation(appContext, origin, callback)
         }
     }
 
