@@ -4,12 +4,13 @@ This repository is specification-first. Before writing or modifying implementati
 
 1. `CODEX.md`
 2. `docs/PRODUCT_SPEC.md`
-3. `docs/UX_SPEC.md`
-4. `docs/ARCHITECTURE.md`
-5. `docs/PLATFORM_SECURITY.md`
-6. `docs/TEST_RELEASE.md`
-7. `docs/ROADMAP.md`
-8. `docs/IMPLEMENTATION_ISSUES.md`
+3. `docs/FEATURE_ADDENDUM.md`
+4. `docs/UX_SPEC.md`
+5. `docs/ARCHITECTURE.md`
+6. `docs/PLATFORM_SECURITY.md`
+7. `docs/TEST_RELEASE.md`
+8. `docs/ROADMAP.md`
+9. `docs/IMPLEMENTATION_ISSUES.md`
 
 The authoritative implementation epic is GitHub issue #1. Issues #2 through #9 are mirrored in `docs/IMPLEMENTATION_ISSUES.md` so implementation does not depend on live GitHub access.
 
@@ -23,12 +24,16 @@ The old `r01-floating-head-core` branch is a provisional abandoned scaffold and 
 - Free head placement is the default; snapping and stacking are optional and must not be forced.
 - Every head is keyed to a stable logical `TabId` and must restore that exact tab.
 - Use one compliant overlay foreground service for visible heads, not one service per head.
-- Do not keep a WebView alive merely because its tab is represented by a head.
+- Do not keep a WebView alive merely because its tab is represented by a head; only the explicit per-tab **Keep live** preference requests persistent warm residency, and Android process/renderer reclamation must still be handled honestly.
+- `Pin` and `Keep live` are separate semantics.
 - Bubble is a real browser and must support normal `http://` navigation; show insecure-page UI instead of globally blocking cleartext URLs.
 - Never bypass TLS errors.
 - Never auto-grant arbitrary WebView permission requests.
 - Never expose unrestricted JavaScript interfaces to arbitrary internet content.
 - Never fake private mode; use true WebView profile isolation when supported or disable the feature.
+- Chrome-compatible Mobile is the default per-tab UA mode. Keep Chrome Mobile / Chrome Desktop / System WebView switching durable per tab, and never claim WebView is perfectly indistinguishable from standalone Chrome.
+- Support Android HTTP/HTTPS `VIEW`, normal URL sharing, and an explicit **Open in Bubble head** share target through the same durable session pipeline.
+- Support reusable named saved sessions/workspaces. Private tabs must never be included in durable saved-session snapshots. Restore must create fresh `TabId`s.
 - Never commit signing keys, passwords, tokens, or secrets.
 - Do not call a user-facing/overlay phase complete without runtime validation.
 - Production application ID/namespace is `com.mekromn.bubble` unless the specification is deliberately amended.
