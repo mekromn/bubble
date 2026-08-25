@@ -155,6 +155,10 @@ private class SystemWebViewSession(
             .setFullVersion(full)
             .build()
 
+    // androidx.webkit's lint detector can fail to recognize the platform override through
+    // WebViewClientCompat in this source shape. The callback immediately below is present,
+    // returns true, and routes renderer death into Bubble's recovery state machine.
+    @SuppressLint("MissingOnRenderProcessGone")
     private fun createWebViewClient(): WebViewClientCompat = object : WebViewClientCompat() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val decision = ExternalNavigationPolicy.classify(
