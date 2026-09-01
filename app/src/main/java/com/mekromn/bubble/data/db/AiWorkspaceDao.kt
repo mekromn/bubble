@@ -31,4 +31,10 @@ interface AiWorkspaceDao {
 
     @Query("DELETE FROM ai_workspaces WHERE workspaceId = :workspaceId")
     suspend fun deleteWorkspace(workspaceId: String)
+
+    @Query("SELECT * FROM ai_workspace_placements WHERE workspaceId = :workspaceId LIMIT 1")
+    suspend fun getPlacement(workspaceId: String): AiWorkspacePlacementEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertPlacement(placement: AiWorkspacePlacementEntity)
 }

@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mekromn.bubble.BubbleApplication
+import com.mekromn.bubble.ai.chatgpt.ChatGptAdapter
+import com.mekromn.bubble.ai.model.WorkspaceId
 import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.browser.session.UserAgentMode
 import com.mekromn.bubble.data.db.SavedSessionRestoreMode
@@ -32,8 +34,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { sessionManager.navigate(input) }
     }
 
+    /** The primary plus action opens a fresh ChatGPT surface; the omnibox still allows any URL. */
     fun createTab() {
-        viewModelScope.launch { sessionManager.createTab() }
+        viewModelScope.launch { sessionManager.createTab(ChatGptAdapter.TRUSTED_ORIGIN + "/") }
     }
 
     fun duplicateTab(tabId: TabId) {
@@ -55,9 +58,37 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { sessionManager.moveTab(tabId, newIndex) }
     }
 
+    /**
+     * The browser shell keeps one minimize affordance. Ordinary web tabs retain the legacy
+     * one-tab head behavior. AI-chat tabs collapse the entire provider workspace so the overlay
+     * service projects one aggregate workspace bubble instead.
+     */
     fun minimizeActiveToHead(onComplete: (TabId?) -> Unit) {
         viewModelScope.launch {
-            onComplete(sessionManager.minimizeSelectedToHead())
+            val selected = sessionManager.state.value.tabs.firstOrNull { it.selected }
+            if (selected == null) {
+                onComplete(null)
+                return@launch
+            }
+            val workspace = aiWorkspaces.workspaceForTab(selected.id)
+            if (workspace != null) {
+                aiWorkspaces.setLastActive(selected.id)
+                aiWorkspaces.setCollapsed(workspace.id, true)
+                onComplete(selected.id)
+            } else {
+                onComplete(sessionManager.minimizeSelectedToHead())
+            }
+        }
+    }
+
+    fun setWorkspaceCollapsed(
+        workspaceId: WorkspaceId,
+        collapsed: Boolean,
+        onComplete: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            aiWorkspaces.setCollapsed(workspaceId, collapsed)
+            onComplete()
         }
     }
 
@@ -70,9 +101,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun saveCurrentSession(name: String, onSaved: (String) -> Unit = {}) {
-        viewModelScope.launch {
-            onSaved(sessionManager.saveCurrentSession(name))
-        }
+        viewModelScope.launch { onSaved(sessionManager.saveCurrentSession(name)) }
     }
 
     fun restoreSavedSession(
@@ -80,9 +109,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         mode: SavedSessionRestoreMode,
         onRestored: (Boolean) -> Unit = {},
     ) {
-        viewModelScope.launch {
-            onRestored(sessionManager.restoreSavedSession(id, mode))
-        }
+        viewModelScope.launch { onRestored(sessionManager.restoreSavedSession(id, mode)) }
     }
 
     fun deleteSavedSession(id: String) {

@@ -17,8 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ClosedTabEntity::class,
         AiWorkspaceEntity::class,
         AiWorkspaceTabEntity::class,
+        AiWorkspacePlacementEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(TabTypeConverters::class)
@@ -34,11 +35,8 @@ abstract class BubbleDatabase : RoomDatabase() {
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    "ALTER TABLE tabs ADD COLUMN keepRendererAlive INTEGER NOT NULL DEFAULT 0",
-                )
-                db.execSQL(
-                    """
+                db.execSQL("ALTER TABLE tabs ADD COLUMN keepRendererAlive INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS head_placements (
                         tabId TEXT NOT NULL,
                         normalizedX REAL NOT NULL,
@@ -48,18 +46,14 @@ abstract class BubbleDatabase : RoomDatabase() {
                         PRIMARY KEY(tabId),
                         FOREIGN KEY(tabId) REFERENCES tabs(id) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_head_placements_updatedAt ON head_placements(updatedAt)",
-                )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_head_placements_updatedAt ON head_placements(updatedAt)")
             }
         }
 
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS saved_sessions (
                         id TEXT NOT NULL,
                         name TEXT NOT NULL,
@@ -67,13 +61,9 @@ abstract class BubbleDatabase : RoomDatabase() {
                         updatedAt INTEGER NOT NULL,
                         PRIMARY KEY(id)
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_saved_sessions_updatedAt ON saved_sessions(updatedAt)",
-                )
-                db.execSQL(
-                    """
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_saved_sessions_updatedAt ON saved_sessions(updatedAt)")
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS saved_session_tabs (
                         sessionId TEXT NOT NULL,
                         position INTEGER NOT NULL,
@@ -90,18 +80,14 @@ abstract class BubbleDatabase : RoomDatabase() {
                         PRIMARY KEY(sessionId, position),
                         FOREIGN KEY(sessionId) REFERENCES saved_sessions(id) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_saved_session_tabs_sessionId ON saved_session_tabs(sessionId)",
-                )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_saved_session_tabs_sessionId ON saved_session_tabs(sessionId)")
             }
         }
 
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS history_entries (
                         url TEXT NOT NULL,
                         title TEXT NOT NULL,
@@ -109,13 +95,9 @@ abstract class BubbleDatabase : RoomDatabase() {
                         visitCount INTEGER NOT NULL,
                         PRIMARY KEY(url)
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_history_entries_lastVisitedAt ON history_entries(lastVisitedAt)",
-                )
-                db.execSQL(
-                    """
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_history_entries_lastVisitedAt ON history_entries(lastVisitedAt)")
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS bookmarks (
                         url TEXT NOT NULL,
                         title TEXT NOT NULL,
@@ -123,16 +105,10 @@ abstract class BubbleDatabase : RoomDatabase() {
                         updatedAt INTEGER NOT NULL,
                         PRIMARY KEY(url)
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_bookmarks_createdAt ON bookmarks(createdAt)",
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_bookmarks_updatedAt ON bookmarks(updatedAt)",
-                )
-                db.execSQL(
-                    """
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bookmarks_createdAt ON bookmarks(createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bookmarks_updatedAt ON bookmarks(updatedAt)")
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS closed_tabs (
                         id TEXT NOT NULL,
                         originalTabId TEXT NOT NULL,
@@ -147,18 +123,14 @@ abstract class BubbleDatabase : RoomDatabase() {
                         groupId TEXT,
                         PRIMARY KEY(id)
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_closed_tabs_closedAt ON closed_tabs(closedAt)",
-                )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_closed_tabs_closedAt ON closed_tabs(closedAt)")
             }
         }
 
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS ai_workspaces (
                         workspaceId TEXT NOT NULL,
                         provider TEXT NOT NULL,
@@ -171,16 +143,10 @@ abstract class BubbleDatabase : RoomDatabase() {
                         updatedAt INTEGER NOT NULL,
                         PRIMARY KEY(workspaceId)
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS index_ai_workspaces_provider_profileId ON ai_workspaces(provider, profileId)",
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_ai_workspaces_updatedAt ON ai_workspaces(updatedAt)",
-                )
-                db.execSQL(
-                    """
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_ai_workspaces_provider_profileId ON ai_workspaces(provider, profileId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_ai_workspaces_updatedAt ON ai_workspaces(updatedAt)")
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS ai_workspace_tabs (
                         tabId TEXT NOT NULL,
                         workspaceId TEXT NOT NULL,
@@ -194,14 +160,26 @@ abstract class BubbleDatabase : RoomDatabase() {
                         FOREIGN KEY(workspaceId) REFERENCES ai_workspaces(workspaceId) ON UPDATE NO ACTION ON DELETE CASCADE,
                         FOREIGN KEY(tabId) REFERENCES tabs(id) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
-                    """.trimIndent(),
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_ai_workspace_tabs_workspaceId ON ai_workspace_tabs(workspaceId)",
-                )
-                db.execSQL(
-                    "CREATE INDEX IF NOT EXISTS index_ai_workspace_tabs_state ON ai_workspace_tabs(state)",
-                )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_ai_workspace_tabs_workspaceId ON ai_workspace_tabs(workspaceId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_ai_workspace_tabs_state ON ai_workspace_tabs(state)")
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS ai_workspace_placements (
+                        workspaceId TEXT NOT NULL,
+                        normalizedX REAL NOT NULL,
+                        normalizedY REAL NOT NULL,
+                        displayId INTEGER,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(workspaceId),
+                        FOREIGN KEY(workspaceId) REFERENCES ai_workspaces(workspaceId) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_ai_workspace_placements_updatedAt ON ai_workspace_placements(updatedAt)")
             }
         }
     }

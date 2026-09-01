@@ -14,6 +14,8 @@ interface AiWorkspaceRepository {
     suspend fun upsertMember(member: AiChatTabStatus)
     suspend fun deleteMember(tabId: TabId)
     suspend fun deleteWorkspace(workspaceId: String)
+    suspend fun getPlacement(workspaceId: String): AiWorkspacePlacement?
+    suspend fun savePlacement(placement: AiWorkspacePlacement)
 }
 
 class RoomAiWorkspaceRepository(
@@ -23,10 +25,7 @@ class RoomAiWorkspaceRepository(
         dao.observeWorkspaces(),
         dao.observeMembers(),
     ) { workspaces, members ->
-        AiWorkspaceState(
-            initialized = true,
-            workspaces = workspaces.map { it.toDomain(members) },
-        )
+        AiWorkspaceState(initialized = true, workspaces = workspaces.map { it.toDomain(members) })
     }
 
     override suspend fun loadState(): AiWorkspaceState = AiWorkspaceState(
@@ -51,5 +50,12 @@ class RoomAiWorkspaceRepository(
 
     override suspend fun deleteWorkspace(workspaceId: String) {
         dao.deleteWorkspace(workspaceId)
+    }
+
+    override suspend fun getPlacement(workspaceId: String): AiWorkspacePlacement? =
+        dao.getPlacement(workspaceId)?.toDomain()
+
+    override suspend fun savePlacement(placement: AiWorkspacePlacement) {
+        dao.upsertPlacement(placement.toEntity())
     }
 }

@@ -23,6 +23,7 @@ class AppContainer(context: Context) {
             BubbleDatabase.MIGRATION_2_3,
             BubbleDatabase.MIGRATION_3_4,
             BubbleDatabase.MIGRATION_4_5,
+            BubbleDatabase.MIGRATION_5_6,
         ).build()
     }
 

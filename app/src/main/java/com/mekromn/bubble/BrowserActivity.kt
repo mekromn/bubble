@@ -29,19 +29,19 @@ import kotlinx.coroutines.launch
 
 class BrowserActivity : ComponentActivity() {
     private var notificationPermissionRequestedThisActivity = false
+    private var lastCollapsedWorkspaceIds: Set<String>? = null
+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) {
-            (application as? BubbleApplication)?.runtime?.replyNotifications?.refresh()
-        }
+        if (granted) (application as? BubbleApplication)?.runtime?.replyNotifications?.refresh()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (savedInstanceState == null) dispatchIncomingIntent(intent)
-        observeAiWorkspaceForNotificationPermission()
+        observeAiWorkspaceState()
         setContent {
             BubbleTheme {
                 Box(
@@ -72,6 +72,9 @@ class BrowserActivity : ComponentActivity() {
             incoming.getStringExtra(EXTRA_RESTORE_TAB_ID)?.let { rawId ->
                 runCatching {
                     val tabId = TabId(rawId)
+                    app.runtime.aiWorkspaces.workspaceForTab(tabId)?.let { workspace ->
+                        app.runtime.aiWorkspaces.setCollapsed(workspace.id, false)
+                    }
                     sessions.activate(tabId)
                     app.runtime.aiWorkspaces.markRead(tabId)
                 }
@@ -83,28 +86,43 @@ class BrowserActivity : ComponentActivity() {
                     val scheme = runCatching { value.toUri().scheme }.getOrNull()
                     scheme.equals("http", true) || scheme.equals("https", true)
                 }
-
                 Intent.ACTION_SEND -> SharedUrlExtractor.extract(
                     incoming.getCharSequenceExtra(Intent.EXTRA_TEXT),
                 )
-
                 else -> null
             }
             if (url != null) sessions.createTab(url)
         }
     }
 
-    private fun observeAiWorkspaceForNotificationPermission() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    private fun observeAiWorkspaceState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 val app = application as BubbleApplication
-                app.runtime.aiWorkspaces.state
-                    .map { state -> state.workspaces.isNotEmpty() }
-                    .distinctUntilChanged()
-                    .collect { hasWorkspace ->
-                        if (hasWorkspace) requestNotificationPermissionIfNeeded()
-                    }
+                launch {
+                    app.runtime.aiWorkspaces.state
+                        .map { state -> state.workspaces.isNotEmpty() }
+                        .distinctUntilChanged()
+                        .collect { hasWorkspace ->
+                            if (hasWorkspace) requestNotificationPermissionIfNeeded()
+                        }
+                }
+                launch {
+                    app.runtime.aiWorkspaces.state
+                        .map { state ->
+                            state.workspaces
+                                .filter { it.collapsedToBubble }
+                                .mapTo(linkedSetOf()) { it.id.value }
+                        }
+                        .distinctUntilChanged()
+                        .collect { collapsedIds ->
+                            val previous = lastCollapsedWorkspaceIds
+                            lastCollapsedWorkspaceIds = collapsedIds
+                            if (previous != null && (collapsedIds - previous).isNotEmpty()) {
+                                moveTaskToBack(true)
+                            }
+                        }
+                }
             }
         }
     }

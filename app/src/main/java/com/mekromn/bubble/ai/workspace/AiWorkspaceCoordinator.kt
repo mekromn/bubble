@@ -10,6 +10,7 @@ import com.mekromn.bubble.ai.monitor.AiChatSignal
 import com.mekromn.bubble.ai.monitor.AiChatSignalSink
 import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
+import com.mekromn.bubble.data.db.AiWorkspacePlacement
 import com.mekromn.bubble.data.db.AiWorkspaceRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -31,9 +32,7 @@ class AiWorkspaceCoordinator(
 
     suspend fun initialize() {
         mutex.withLock {
-            if (!mutableState.value.initialized) {
-                mutableState.value = repository.loadState()
-            }
+            if (!mutableState.value.initialized) mutableState.value = repository.loadState()
             if (observationJob == null) {
                 observationJob = scope.launch {
                     repository.observeState().collect { mutableState.value = it }
@@ -62,14 +61,8 @@ class AiWorkspaceCoordinator(
                 updatedAt = now,
                 chats = emptyList(),
             )
-            val updatedWorkspace = workspace.copy(
-                lastActiveTabId = if (tab.selected) tab.id else workspace.lastActiveTabId,
-                updatedAt = now,
-            )
-            repository.upsertWorkspace(updatedWorkspace)
-
             val existing = workspace.chats.firstOrNull { it.tabId == tab.id }
-            val updatedMember = (existing ?: AiChatTabStatus(
+            val member = (existing ?: AiChatTabStatus(
                 tabId = tab.id,
                 workspaceId = workspaceId,
                 state = AiChatState.IDLE,
@@ -77,7 +70,16 @@ class AiWorkspaceCoordinator(
             )).copy(
                 conversationTitle = tab.title.takeUnless { it.isBlank() || it == "New tab" },
             )
-            if (existing != updatedMember) repository.upsertMember(updatedMember)
+            val chats = workspace.chats.filterNot { it.tabId == tab.id } + member
+            val updated = workspace.copy(
+                tabIds = chats.map(AiChatTabStatus::tabId),
+                lastActiveTabId = if (tab.selected) tab.id else workspace.lastActiveTabId,
+                updatedAt = now,
+                chats = chats,
+            )
+            repository.upsertWorkspace(updated)
+            if (existing != member) repository.upsertMember(member)
+            replaceWorkspace(updated)
         }
     }
 
@@ -86,9 +88,9 @@ class AiWorkspaceCoordinator(
         mutex.withLock {
             val workspace = mutableState.value.workspaceForTab(tabId) ?: return@withLock
             if (workspace.lastActiveTabId == tabId) return@withLock
-            repository.upsertWorkspace(
-                workspace.copy(lastActiveTabId = tabId, updatedAt = clock()),
-            )
+            val updated = workspace.copy(lastActiveTabId = tabId, updatedAt = clock())
+            repository.upsertWorkspace(updated)
+            replaceWorkspace(updated)
         }
     }
 
@@ -98,9 +100,9 @@ class AiWorkspaceCoordinator(
             val workspace = mutableState.value.workspaces.firstOrNull { it.id == workspaceId }
                 ?: return@withLock
             if (workspace.collapsedToBubble == collapsed) return@withLock
-            repository.upsertWorkspace(
-                workspace.copy(collapsedToBubble = collapsed, updatedAt = clock()),
-            )
+            val updated = workspace.copy(collapsedToBubble = collapsed, updatedAt = clock())
+            repository.upsertWorkspace(updated)
+            replaceWorkspace(updated)
         }
     }
 
@@ -110,20 +112,18 @@ class AiWorkspaceCoordinator(
             val workspace = mutableState.value.workspaceForTab(tabId) ?: return@withLock
             val current = workspace.chats.firstOrNull { it.tabId == tabId } ?: return@withLock
             if (current.state == state) return@withLock
-            val nextSequence = if (
-                state == AiChatState.GENERATING && current.state != AiChatState.GENERATING
-            ) {
+            val nextSequence = if (state == AiChatState.GENERATING && current.state != AiChatState.GENERATING) {
                 current.generationSequence + 1L
             } else {
                 current.generationSequence
             }
-            repository.upsertMember(
-                current.copy(
-                    state = state,
-                    lastStateChangeAt = clock(),
-                    generationSequence = nextSequence,
-                ),
+            val member = current.copy(
+                state = state,
+                lastStateChangeAt = clock(),
+                generationSequence = nextSequence,
             )
+            repository.upsertMember(member)
+            replaceMember(workspace, member)
         }
     }
 
@@ -155,9 +155,9 @@ class AiWorkspaceCoordinator(
             val workspace = mutableState.value.workspaceForTab(tabId) ?: return@withLock
             val current = workspace.chats.firstOrNull { it.tabId == tabId } ?: return@withLock
             if (generationSequence <= current.lastNotifiedGenerationSequence) return@withLock
-            repository.upsertMember(
-                current.copy(lastNotifiedGenerationSequence = generationSequence),
-            )
+            val member = current.copy(lastNotifiedGenerationSequence = generationSequence)
+            repository.upsertMember(member)
+            replaceMember(workspace, member)
         }
     }
 
@@ -167,17 +167,63 @@ class AiWorkspaceCoordinator(
             val workspace = mutableState.value.workspaceForTab(tabId) ?: return@withLock
             val current = workspace.chats.firstOrNull { it.tabId == tabId } ?: return@withLock
             if (current.state != AiChatState.COMPLETE_UNREAD) return@withLock
-            repository.upsertMember(
-                current.copy(state = AiChatState.COMPLETE_READ, lastStateChangeAt = clock()),
-            )
+            val member = current.copy(state = AiChatState.COMPLETE_READ, lastStateChangeAt = clock())
+            repository.upsertMember(member)
+            replaceMember(workspace, member)
         }
     }
 
     suspend fun removeMembership(tabId: TabId) {
-        repository.deleteMember(tabId)
+        initialize()
+        mutex.withLock {
+            val workspace = mutableState.value.workspaceForTab(tabId)
+            repository.deleteMember(tabId)
+            if (workspace == null) return@withLock
+            val chats = workspace.chats.filterNot { it.tabId == tabId }
+            if (chats.isEmpty()) {
+                repository.deleteWorkspace(workspace.id.value)
+                mutableState.value = mutableState.value.copy(
+                    initialized = true,
+                    workspaces = mutableState.value.workspaces.filterNot { it.id == workspace.id },
+                )
+            } else {
+                val updated = workspace.copy(
+                    tabIds = chats.map(AiChatTabStatus::tabId),
+                    lastActiveTabId = workspace.lastActiveTabId?.takeIf { it != tabId }
+                        ?: chats.maxByOrNull(AiChatTabStatus::lastStateChangeAt)?.tabId,
+                    updatedAt = clock(),
+                    chats = chats,
+                )
+                repository.upsertWorkspace(updated)
+                replaceWorkspace(updated)
+            }
+        }
+    }
+
+    suspend fun getPlacement(workspaceId: WorkspaceId): AiWorkspacePlacement? =
+        repository.getPlacement(workspaceId.value)
+
+    suspend fun savePlacement(placement: AiWorkspacePlacement) {
+        repository.savePlacement(placement)
     }
 
     fun workspaceForTab(tabId: TabId): ChatWorkspace? = state.value.workspaceForTab(tabId)
+
+    private fun replaceMember(workspace: ChatWorkspace, member: AiChatTabStatus) {
+        val chats = workspace.chats.map { if (it.tabId == member.tabId) member else it }
+        replaceWorkspace(workspace.copy(tabIds = chats.map(AiChatTabStatus::tabId), chats = chats))
+    }
+
+    private fun replaceWorkspace(updated: ChatWorkspace) {
+        val current = mutableState.value.workspaces
+        val index = current.indexOfFirst { it.id == updated.id }
+        val next = if (index < 0) {
+            current + updated
+        } else {
+            current.toMutableList().also { it[index] = updated }
+        }
+        mutableState.value = AiWorkspaceState(initialized = true, workspaces = next)
+    }
 
     private fun stableWorkspaceId(adapter: AiChatAdapter, profileId: String): WorkspaceId =
         WorkspaceId("${adapter.provider.name.lowercase()}:$profileId")
