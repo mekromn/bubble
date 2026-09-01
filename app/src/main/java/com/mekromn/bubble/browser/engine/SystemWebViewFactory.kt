@@ -19,6 +19,8 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewFeature
 import com.mekromn.bubble.BuildConfig
+import com.mekromn.bubble.ai.chatgpt.ChatGptPageMonitor
+import com.mekromn.bubble.ai.monitor.AiChatSignalSink
 import com.mekromn.bubble.browser.downloads.SystemDownloadHandler
 import com.mekromn.bubble.browser.navigation.ExternalNavigationPolicy
 import com.mekromn.bubble.browser.navigation.SystemExternalNavigator
@@ -32,12 +34,13 @@ import kotlinx.coroutines.flow.StateFlow
 
 class SystemWebViewFactory(
     private val context: Context,
+    private val aiChatSignalSink: AiChatSignalSink,
 ) {
     fun create(tab: Tab, events: BrowserEngineEvents): BrowserEngineSession {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "WebView sessions must be created on the main thread"
         }
-        return SystemWebViewSession(context, tab, events)
+        return SystemWebViewSession(context, tab, events, aiChatSignalSink)
     }
 }
 
@@ -45,6 +48,7 @@ private class SystemWebViewSession(
     context: Context,
     tab: Tab,
     private val events: BrowserEngineEvents,
+    private val aiChatSignalSink: AiChatSignalSink,
 ) : BrowserEngineSession {
     private val appContext = context.applicationContext
     override val tabId: TabId = tab.id
@@ -54,14 +58,11 @@ private class SystemWebViewSession(
     private val webViewPackageVersion = WebView.getCurrentWebViewPackage()?.versionName
     private val externalNavigator = SystemExternalNavigator(appContext)
     private val downloadHandler = SystemDownloadHandler(appContext)
+    private var chatGptMonitor: ChatGptPageMonitor? = null
 
     override val webView: WebView = WebView(appContext).apply webView@{
         configureSettings(settings)
         applyUserAgent(settings, tab.userAgentMode)
-        // Bubble's resident WebViews are either the visible tab or deliberately retained warm
-        // sessions. Keep their renderer at Android's highest binding priority and never waive
-        // that priority merely because the View is not currently visible. Android may still
-        // reclaim/crash the renderer, which is handled through onRenderProcessGone below.
         setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().apply {
@@ -79,6 +80,10 @@ private class SystemWebViewSession(
                 referer = this@webView.url,
             )
         }
+    }.also { createdWebView ->
+        chatGptMonitor = ChatGptPageMonitor(createdWebView) { signal ->
+            aiChatSignalSink.onAiChatSignal(tabId, signal)
+        }.also { it.install() }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -280,6 +285,8 @@ private class SystemWebViewSession(
     }
 
     override fun destroy() {
+        chatGptMonitor?.destroy()
+        chatGptMonitor = null
         webView.stopLoading()
         webView.setDownloadListener(null)
         webView.webChromeClient = null

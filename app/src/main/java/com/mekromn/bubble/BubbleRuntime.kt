@@ -3,6 +3,7 @@ package com.mekromn.bubble
 import android.app.Application
 import com.mekromn.bubble.ai.adapter.AiChatAdapterRegistry
 import com.mekromn.bubble.ai.chatgpt.ChatGptAdapter
+import com.mekromn.bubble.ai.notifications.AiReplyNotificationCoordinator
 import com.mekromn.bubble.ai.workspace.AiWorkspaceCoordinator
 import com.mekromn.bubble.browser.engine.WebViewStateStore
 import com.mekromn.bubble.browser.session.BrowsingDataRecorder
@@ -21,11 +22,15 @@ class BubbleRuntime(
     container: AppContainer,
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    val rendererPool = RendererPool(application, WebViewStateStore(application))
     val aiAdapters = AiChatAdapterRegistry(listOf(ChatGptAdapter()))
     val aiWorkspaces = AiWorkspaceCoordinator(
         repository = container.aiWorkspaces,
         scope = scope,
+    )
+    val rendererPool = RendererPool(
+        context = application,
+        stateStore = WebViewStateStore(application),
+        aiChatSignalSink = aiWorkspaces,
     )
     val sessions = TabSessionManager(
         repository = container.tabs,
@@ -35,6 +40,11 @@ class BubbleRuntime(
         rendererPool = rendererPool,
         aiWorkspaces = aiWorkspaces,
         aiAdapters = aiAdapters,
+        scope = scope,
+    )
+    val replyNotifications = AiReplyNotificationCoordinator(
+        context = application,
+        workspaces = aiWorkspaces,
         scope = scope,
     )
     private val browsingDataRecorder = BrowsingDataRecorder(

@@ -6,6 +6,8 @@ import com.mekromn.bubble.ai.model.AiChatTabStatus
 import com.mekromn.bubble.ai.model.AiWorkspaceState
 import com.mekromn.bubble.ai.model.ChatWorkspace
 import com.mekromn.bubble.ai.model.WorkspaceId
+import com.mekromn.bubble.ai.monitor.AiChatSignal
+import com.mekromn.bubble.ai.monitor.AiChatSignalSink
 import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.data.db.AiWorkspaceRepository
@@ -21,7 +23,7 @@ class AiWorkspaceCoordinator(
     private val repository: AiWorkspaceRepository,
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
-) {
+) : AiChatSignalSink {
     private val mutex = Mutex()
     private val mutableState = MutableStateFlow(AiWorkspaceState())
     val state: StateFlow<AiWorkspaceState> = mutableState
@@ -67,16 +69,15 @@ class AiWorkspaceCoordinator(
             repository.upsertWorkspace(updatedWorkspace)
 
             val existing = workspace.chats.firstOrNull { it.tabId == tab.id }
-            repository.upsertMember(
-                (existing ?: AiChatTabStatus(
-                    tabId = tab.id,
-                    workspaceId = workspaceId,
-                    state = AiChatState.IDLE,
-                    lastStateChangeAt = now,
-                )).copy(
-                    conversationTitle = tab.title.takeUnless { it.isBlank() || it == "New tab" },
-                ),
+            val updatedMember = (existing ?: AiChatTabStatus(
+                tabId = tab.id,
+                workspaceId = workspaceId,
+                state = AiChatState.IDLE,
+                lastStateChangeAt = now,
+            )).copy(
+                conversationTitle = tab.title.takeUnless { it.isBlank() || it == "New tab" },
             )
+            if (existing != updatedMember) repository.upsertMember(updatedMember)
         }
     }
 
@@ -84,6 +85,7 @@ class AiWorkspaceCoordinator(
         initialize()
         mutex.withLock {
             val workspace = mutableState.value.workspaceForTab(tabId) ?: return@withLock
+            if (workspace.lastActiveTabId == tabId) return@withLock
             repository.upsertWorkspace(
                 workspace.copy(lastActiveTabId = tabId, updatedAt = clock()),
             )
@@ -95,6 +97,7 @@ class AiWorkspaceCoordinator(
         mutex.withLock {
             val workspace = mutableState.value.workspaces.firstOrNull { it.id == workspaceId }
                 ?: return@withLock
+            if (workspace.collapsedToBubble == collapsed) return@withLock
             repository.upsertWorkspace(
                 workspace.copy(collapsedToBubble = collapsed, updatedAt = clock()),
             )
@@ -107,11 +110,12 @@ class AiWorkspaceCoordinator(
             val workspace = mutableState.value.workspaceForTab(tabId) ?: return@withLock
             val current = workspace.chats.firstOrNull { it.tabId == tabId } ?: return@withLock
             if (current.state == state) return@withLock
-            val nextSequence = when {
-                state == AiChatState.GENERATING && current.state != AiChatState.GENERATING -> {
-                    current.generationSequence + 1L
-                }
-                else -> current.generationSequence
+            val nextSequence = if (
+                state == AiChatState.GENERATING && current.state != AiChatState.GENERATING
+            ) {
+                current.generationSequence + 1L
+            } else {
+                current.generationSequence
             }
             repository.upsertMember(
                 current.copy(
@@ -120,6 +124,28 @@ class AiWorkspaceCoordinator(
                     generationSequence = nextSequence,
                 ),
             )
+        }
+    }
+
+    override fun onAiChatSignal(tabId: TabId, signal: AiChatSignal) {
+        scope.launch { applySignal(tabId, signal) }
+    }
+
+    private suspend fun applySignal(tabId: TabId, signal: AiChatSignal) {
+        initialize()
+        val current = state.value.workspaceForTab(tabId)
+            ?.chats
+            ?.firstOrNull { it.tabId == tabId }
+            ?: return
+        when (signal) {
+            AiChatSignal.USER_SUBMITTED -> updateChatState(tabId, AiChatState.USER_SUBMITTED)
+            AiChatSignal.GENERATION_STARTED -> updateChatState(tabId, AiChatState.GENERATING)
+            AiChatSignal.GENERATION_FINISHED -> {
+                if (current.state == AiChatState.GENERATING || current.state == AiChatState.USER_SUBMITTED) {
+                    updateChatState(tabId, AiChatState.COMPLETE_UNREAD)
+                }
+            }
+            AiChatSignal.ERROR -> updateChatState(tabId, AiChatState.ERROR)
         }
     }
 

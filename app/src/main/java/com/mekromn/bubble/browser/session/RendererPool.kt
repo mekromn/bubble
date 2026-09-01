@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
+import com.mekromn.bubble.ai.monitor.AiChatSignalSink
 import com.mekromn.bubble.browser.engine.BrowserEngineEvents
 import com.mekromn.bubble.browser.engine.BrowserEngineSession
 import com.mekromn.bubble.browser.engine.EnginePageState
@@ -27,6 +28,7 @@ data class RendererActivation(
 class RendererPool(
     context: Context,
     private val stateStore: WebViewStateStore,
+    aiChatSignalSink: AiChatSignalSink,
 ) : BrowserEngineEvents {
     private data class Resident(
         val session: BrowserEngineSession,
@@ -36,7 +38,7 @@ class RendererPool(
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val factory = SystemWebViewFactory(context.applicationContext)
+    private val factory = SystemWebViewFactory(context.applicationContext, aiChatSignalSink)
     private val residents = LinkedHashMap<TabId, Resident>()
     private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     private val memoryPolicy = RendererMemoryPolicy(activityManager.memoryClass)

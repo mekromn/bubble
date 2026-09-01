@@ -14,11 +14,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val bubbleApplication = application as BubbleApplication
     private val sessionManager = bubbleApplication.runtime.sessions
     private val rendererPool = bubbleApplication.runtime.rendererPool
+    private val aiWorkspaces = bubbleApplication.runtime.aiWorkspaces
     private val settingsRepository = bubbleApplication.container.settings
 
     val sessionState = sessionManager.state
     val activeWebView = rendererPool.activeWebView
     val pageState = rendererPool.activePageState
+    val aiWorkspaceState = aiWorkspaces.state
     val savedSessions = sessionManager.savedSessions
     val settings = settingsRepository.settings
 
@@ -39,7 +41,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun activate(tabId: TabId) {
-        viewModelScope.launch { sessionManager.activate(tabId) }
+        viewModelScope.launch {
+            sessionManager.activate(tabId)
+            aiWorkspaces.markRead(tabId)
+        }
     }
 
     fun close(tabId: TabId) {
