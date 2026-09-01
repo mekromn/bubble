@@ -15,8 +15,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         HistoryEntryEntity::class,
         BookmarkEntity::class,
         ClosedTabEntity::class,
+        AiWorkspaceEntity::class,
+        AiWorkspaceTabEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(TabTypeConverters::class)
@@ -25,6 +27,7 @@ abstract class BubbleDatabase : RoomDatabase() {
     abstract fun headPlacementDao(): HeadPlacementDao
     abstract fun savedSessionDao(): SavedSessionDao
     abstract fun browsingDataDao(): BrowsingDataDao
+    abstract fun aiWorkspaceDao(): AiWorkspaceDao
 
     companion object {
         const val FILE_NAME = "bubble.db"
@@ -148,6 +151,56 @@ abstract class BubbleDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_closed_tabs_closedAt ON closed_tabs(closedAt)",
+                )
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS ai_workspaces (
+                        workspaceId TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        profileId TEXT NOT NULL,
+                        lastActiveTabId TEXT,
+                        collapsedToBubble INTEGER NOT NULL,
+                        notificationsEnabled INTEGER NOT NULL,
+                        soundEnabled INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(workspaceId)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_ai_workspaces_provider_profileId ON ai_workspaces(provider, profileId)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_ai_workspaces_updatedAt ON ai_workspaces(updatedAt)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS ai_workspace_tabs (
+                        tabId TEXT NOT NULL,
+                        workspaceId TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        mutedNotifications INTEGER NOT NULL,
+                        conversationTitle TEXT,
+                        lastStateChangeAt INTEGER NOT NULL,
+                        generationSequence INTEGER NOT NULL,
+                        lastNotifiedGenerationSequence INTEGER NOT NULL,
+                        PRIMARY KEY(tabId),
+                        FOREIGN KEY(workspaceId) REFERENCES ai_workspaces(workspaceId) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(tabId) REFERENCES tabs(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_ai_workspace_tabs_workspaceId ON ai_workspace_tabs(workspaceId)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_ai_workspace_tabs_state ON ai_workspace_tabs(state)",
                 )
             }
         }

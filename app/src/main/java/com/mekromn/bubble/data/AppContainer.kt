@@ -3,6 +3,7 @@ package com.mekromn.bubble.data
 import android.content.Context
 import androidx.room.Room
 import com.mekromn.bubble.data.db.BubbleDatabase
+import com.mekromn.bubble.data.db.RoomAiWorkspaceRepository
 import com.mekromn.bubble.data.db.RoomBrowsingDataRepository
 import com.mekromn.bubble.data.db.RoomHeadPlacementRepository
 import com.mekromn.bubble.data.db.RoomSavedSessionRepository
@@ -21,6 +22,7 @@ class AppContainer(context: Context) {
             BubbleDatabase.MIGRATION_1_2,
             BubbleDatabase.MIGRATION_2_3,
             BubbleDatabase.MIGRATION_3_4,
+            BubbleDatabase.MIGRATION_4_5,
         ).build()
     }
 
@@ -33,6 +35,9 @@ class AppContainer(context: Context) {
     }
     val browsingData: RoomBrowsingDataRepository by lazy {
         RoomBrowsingDataRepository(database.browsingDataDao())
+    }
+    val aiWorkspaces: RoomAiWorkspaceRepository by lazy {
+        RoomAiWorkspaceRepository(database.aiWorkspaceDao())
     }
     val settings: BrowserSettingsRepository by lazy { BrowserSettingsRepository(appContext) }
 }

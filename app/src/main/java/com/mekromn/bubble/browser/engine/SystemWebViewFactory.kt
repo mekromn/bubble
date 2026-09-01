@@ -58,6 +58,11 @@ private class SystemWebViewSession(
     override val webView: WebView = WebView(appContext).apply webView@{
         configureSettings(settings)
         applyUserAgent(settings, tab.userAgentMode)
+        // Bubble's resident WebViews are either the visible tab or deliberately retained warm
+        // sessions. Keep their renderer at Android's highest binding priority and never waive
+        // that priority merely because the View is not currently visible. Android may still
+        // reclaim/crash the renderer, which is handled through onRenderProcessGone below.
+        setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -79,9 +84,6 @@ private class SystemWebViewSession(
     @SuppressLint("SetJavaScriptEnabled")
     @Suppress("DEPRECATION")
     private fun configureSettings(settings: WebSettings) = with(settings) {
-        // JavaScript is a core requirement for a general-purpose modern browser. Bubble does
-        // not expose a JavaScript bridge to arbitrary web content, and TLS errors are never
-        // bypassed, so the lint warning is reviewed rather than globally disabled.
         javaScriptEnabled = true
         domStorageEnabled = true
         databaseEnabled = true
@@ -155,9 +157,6 @@ private class SystemWebViewSession(
             .setFullVersion(full)
             .build()
 
-    // androidx.webkit's lint detector can fail to recognize the platform override through
-    // WebViewClientCompat in this source shape. The callback immediately below is present,
-    // returns true, and routes renderer death into Bubble's recovery state machine.
     @SuppressLint("MissingOnRenderProcessGone")
     private fun createWebViewClient(): WebViewClientCompat = object : WebViewClientCompat() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -284,8 +283,6 @@ private class SystemWebViewSession(
         webView.stopLoading()
         webView.setDownloadListener(null)
         webView.webChromeClient = null
-        // Keep the crash-aware client attached until destroy(); replacing it with a bare
-        // WebViewClient would reintroduce an unhandled renderer-termination path.
         webView.removeAllViews()
         webView.destroy()
     }
