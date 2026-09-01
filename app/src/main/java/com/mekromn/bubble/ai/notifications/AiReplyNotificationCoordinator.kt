@@ -31,9 +31,7 @@ class AiReplyNotificationCoordinator(
 
     init {
         ensureChannel()
-        scope.launch {
-            workspaces.state.collect { state -> postOutstanding(state) }
-        }
+        scope.launch { workspaces.state.collect { state -> postOutstanding(state) } }
     }
 
     fun refresh() {
@@ -47,12 +45,7 @@ class AiReplyNotificationCoordinator(
                 if (!workspace.notificationsEnabled) continue
                 for (chat in workspace.chats) {
                     if (!chat.hasUnnotifiedCompletion || chat.mutedNotifications) continue
-                    val posted = postReplyReady(
-                        tabId = chat.tabId,
-                        generationSequence = chat.generationSequence,
-                        soundEnabled = workspace.soundEnabled,
-                    )
-                    if (posted) {
+                    if (postReplyReady(chat.tabId, chat.generationSequence)) {
                         workspaces.markCompletionNotified(chat.tabId, chat.generationSequence)
                     }
                 }
@@ -60,11 +53,7 @@ class AiReplyNotificationCoordinator(
         }
     }
 
-    private fun postReplyReady(
-        tabId: TabId,
-        generationSequence: Long,
-        soundEnabled: Boolean,
-    ): Boolean = runCatching {
+    private fun postReplyReady(tabId: TabId, generationSequence: Long): Boolean = runCatching {
         val contentIntent = PendingIntent.getActivity(
             appContext,
             requestCode(tabId),
@@ -87,7 +76,6 @@ class AiReplyNotificationCoordinator(
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setGroup(GROUP_KEY)
-            .setSilent(!soundEnabled)
             .build()
         notificationManager.notify(notificationId(tabId), notification)
         true
@@ -120,7 +108,6 @@ class AiReplyNotificationCoordinator(
     }
 
     private fun requestCode(tabId: TabId): Int = tabId.value.hashCode() and 0x7fffffff
-
     private fun notificationId(tabId: TabId): Int = NOTIFICATION_ID_BASE xor requestCode(tabId)
 
     companion object {
