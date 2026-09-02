@@ -260,11 +260,14 @@ class BrowserActivity : ComponentActivity() {
         }
 
         override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-            if (!blockAllPageTouches) {
-                val inTopChrome = event.y <= topInteractivePx
-                val inBottomChrome = event.y >= height - bottomInteractivePx
-                if (!inTopChrome && !inBottomChrome) return false
+            if (blockAllPageTouches) {
+                super.dispatchTouchEvent(event)
+                return true
             }
+
+            val inTopChrome = event.y <= topInteractivePx
+            val inBottomChrome = event.y >= height - bottomInteractivePx
+            if (!inTopChrome && !inBottomChrome) return false
             return super.dispatchTouchEvent(event)
         }
     }
