@@ -31,9 +31,6 @@ android {
         buildConfig = true
     }
 
-    // Development/test APKs use a repository-pinned key so every CI build has the same
-    // signing identity forever. This key is intentionally public and MUST NEVER sign a
-    // production/release package. Production signing must use a separate private key.
     signingConfigs {
         getByName("debug") {
             storeFile = file("signing/bubble-debug.jks")
@@ -90,9 +87,10 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.4")
     implementation("androidx.webkit:webkit:1.17.0")
 
-    // Use Mozilla's browser-oriented Gecko integration instead of hand-managing GeckoView /
-    // GeckoSession as Bubble's primary bring-up path. Android Components owns the defensive
-    // Gecko view/session attachment behavior used by Firefox-family Android browsers.
+    // Mozilla Android Components is Bubble's browser-engine bring-up path. concept-engine is
+    // declared explicitly because browser-engine-gecko intentionally keeps it as an internal
+    // implementation dependency even though embedders consume Engine/EngineSession interfaces.
+    implementation("org.mozilla.components:concept-engine:154.0")
     implementation("org.mozilla.components:browser-engine-gecko:154.0")
 
     ksp("androidx.room:room-compiler:2.8.4")
