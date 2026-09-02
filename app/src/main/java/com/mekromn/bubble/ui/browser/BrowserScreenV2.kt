@@ -33,7 +33,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -82,6 +81,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -116,16 +116,19 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 /**
- * Bubble's production browser shell. The Gecko viewport itself is deliberately never transformed;
- * only Compose chrome and overlays animate, keeping page rendering stable while the UI can animate
- * at the display's native high refresh rate.
+ * High-refresh browser chrome. Gecko owns the page layer directly in BrowserActivity; this
+ * composable stays transparent through the page region during ordinary browsing and animates only
+ * lightweight chrome/overlays. The Activity uses [onModalInteractionChanged] to decide when the
+ * full-screen Compose layer should intercept page-region touches.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BrowserScreenV2(viewModel: BrowserViewModel) {
+fun BrowserScreenV2(
+    viewModel: BrowserViewModel,
+    onModalInteractionChanged: (Boolean) -> Unit = {},
+) {
     val session by viewModel.sessionState.collectAsState()
     val page by viewModel.pageState.collectAsState()
-    val contentView by viewModel.activeWebView.collectAsState()
     val savedSessions by viewModel.savedSessions.collectAsState(initial = emptyList())
     val settings by viewModel.settings.collectAsState(initial = BrowserSettings())
     val context = LocalContext.current
@@ -144,11 +147,21 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
 
     val activeTab = session.tabs.firstOrNull(Tab::selected)
     val headCount = session.tabs.count { it.presentationState == PresentationState.HEAD }
+    val modalInteraction =
+        showTabs || showMenu || showSessions || showSaveSession || showOverlayExplanation
+
+    LaunchedEffect(modalInteraction) {
+        onModalInteractionChanged(modalInteraction)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onModalInteractionChanged(false) }
+    }
+
     val minimizeScale by animateFloatAsState(
-        targetValue = if (minimizing) 0.82f else 1f,
+        targetValue = if (minimizing) 0.84f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow,
+            stiffness = Spring.StiffnessMedium,
         ),
         label = "minimizeScale",
     )
@@ -160,6 +173,7 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
             minimizing = false
             if (minimizedTab == null) return@minimizeActiveToHead
             if (FloatingHeadService.start(context)) {
+                // Explicit user action only. Persisted state must never background the task.
                 activity?.moveTaskToBack(true)
             } else {
                 scope.launch {
@@ -260,7 +274,9 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
                     },
                 ) { Text("Save") }
             },
-            dismissButton = { TextButton(onClick = { showSaveSession = false }) { Text("Cancel") } },
+            dismissButton = {
+                TextButton(onClick = { showSaveSession = false }) { Text("Cancel") }
+            },
         )
     }
 
@@ -311,14 +327,14 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.safeDrawing,
+        containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             AnimatedVisibility(
                 visible = !showTabs,
-                enter = slideInVertically(tween(150)) { -it / 3 } + fadeIn(tween(120)),
-                exit = slideOutVertically(tween(110)) { -it / 3 } + fadeOut(tween(90)),
+                enter = slideInVertically(tween(145)) { -it / 3 } + fadeIn(tween(105)),
+                exit = slideOutVertically(tween(100)) { -it / 3 } + fadeOut(tween(85)),
             ) {
                 PremiumOmnibox(
                     page = page,
@@ -332,8 +348,8 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
         bottomBar = {
             AnimatedVisibility(
                 visible = !showTabs,
-                enter = slideInVertically(tween(170)) { it / 2 } + fadeIn(tween(130)),
-                exit = slideOutVertically(tween(110)) { it / 2 } + fadeOut(tween(90)),
+                enter = slideInVertically(tween(165)) { it / 2 } + fadeIn(tween(115)),
+                exit = slideOutVertically(tween(100)) { it / 2 } + fadeOut(tween(80)),
             ) {
                 FloatingBrowserToolbar(
                     canGoBack = page.canGoBack,
@@ -355,16 +371,15 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            BrowserViewport(
-                contentView = contentView,
+            BrowserStatusOverlay(
                 page = page,
                 navigationError = session.navigationError,
             )
 
             AnimatedVisibility(
                 visible = showTabs,
-                enter = fadeIn(tween(130)) + scaleIn(tween(170), initialScale = 0.985f),
-                exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.99f),
+                enter = fadeIn(tween(125)) + scaleIn(tween(165), initialScale = 0.985f),
+                exit = fadeOut(tween(95)) + scaleOut(tween(115), targetScale = 0.99f),
             ) {
                 PremiumTabSwitcher(
                     tabs = session.tabs,
@@ -399,62 +414,63 @@ private fun PremiumOmnibox(
         else if (!page.loading) text = ""
     }
 
-    Surface(
-        color = MaterialTheme.colorScheme.background,
-        tonalElevation = 0.dp,
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
+        TextField(
+            value = text,
+            onValueChange = { text = it },
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(54.dp),
-                singleLine = true,
-                shape = RoundedCornerShape(28.dp),
-                placeholder = { Text("Search or enter address") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = if (page.url.startsWith("http://")) Icons.Rounded.Warning else Icons.Rounded.Language,
-                        contentDescription = null,
-                    )
-                },
-                trailingIcon = {
-                    IconButton(onClick = if (page.loading) onStop else onReload) {
-                        Icon(
-                            if (page.loading) Icons.Rounded.Close else Icons.Rounded.Refresh,
-                            contentDescription = if (page.loading) "Stop" else "Reload",
-                        )
-                    }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(
-                    onGo = {
-                        focusManager.clearFocus()
-                        onNavigate(text)
+                .weight(1f)
+                .height(54.dp),
+            singleLine = true,
+            shape = RoundedCornerShape(28.dp),
+            placeholder = { Text("Search or enter address") },
+            leadingIcon = {
+                Icon(
+                    imageVector = if (page.url.startsWith("http://")) {
+                        Icons.Rounded.Warning
+                    } else {
+                        Icons.Rounded.Language
                     },
-                ),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ),
-            )
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            ) {
-                IconButton(onClick = onMenu, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Rounded.MoreVert, contentDescription = "Browser menu")
+                    contentDescription = null,
+                )
+            },
+            trailingIcon = {
+                IconButton(onClick = if (page.loading) onStop else onReload) {
+                    Icon(
+                        if (page.loading) Icons.Rounded.Close else Icons.Rounded.Refresh,
+                        contentDescription = if (page.loading) "Stop" else "Reload",
+                    )
                 }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(
+                onGo = {
+                    focusManager.clearFocus()
+                    onNavigate(text)
+                },
+            ),
+            colors = TextFieldDefaults.colors(
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                disabledIndicatorColor = Color.Transparent,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ),
+        )
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 4.dp,
+            shadowElevation = 7.dp,
+        ) {
+            IconButton(onClick = onMenu, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Rounded.MoreVert, contentDescription = "Browser menu")
             }
         }
     }
@@ -476,7 +492,7 @@ private fun FloatingBrowserToolbar(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
