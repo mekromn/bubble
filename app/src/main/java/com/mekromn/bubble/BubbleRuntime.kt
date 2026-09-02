@@ -62,11 +62,11 @@ class BubbleRuntime(
         scope.launch {
             sessions.initialize()
             val onlyTab = sessions.state.value.tabs.singleOrNull()
-            if (
-                onlyTab != null &&
-                onlyTab.lastCommittedUrl == NavigationResolver.NEW_TAB_URL &&
-                onlyTab.title == "New tab"
-            ) {
+            // AI-first startup must not depend on stale title metadata left by an older engine.
+            // If the persisted workspace contains only the untouched blank starter tab, always
+            // turn that tab into ChatGPT. This also repairs installs that were stranded at
+            // about:blank during the WebView -> Gecko migration.
+            if (onlyTab?.lastCommittedUrl == NavigationResolver.NEW_TAB_URL) {
                 sessions.navigate(ChatGptAdapter.TRUSTED_ORIGIN + "/")
             }
         }
