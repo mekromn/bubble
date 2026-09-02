@@ -1,5 +1,6 @@
 package com.mekromn.bubble.heads.overlay
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -19,6 +20,7 @@ import androidx.core.view.isVisible
 import com.mekromn.bubble.browser.session.Tab
 import kotlin.math.abs
 
+@SuppressLint("AppCompatCustomView")
 private class AccessibleHeadView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
