@@ -1,6 +1,7 @@
 package com.mekromn.bubble.browser.engine
 
 import android.content.Context
+import android.graphics.Color
 import android.view.View
 import com.mekromn.bubble.BuildConfig
 import com.mekromn.bubble.browser.navigation.ExternalNavigationPolicy
@@ -87,6 +88,12 @@ private class GeckoBrowserSession(
 
         releaseContentView()
         return GeckoView(context).also { view ->
+            // Bubble hosts Gecko inside Compose and animates browser chrome around the page.
+            // TextureView participates in ordinary Android composition/clipping instead of living
+            // in the separate SurfaceView layer, which avoids the blank/leaked surface behavior
+            // seen during the initial Gecko bring-up.
+            view.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
+            view.coverUntilFirstPaint(Color.rgb(12, 13, 16))
             view.setSession(session)
             attachedView = view
         }
