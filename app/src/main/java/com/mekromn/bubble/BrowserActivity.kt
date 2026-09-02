@@ -21,7 +21,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mekromn.bubble.browser.navigation.SharedUrlExtractor
 import com.mekromn.bubble.browser.session.TabId
-import com.mekromn.bubble.ui.browser.BrowserScreen
+import com.mekromn.bubble.ui.browser.BrowserScreenV2
 import com.mekromn.bubble.ui.browser.BrowserViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -49,7 +49,7 @@ class BrowserActivity : ComponentActivity() {
                         .safeDrawingPadding(),
                 ) {
                     val browserViewModel: BrowserViewModel = viewModel()
-                    BrowserScreen(browserViewModel)
+                    BrowserScreenV2(browserViewModel)
                 }
             }
         }
