@@ -32,14 +32,21 @@ interface BrowserEngineEvents {
     fun onOpenNewTab(tabId: TabId, url: String)
 }
 
-/** Engine-neutral browser-tab contract. */
+/**
+ * Engine-neutral browser-tab contract.
+ *
+ * The durable browser session owns navigation/process state, not its Android View. A foreground
+ * host asks the session for a View constructed with the real Activity context and releases that
+ * View when the host goes away. This is especially important for GeckoView: GeckoSession may
+ * stay alive without a view, while GeckoView itself should be born inside the Activity/window
+ * that will display its compositor surface.
+ */
 interface BrowserEngineSession {
     val tabId: TabId
-    val contentView: View
     val pageState: StateFlow<EnginePageState>
 
-    fun bindHostContext(context: Context)
-    fun releaseHostContext()
+    fun createContentView(context: Context): View
+    fun releaseContentView()
     fun setLifecycle(active: Boolean, focused: Boolean, highPriority: Boolean)
 
     fun loadUrl(url: String)
