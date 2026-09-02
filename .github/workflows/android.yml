@@ -45,8 +45,10 @@ jobs:
           path: ~/.android/debug.keystore
           key: bubble-debug-signing-v1
 
-      - name: Install API 36
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      # GeckoView 154 requires compile SDK 37.1. Bubble still targets API 36 at
+      # runtime; installing a newer compile SDK does not opt into target-37 behavior.
+      - name: Install Android 17.1 compile SDK
+        run: sdkmanager "platforms;android-37.1" "build-tools;36.0.0"
 
       - name: Unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
