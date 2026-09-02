@@ -62,7 +62,12 @@ class BrowserActivity : ComponentActivity() {
         app.runtime.setBrowserForeground(true)
         lifecycleScope.launch {
             app.runtime.sessions.initialize()
-            app.runtime.sessions.state.value.selectedTabId?.let { app.runtime.aiWorkspaces.markRead(it) }
+            app.runtime.sessions.state.value.selectedTabId?.let { tabId ->
+                app.runtime.aiWorkspaces.workspaceForTab(tabId)?.let { workspace ->
+                    app.runtime.aiWorkspaces.setCollapsed(workspace.id, false)
+                }
+                app.runtime.aiWorkspaces.markRead(tabId)
+            }
         }
     }
 
