@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -159,8 +160,6 @@ fun BrowserScreenV2(viewModel: BrowserViewModel) {
             minimizing = false
             if (minimizedTab == null) return@minimizeActiveToHead
             if (FloatingHeadService.start(context)) {
-                // This is the ONLY path that intentionally backgrounds BrowserActivity: it is
-                // reached directly from the user's minimize button, never from persisted state.
                 activity?.moveTaskToBack(true)
             } else {
                 scope.launch {
