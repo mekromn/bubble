@@ -72,25 +72,25 @@ class BrowserActivity : ComponentActivity() {
             }
         }
 
-        override fun onProgress(progressValue: Int) {
+        override fun onProgress(progress: Int) {
             runOnUiThread {
-                progress.progress = progressValue.coerceIn(0, 100)
+                this@BrowserActivity.progress.progress = progress.coerceIn(0, 100)
             }
         }
 
-        override fun onLoadingStateChange(loadingNow: Boolean) {
+        override fun onLoadingStateChange(loading: Boolean) {
             runOnUiThread {
-                loading = loadingNow
-                progress.visibility = if (loadingNow) View.VISIBLE else View.INVISIBLE
-                reloadButton.text = if (loadingNow) "×" else "↻"
-                if (loadingNow) loadingCover.visibility = View.VISIBLE
+                this@BrowserActivity.loading = loading
+                progress.visibility = if (loading) View.VISIBLE else View.INVISIBLE
+                reloadButton.text = if (loading) "×" else "↻"
+                if (loading) loadingCover.visibility = View.VISIBLE
             }
         }
 
-        override fun onNavigationStateChange(canGoBackNow: Boolean?, canGoForwardNow: Boolean?) {
+        override fun onNavigationStateChange(canGoBack: Boolean?, canGoForward: Boolean?) {
             runOnUiThread {
-                canGoBackNow?.let { canGoBack = it }
-                canGoForwardNow?.let { canGoForward = it }
+                canGoBack?.let { this@BrowserActivity.canGoBack = it }
+                canGoForward?.let { this@BrowserActivity.canGoForward = it }
                 updateNavigationButtons()
             }
         }
@@ -285,7 +285,7 @@ class BrowserActivity : ComponentActivity() {
             setTextColor(TEXT_MUTED)
             textSize = 11f
             gravity = Gravity.CENTER
-            text = "Android Components Gecko · isolated browser core"
+            text = getString(R.string.browser_isolation_status)
             maxLines = 1
         }
         root.addView(
@@ -395,7 +395,7 @@ class BrowserActivity : ComponentActivity() {
         progress.visibility = View.INVISIBLE
         errorCard.text = message
         errorCard.visibility = View.VISIBLE
-        status.text = "Engine failure captured"
+        status.text = getString(R.string.browser_engine_failure_status)
     }
 
     private fun updateNavigationButtons() {
