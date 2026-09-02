@@ -143,7 +143,7 @@ class AiWorkspaceCoordinator(
             AiChatSignal.USER_SUBMITTED -> updateChatState(tabId, AiChatState.USER_SUBMITTED)
             AiChatSignal.GENERATION_STARTED -> updateChatState(tabId, AiChatState.GENERATING)
             AiChatSignal.GENERATION_FINISHED -> {
-                if (current.state == AiChatState.GENERATING || current.state == AiChatState.USER_SUBMITTED) {
+                if (current.state == AiChatState.GENERATING) {
                     updateChatState(tabId, AiChatState.COMPLETE_UNREAD)
                 }
             }

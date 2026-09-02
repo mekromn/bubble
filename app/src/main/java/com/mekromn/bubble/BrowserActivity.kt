@@ -56,6 +56,21 @@ class BrowserActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        val app = application as BubbleApplication
+        app.runtime.setBrowserForeground(true)
+        lifecycleScope.launch {
+            app.runtime.sessions.initialize()
+            app.runtime.sessions.state.value.selectedTabId?.let { app.runtime.aiWorkspaces.markRead(it) }
+        }
+    }
+
+    override fun onStop() {
+        (application as BubbleApplication).runtime.setBrowserForeground(false)
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

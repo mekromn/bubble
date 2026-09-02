@@ -12,9 +12,12 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.isVisible
+import com.mekromn.bubble.R
 import com.mekromn.bubble.ai.model.AiChatState
 import com.mekromn.bubble.ai.model.AiChatTabStatus
 import com.mekromn.bubble.ai.model.ChatWorkspace
@@ -26,14 +29,85 @@ private class AccessibleWorkspaceBubbleView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : TextView(context, attrs, defStyleAttr) {
+) : FrameLayout(context, attrs, defStyleAttr) {
     var openAction: (() -> Unit)? = null
+    private val icon = ImageView(context).apply {
+        setImageResource(R.drawable.ic_chatgpt_workspace)
+        contentDescription = null
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+    private val badge = TextView(context).apply {
+        gravity = Gravity.CENTER
+        textSize = 11f
+        setTextColor(Color.WHITE)
+        minWidth = dp(22)
+        minHeight = dp(20)
+        setPadding(dp(5), 0, dp(5), 0)
+        isVisible = false
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    init {
+        isClickable = true
+        isFocusable = true
+        background = circle(Color.rgb(30, 31, 34))
+        elevation = dp(12).toFloat()
+        addView(
+            icon,
+            LayoutParams(dp(38), dp(38), Gravity.CENTER),
+        )
+        addView(
+            badge,
+            LayoutParams(LayoutParams.WRAP_CONTENT, dp(20), Gravity.END or Gravity.BOTTOM).apply {
+                marginEnd = dp(1)
+                bottomMargin = dp(1)
+            },
+        )
+    }
+
+    fun bind(workspace: ChatWorkspace) {
+        background = circle(
+            when {
+                workspace.unreadCompletedCount > 0 -> Color.rgb(24, 104, 71)
+                workspace.generatingCount > 0 -> Color.rgb(55, 62, 75)
+                workspace.recoveringCount > 0 -> Color.rgb(83, 68, 45)
+                else -> Color.rgb(30, 31, 34)
+            },
+        )
+        val badgeText = when {
+            workspace.unreadCompletedCount > 0 -> workspace.unreadCompletedCount.coerceAtMost(99).toString()
+            workspace.generatingCount > 0 -> workspace.generatingCount.coerceAtMost(99).toString()
+            workspace.recoveringCount > 0 -> "↻"
+            else -> null
+        }
+        badge.isVisible = badgeText != null
+        badge.text = badgeText.orEmpty()
+        badge.background = pill(
+            if (workspace.unreadCompletedCount > 0) Color.rgb(22, 163, 106)
+            else Color.rgb(83, 88, 101),
+        )
+    }
 
     override fun performClick(): Boolean {
         super.performClick()
         openAction?.invoke()
         return true
     }
+
+    private fun circle(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(color)
+        setStroke(dp(1), Color.argb(110, 255, 255, 255))
+    }
+
+    private fun pill(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(10).toFloat()
+        setColor(color)
+        setStroke(dp(1), Color.argb(120, 255, 255, 255))
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }
 
 class ChatWorkspaceOverlayController(
@@ -74,14 +148,7 @@ class ChatWorkspaceOverlayController(
 
     private val bubbleView = AccessibleWorkspaceBubbleView(context).apply {
         openAction = { callbacks.onOpenWorkspace(workspace) }
-        gravity = Gravity.CENTER
-        textSize = 17f
-        setTextColor(Color.WHITE)
-        background = circle(Color.rgb(30, 31, 34))
-        elevation = dp(12).toFloat()
         layoutParams = LinearLayout.LayoutParams(bubbleSizePx, bubbleSizePx)
-        isClickable = true
-        isFocusable = true
     }
 
     private val menu = LinearLayout(context).apply {
@@ -134,8 +201,7 @@ class ChatWorkspaceOverlayController(
     fun update(updatedWorkspace: ChatWorkspace, tabs: List<Tab>) {
         workspace = updatedWorkspace
         tabsById = tabs.associateBy(Tab::id)
-        bubbleView.text = bubbleLabel(updatedWorkspace)
-        bubbleView.background = circle(bubbleColor(updatedWorkspace))
+        bubbleView.bind(updatedWorkspace)
         bubbleView.contentDescription = buildString {
             append("ChatGPT workspace. ${updatedWorkspace.tabIds.size} chats")
             if (updatedWorkspace.generatingCount > 0) append(", ${updatedWorkspace.generatingCount} generating")
@@ -326,26 +392,6 @@ class ChatWorkspaceOverlayController(
             hideMenu(animated = true)
             action()
         }
-    }
-
-    private fun bubbleLabel(workspace: ChatWorkspace): String = when {
-        workspace.unreadCompletedCount > 0 -> "${workspace.unreadCompletedCount.coerceAtMost(99)}✓"
-        workspace.generatingCount > 0 -> "${workspace.generatingCount.coerceAtMost(99)}…"
-        workspace.recoveringCount > 0 -> "↻"
-        else -> "GPT"
-    }
-
-    private fun bubbleColor(workspace: ChatWorkspace): Int = when {
-        workspace.unreadCompletedCount > 0 -> Color.rgb(24, 104, 71)
-        workspace.generatingCount > 0 -> Color.rgb(55, 62, 75)
-        workspace.recoveringCount > 0 -> Color.rgb(83, 68, 45)
-        else -> Color.rgb(30, 31, 34)
-    }
-
-    private fun circle(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(color)
-        setStroke(dp(1), Color.argb(110, 255, 255, 255))
     }
 
     private fun rounded(color: Int, radius: Float) = GradientDrawable().apply {

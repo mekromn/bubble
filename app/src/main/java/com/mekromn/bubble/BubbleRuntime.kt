@@ -9,8 +9,10 @@ import com.mekromn.bubble.browser.engine.WebViewStateStore
 import com.mekromn.bubble.browser.navigation.NavigationResolver
 import com.mekromn.bubble.browser.session.BrowsingDataRecorder
 import com.mekromn.bubble.browser.session.RendererPool
+import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.browser.session.TabSessionManager
 import com.mekromn.bubble.data.AppContainer
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,6 +25,7 @@ class BubbleRuntime(
     container: AppContainer,
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val browserForeground = AtomicBoolean(false)
     val aiAdapters = AiChatAdapterRegistry(listOf(ChatGptAdapter()))
     val aiWorkspaces = AiWorkspaceCoordinator(
         repository = container.aiWorkspaces,
@@ -47,6 +50,7 @@ class BubbleRuntime(
         context = application,
         workspaces = aiWorkspaces,
         scope = scope,
+        isChatVisible = ::isChatVisible,
     )
     private val browsingDataRecorder = BrowsingDataRecorder(
         sessions = sessions,
@@ -73,6 +77,14 @@ class BubbleRuntime(
                 .collect { rendererPool.setMemoryMode(it) }
         }
     }
+
+    fun setBrowserForeground(foreground: Boolean) {
+        browserForeground.set(foreground)
+        replyNotifications.refresh()
+    }
+
+    private fun isChatVisible(tabId: TabId): Boolean =
+        browserForeground.get() && sessions.state.value.selectedTabId == tabId
 
     fun onTrimMemory(level: Int) {
         scope.launch { rendererPool.onTrimMemory(level) }
