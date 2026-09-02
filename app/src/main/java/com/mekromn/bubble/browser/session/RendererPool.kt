@@ -4,13 +4,12 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import android.webkit.WebView
-import com.mekromn.bubble.ai.monitor.AiChatSignalSink
+import android.view.View
 import com.mekromn.bubble.browser.engine.BrowserEngineEvents
 import com.mekromn.bubble.browser.engine.BrowserEngineSession
+import com.mekromn.bubble.browser.engine.BrowserSessionStateStore
 import com.mekromn.bubble.browser.engine.EnginePageState
-import com.mekromn.bubble.browser.engine.SystemWebViewFactory
-import com.mekromn.bubble.browser.engine.WebViewStateStore
+import com.mekromn.bubble.browser.engine.GeckoBrowserFactory
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -27,8 +26,7 @@ data class RendererActivation(
 
 class RendererPool(
     context: Context,
-    private val stateStore: WebViewStateStore,
-    aiChatSignalSink: AiChatSignalSink,
+    private val stateStore: BrowserSessionStateStore,
 ) : BrowserEngineEvents {
     private data class Resident(
         val session: BrowserEngineSession,
@@ -38,7 +36,7 @@ class RendererPool(
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val factory = SystemWebViewFactory(context.applicationContext, aiChatSignalSink)
+    private val factory = GeckoBrowserFactory(context.applicationContext)
     private val residents = LinkedHashMap<TabId, Resident>()
     private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     private val memoryPolicy = RendererMemoryPolicy(activityManager.memoryClass)
@@ -47,9 +45,10 @@ class RendererPool(
     private var memoryPressure = RendererMemoryPressure.NORMAL
 
     var listener: RendererPoolListener? = null
+    var newTabHandler: ((String) -> Unit)? = null
 
-    private val mutableActiveWebView = MutableStateFlow<WebView?>(null)
-    val activeWebView: StateFlow<WebView?> = mutableActiveWebView
+    private val mutableActiveWebView = MutableStateFlow<View?>(null)
+    val activeWebView: StateFlow<View?> = mutableActiveWebView
 
     private val mutableActivePageState = MutableStateFlow(EnginePageState())
     val activePageState: StateFlow<EnginePageState> = mutableActivePageState
@@ -61,31 +60,43 @@ class RendererPool(
 
     suspend fun activate(tab: Tab): RendererActivation {
         checkMainThread()
+        demoteCurrentIfNeeded(tab.id)
         val existing = residents[tab.id]
         if (existing != null) {
             existing.lastUsed = now()
             existing.keepRendererAlive = tab.keepRendererAlive
             existing.pinned = tab.pinned
             existing.session.setUserAgentMode(tab.userAgentMode)
+            existing.session.setLifecycle(
+                active = true,
+                focused = true,
+                highPriority = tab.keepRendererAlive || tab.pinned,
+            )
             activeTabId = tab.id
-            mutableActiveWebView.value = existing.session.webView
+            mutableActiveWebView.value = existing.session.contentView
             mutableActivePageState.value = existing.session.pageState.value
             trimWarmRenderers()
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
         }
 
         val session = factory.create(tab, this)
-        residents[tab.id] = Resident(
+        val resident = Resident(
             session = session,
             lastUsed = now(),
             keepRendererAlive = tab.keepRendererAlive,
             pinned = tab.pinned,
         )
+        residents[tab.id] = resident
         activeTabId = tab.id
-        mutableActiveWebView.value = session.webView
+        session.setLifecycle(
+            active = true,
+            focused = true,
+            highPriority = tab.keepRendererAlive || tab.pinned,
+        )
+        mutableActiveWebView.value = session.contentView
         mutableActivePageState.value = session.pageState.value
 
-        val restored = stateStore.restore(tab.id, session.webView)
+        val restored = stateStore.restore(tab.id)?.let(session::restoreSerializedState) ?: false
         if (!restored) session.loadUrl(tab.lastCommittedUrl)
         trimWarmRenderers()
         return RendererActivation(restoredSavedState = restored, reusedLiveRenderer = false)
@@ -99,18 +110,21 @@ class RendererPool(
             existing.keepRendererAlive = tab.keepRendererAlive
             existing.pinned = tab.pinned
             existing.session.setUserAgentMode(tab.userAgentMode)
+            applyBackgroundLifecycle(tab.id, existing)
             trimWarmRenderers()
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
         }
 
         val session = factory.create(tab, this)
-        residents[tab.id] = Resident(
+        val resident = Resident(
             session = session,
             lastUsed = now(),
             keepRendererAlive = tab.keepRendererAlive,
             pinned = tab.pinned,
         )
-        val restored = stateStore.restore(tab.id, session.webView)
+        residents[tab.id] = resident
+        applyBackgroundLifecycle(tab.id, resident)
+        val restored = stateStore.restore(tab.id)?.let(session::restoreSerializedState) ?: false
         if (!restored) session.loadUrl(tab.lastCommittedUrl)
         trimWarmRenderers()
         return RendererActivation(restoredSavedState = restored, reusedLiveRenderer = false)
@@ -124,6 +138,12 @@ class RendererPool(
 
     fun deactivate(tabId: TabId) {
         checkMainThread()
+        val resident = residents[tabId] ?: return
+        resident.session.setLifecycle(
+            active = resident.keepRendererAlive,
+            focused = false,
+            highPriority = resident.keepRendererAlive || resident.pinned,
+        )
         if (activeTabId == tabId) clearActiveProjection()
     }
 
@@ -137,7 +157,14 @@ class RendererPool(
 
     suspend fun setKeepRendererAlive(tabId: TabId, enabled: Boolean) {
         checkMainThread()
-        residents[tabId]?.keepRendererAlive = enabled
+        residents[tabId]?.let { resident ->
+            resident.keepRendererAlive = enabled
+            resident.session.setLifecycle(
+                active = tabId == activeTabId || enabled,
+                focused = tabId == activeTabId,
+                highPriority = enabled || resident.pinned,
+            )
+        }
         if (!enabled) trimWarmRenderers()
     }
 
@@ -175,7 +202,8 @@ class RendererPool(
     suspend fun saveAndRelease(tabId: TabId): Boolean {
         checkMainThread()
         val resident = residents.remove(tabId) ?: return false
-        val saved = stateStore.save(tabId, resident.session.webView)
+        resident.session.setLifecycle(active = false, focused = false, highPriority = false)
+        val saved = stateStore.save(tabId, resident.session.serializedState())
         resident.session.destroy()
         if (activeTabId == tabId) clearActiveProjection()
         return saved
@@ -198,8 +226,12 @@ class RendererPool(
         val dead = residents.remove(tabId)
         if (activeTabId == tabId) clearActiveProjection()
         listener?.onRendererGone(tabId, didCrash)
-        if (dead != null) {
-            mainHandler.post { runCatching { dead.session.destroy() } }
+        if (dead != null) mainHandler.post { runCatching { dead.session.destroy() } }
+    }
+
+    override fun onOpenNewTab(tabId: TabId, url: String) {
+        if (url.startsWith("http://", true) || url.startsWith("https://", true)) {
+            newTabHandler?.invoke(url)
         }
     }
 
@@ -217,7 +249,8 @@ class RendererPool(
                 )
                 ?: return
             residents.remove(candidate.key)
-            val saved = stateStore.save(candidate.key, candidate.value.session.webView)
+            candidate.value.session.setLifecycle(active = false, focused = false, highPriority = false)
+            val saved = stateStore.save(candidate.key, candidate.value.session.serializedState())
             candidate.value.session.destroy()
             listener?.onRendererEvicted(candidate.key, saved)
         }
@@ -225,6 +258,20 @@ class RendererPool(
 
     private fun evictableWarmCount(): Int = residents.count { (tabId, resident) ->
         tabId != activeTabId && !resident.keepRendererAlive
+    }
+
+    private fun demoteCurrentIfNeeded(nextTabId: TabId) {
+        val currentId = activeTabId ?: return
+        if (currentId == nextTabId) return
+        residents[currentId]?.let { applyBackgroundLifecycle(currentId, it) }
+    }
+
+    private fun applyBackgroundLifecycle(tabId: TabId, resident: Resident) {
+        resident.session.setLifecycle(
+            active = resident.keepRendererAlive,
+            focused = false,
+            highPriority = resident.keepRendererAlive || resident.pinned,
+        )
     }
 
     private fun clearActiveProjection() {

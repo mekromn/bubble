@@ -5,7 +5,7 @@ import com.mekromn.bubble.ai.adapter.AiChatAdapterRegistry
 import com.mekromn.bubble.ai.chatgpt.ChatGptAdapter
 import com.mekromn.bubble.ai.notifications.AiReplyNotificationCoordinator
 import com.mekromn.bubble.ai.workspace.AiWorkspaceCoordinator
-import com.mekromn.bubble.browser.engine.WebViewStateStore
+import com.mekromn.bubble.browser.engine.BrowserSessionStateStore
 import com.mekromn.bubble.browser.navigation.NavigationResolver
 import com.mekromn.bubble.browser.session.BrowsingDataRecorder
 import com.mekromn.bubble.browser.session.RendererPool
@@ -33,8 +33,7 @@ class BubbleRuntime(
     )
     val rendererPool = RendererPool(
         context = application,
-        stateStore = WebViewStateStore(application),
-        aiChatSignalSink = aiWorkspaces,
+        stateStore = BrowserSessionStateStore(application),
     )
     val sessions = TabSessionManager(
         repository = container.tabs,
@@ -59,6 +58,7 @@ class BubbleRuntime(
     )
 
     init {
+        rendererPool.newTabHandler = { url -> scope.launch { sessions.createTab(url) } }
         scope.launch {
             sessions.initialize()
             val onlyTab = sessions.state.value.tabs.singleOrNull()

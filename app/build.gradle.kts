@@ -16,8 +16,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -88,6 +88,9 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     implementation("androidx.webkit:webkit:1.17.0")
+    // GeckoView is the primary browser engine for the Pixel/arm64 test line. Unlike
+    // Android WebView it is a self-contained full browser engine with GeckoSession tabs.
+    implementation("org.mozilla.geckoview:geckoview-arm64-v8a:154.0.20260824154132")
     ksp("androidx.room:room-compiler:2.8.4")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
