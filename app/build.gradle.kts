@@ -7,10 +7,11 @@ plugins {
 
 android {
     namespace = "com.mekromn.bubble"
-    // Bubble v1 deliberately targets Android 16 / API 36. API 37 is not yet a
-    // production target for this release line.
-    //noinspection GradleDependency
-    compileSdk = 36
+    // GeckoView 154 and its current AndroidX dependency line require the Android 17.1
+    // compile stubs. This does NOT opt Bubble into Android 17 runtime behavior: targetSdk
+    // intentionally remains 36 / Android 16 for the current production/test contract.
+    compileSdk = 37
+    compileSdkMinor = 1
 
     defaultConfig {
         applicationId = "com.mekromn.bubble"
@@ -45,9 +46,8 @@ android {
         abortOnError = true
         checkDependencies = true
         warningsAsErrors = true
-        // Bubble's 2026 production contract deliberately targets Android 16 / API 36.
-        // API 37 is not a v1 target yet, so suppress this single policy warning rather
-        // than weakening lint globally or creating a baseline that could hide defects.
+        // Bubble deliberately keeps Android 16 target behavior while compiling against
+        // Android 17.1 so the embedded Gecko browser can use its current support stack.
         disable += "OldTargetApi"
     }
 
@@ -61,29 +61,20 @@ room {
 }
 
 dependencies {
-    // Compose 1.12 is compiled against API 37. Keep the v1/API-36 production
-    // line on the stable Compose 1.11 generation until API 37 becomes an
-    // explicitly validated project target.
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
     implementation("androidx.activity:activity-compose:1.13.0")
-    // Core 1.18+ moved its compile baseline above plain API 36. Core 1.17 is
-    // the newest stable line whose documented baseline remains API 36.
-    //noinspection GradleDependency
-    implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.compose.animation:animation")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    // Lifecycle 2.11 requires compileSdk 37; keep the API-36-compatible 2.10 line.
-    //noinspection GradleDependency
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    //noinspection GradleDependency
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
