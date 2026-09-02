@@ -1,8 +1,6 @@
 package com.mekromn.bubble.browser.engine
 
 import android.content.Context
-import android.content.MutableContextWrapper
-import android.net.Uri
 import android.view.View
 import com.mekromn.bubble.BuildConfig
 import com.mekromn.bubble.browser.navigation.ExternalNavigationPolicy
@@ -23,7 +21,8 @@ import org.mozilla.geckoview.WebRequestError
 
 /**
  * One GeckoRuntime per Bubble process; every logical tab receives an independent GeckoSession.
- * Gecko, not Android System WebView, is the primary browser engine from Bubble 0.4 onward.
+ * GeckoSession is durable and may remain alive without a GeckoView. GeckoView is created only
+ * with the foreground Activity context that will actually host its compositor surface.
  */
 class GeckoBrowserFactory(context: Context) {
     private val appContext = context.applicationContext
@@ -33,7 +32,7 @@ class GeckoBrowserFactory(context: Context) {
             .consoleOutput(BuildConfig.DEBUG)
             .remoteDebuggingEnabled(BuildConfig.DEBUG)
             .build(),
-    )
+    ).also { it.warmUp() }
 
     fun create(tab: Tab, events: BrowserEngineEvents): BrowserEngineSession =
         GeckoBrowserSession(appContext, runtime, tab, events)
@@ -55,9 +54,9 @@ private class GeckoBrowserSession(
     )
     override val pageState: StateFlow<EnginePageState> = mutablePageState
 
-    private val contextWrapper = MutableContextWrapper(appContext)
     private val externalNavigator = SystemExternalNavigator(appContext)
     private var latestSessionState: GeckoSession.SessionState? = null
+    private var attachedView: GeckoView? = null
     private var destroyed = false
 
     private val session = GeckoSession(
@@ -71,17 +70,32 @@ private class GeckoBrowserSession(
             .build(),
     )
 
-    override val contentView: View = GeckoView(contextWrapper)
-
     init {
         installDelegates()
         session.open(runtime)
-        (contentView as GeckoView).setSession(session)
         setLifecycle(
             active = tab.selected || tab.keepRendererAlive,
             focused = tab.selected,
             highPriority = tab.keepRendererAlive || tab.pinned,
         )
+    }
+
+    override fun createContentView(context: Context): View {
+        check(!destroyed) { "Cannot create a view for a destroyed Gecko session" }
+        val existing = attachedView
+        if (existing != null && existing.context === context) return existing
+
+        releaseContentView()
+        return GeckoView(context).also { view ->
+            view.setSession(session)
+            attachedView = view
+        }
+    }
+
+    override fun releaseContentView() {
+        val view = attachedView ?: return
+        attachedView = null
+        runCatching { view.releaseSession() }
     }
 
     private fun installDelegates() {
@@ -131,8 +145,11 @@ private class GeckoBrowserSession(
                 publish(
                     mutablePageState.value.copy(
                         url = next.ifBlank { mutablePageState.value.url },
-                        secure = if (next.isBlank()) mutablePageState.value.secure
-                        else next.startsWith("https://", ignoreCase = true),
+                        secure = if (next.isBlank()) {
+                            mutablePageState.value.secure
+                        } else {
+                            next.startsWith("https://", ignoreCase = true)
+                        },
                         error = null,
                     ),
                 )
@@ -203,14 +220,6 @@ private class GeckoBrowserSession(
         }
     }
 
-    override fun bindHostContext(context: Context) {
-        contextWrapper.setBaseContext(context)
-    }
-
-    override fun releaseHostContext() {
-        contextWrapper.setBaseContext(appContext)
-    }
-
     override fun setLifecycle(active: Boolean, focused: Boolean, highPriority: Boolean) {
         if (destroyed) return
         session.setFocused(focused)
@@ -221,35 +230,43 @@ private class GeckoBrowserSession(
     }
 
     override fun loadUrl(url: String) {
-        session.loadUri(url)
+        if (!destroyed) session.loadUri(url)
     }
 
-    override fun reload() = session.reload()
-    override fun stop() = session.stop()
+    override fun reload() {
+        if (!destroyed) session.reload()
+    }
+
+    override fun stop() {
+        if (!destroyed) session.stop()
+    }
 
     override fun goBack(): Boolean {
-        if (!mutablePageState.value.canGoBack) return false
+        if (destroyed || !mutablePageState.value.canGoBack) return false
         session.goBack()
         return true
     }
 
     override fun goForward(): Boolean {
-        if (!mutablePageState.value.canGoForward) return false
+        if (destroyed || !mutablePageState.value.canGoForward) return false
         session.goForward()
         return true
     }
 
     override fun setUserAgentMode(mode: UserAgentMode) {
+        if (destroyed) return
         session.settings.userAgentMode = userAgentMode(mode)
         session.settings.viewportMode = viewportMode(mode)
     }
 
     override fun serializedState(): String? {
+        if (destroyed) return null
         session.flushSessionState()
         return latestSessionState?.toString()
     }
 
     override fun restoreSerializedState(serialized: String): Boolean {
+        if (destroyed) return false
         val restored = runCatching { GeckoSession.SessionState.fromString(serialized) }.getOrNull()
             ?: return false
         return runCatching {
@@ -262,8 +279,7 @@ private class GeckoBrowserSession(
     override fun destroy() {
         if (destroyed) return
         destroyed = true
-        releaseHostContext()
-        runCatching { (contentView as GeckoView).releaseSession() }
+        releaseContentView()
         runCatching { session.close() }
     }
 
