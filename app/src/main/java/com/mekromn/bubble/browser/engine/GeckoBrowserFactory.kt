@@ -88,12 +88,11 @@ private class GeckoBrowserSession(
 
         releaseContentView()
         return GeckoView(context).also { view ->
-            // Bubble hosts Gecko inside Compose and animates browser chrome around the page.
-            // TextureView participates in ordinary Android composition/clipping instead of living
-            // in the separate SurfaceView layer, which avoids the blank/leaked surface behavior
-            // seen during the initial Gecko bring-up.
-            view.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
-            view.coverUntilFirstPaint(Color.rgb(12, 13, 16))
+            // GeckoView now lives directly in BrowserActivity, not inside AndroidView/Compose.
+            // Keep Mozilla's highest-performance SurfaceView backend; Bubble never transforms the
+            // page view itself, only the independent Compose chrome above/beside it.
+            view.setViewBackend(GeckoView.BACKEND_SURFACE_VIEW)
+            view.coverUntilFirstPaint(Color.rgb(9, 11, 15))
             view.setSession(session)
             attachedView = view
         }
