@@ -35,16 +35,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * BrowserActivity deliberately keeps GeckoView out of Compose.
+ * BrowserActivity owns two independent layers:
+ * 1) a native GeckoView content host attached directly to the Activity/window, and
+ * 2) a transparent Compose chrome layer above it.
  *
- * The Activity owns a native browser-content layer and places Compose chrome above it. This is
- * the same fundamental shape as Mozilla's reference GeckoView integration: GeckoView is a real
- * Android View attached directly to the Activity/window, while Bubble's animated browser UI is
- * an independent overlay. Page rendering therefore does not depend on AndroidView interop.
+ * Gecko therefore follows Mozilla's normal View integration and never depends on AndroidView.
  */
 class BrowserActivity : ComponentActivity() {
     private lateinit var browserHost: FrameLayout
-    private lateinit var chromeView: BrowserChromeComposeView
+    private lateinit var chromeLayer: BrowserChromeLayer
     private var notificationPermissionRequestedThisActivity = false
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -99,9 +98,10 @@ class BrowserActivity : ComponentActivity() {
             clipToPadding = true
         }
 
-        chromeView = BrowserChromeComposeView(this).apply {
+        chromeLayer = BrowserChromeLayer(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            setContent {
+            composeView.setBackgroundColor(Color.TRANSPARENT)
+            composeView.setContent {
                 BubbleTheme {
                     Box(
                         modifier = Modifier
@@ -122,20 +122,8 @@ class BrowserActivity : ComponentActivity() {
 
         val root = FrameLayout(this).apply {
             setBackgroundColor(BROWSER_BACKGROUND)
-            addView(
-                browserHost,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ),
-            )
-            addView(
-                chromeView,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ),
-            )
+            addView(browserHost, matchParentParams())
+            addView(chromeLayer, matchParentParams())
         }
         setContentView(root)
 
@@ -151,8 +139,8 @@ class BrowserActivity : ComponentActivity() {
                 safe.right,
                 safe.bottom + bottomChrome,
             )
-            chromeView.topInteractivePx = (safe.top + topChrome).toFloat()
-            chromeView.bottomInteractivePx = (safe.bottom + bottomChrome).toFloat()
+            chromeLayer.topInteractivePx = (safe.top + topChrome).toFloat()
+            chromeLayer.bottomInteractivePx = (safe.bottom + bottomChrome).toFloat()
             insets
         }
         ViewCompat.requestApplyInsets(root)
@@ -173,13 +161,7 @@ class BrowserActivity : ComponentActivity() {
                     browserHost.removeAllViews()
                     if (contentView != null) {
                         (contentView.parent as? ViewGroup)?.removeView(contentView)
-                        browserHost.addView(
-                            contentView,
-                            FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            ),
-                        )
+                        browserHost.addView(contentView, matchParentParams())
                     }
                 }
             }
@@ -246,19 +228,36 @@ class BrowserActivity : ComponentActivity() {
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    private fun matchParentParams(): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density + 0.5f).toInt()
 
     /**
-     * Full-screen Compose chrome is visually transparent over the page. In normal browsing it
-     * only receives touches in the top/bottom browser chrome; the central page region returns
-     * false immediately so FrameLayout can dispatch that gesture to GeckoView underneath.
-     * Full-screen sheets/dialogs opt into intercepting the complete window.
+     * A normal ViewGroup handles hit routing; ComposeView remains an unmodified final AndroidX
+     * class. During normal browsing the center returns false on ACTION_DOWN, allowing FrameLayout
+     * to dispatch the gesture to GeckoView underneath. Browser chrome and modal overlays remain
+     * fully interactive.
      */
-    private class BrowserChromeComposeView(context: Context) : ComposeView(context) {
+    private class BrowserChromeLayer(context: Context) : FrameLayout(context) {
+        val composeView = ComposeView(context)
         var blockAllPageTouches: Boolean = false
         var topInteractivePx: Float = 0f
         var bottomInteractivePx: Float = 0f
+
+        init {
+            addView(
+                composeView,
+                LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
 
         override fun dispatchTouchEvent(event: MotionEvent): Boolean {
             if (!blockAllPageTouches) {
