@@ -43,6 +43,7 @@ class RendererPool(
 
     private var memoryMode = RendererMemoryMode.BALANCED
     private var memoryPressure = RendererMemoryPressure.NORMAL
+    private var hostContext: Context? = null
 
     var listener: RendererPoolListener? = null
     var newTabHandler: ((String) -> Unit)? = null
@@ -58,6 +59,50 @@ class RendererPool(
     fun hasLiveRenderer(tabId: TabId): Boolean = residents.containsKey(tabId)
     fun liveRendererCount(): Int = residents.size
 
+    /**
+     * Bind the foreground Activity that is actually capable of hosting a Gecko compositor.
+     * The GeckoSession remains process-scoped; only the GeckoView is created here.
+     */
+    fun attachHost(context: Context) {
+        checkMainThread()
+        if (hostContext === context && mutableActiveWebView.value != null) return
+
+        if (hostContext !== context) {
+            activeSession()?.releaseContentView()
+        }
+        hostContext = context
+
+        activeResident()?.let { resident ->
+            resident.session.setLifecycle(
+                active = true,
+                focused = true,
+                highPriority = resident.keepRendererAlive || resident.pinned,
+            )
+            mutableActiveWebView.value = resident.session.createContentView(context)
+            mutableActivePageState.value = resident.session.pageState.value
+        }
+    }
+
+    /**
+     * Release the Activity-owned GeckoView without closing the durable GeckoSession. ChatGPT
+     * keep-live sessions remain active/high-priority while Bubble is behind another Android app.
+     */
+    fun detachHost(context: Context) {
+        checkMainThread()
+        if (hostContext !== context) return
+
+        activeResident()?.let { resident ->
+            resident.session.releaseContentView()
+            resident.session.setLifecycle(
+                active = resident.keepRendererAlive,
+                focused = false,
+                highPriority = resident.keepRendererAlive || resident.pinned,
+            )
+        }
+        mutableActiveWebView.value = null
+        hostContext = null
+    }
+
     suspend fun activate(tab: Tab): RendererActivation {
         checkMainThread()
         demoteCurrentIfNeeded(tab.id)
@@ -69,11 +114,11 @@ class RendererPool(
             existing.session.setUserAgentMode(tab.userAgentMode)
             existing.session.setLifecycle(
                 active = true,
-                focused = true,
+                focused = hostContext != null,
                 highPriority = tab.keepRendererAlive || tab.pinned,
             )
             activeTabId = tab.id
-            mutableActiveWebView.value = existing.session.contentView
+            projectActiveView(existing.session)
             mutableActivePageState.value = existing.session.pageState.value
             trimWarmRenderers()
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
@@ -90,10 +135,10 @@ class RendererPool(
         activeTabId = tab.id
         session.setLifecycle(
             active = true,
-            focused = true,
+            focused = hostContext != null,
             highPriority = tab.keepRendererAlive || tab.pinned,
         )
-        mutableActiveWebView.value = session.contentView
+        projectActiveView(session)
         mutableActivePageState.value = session.pageState.value
 
         val restored = stateStore.restore(tab.id)?.let(session::restoreSerializedState) ?: false
@@ -110,7 +155,7 @@ class RendererPool(
             existing.keepRendererAlive = tab.keepRendererAlive
             existing.pinned = tab.pinned
             existing.session.setUserAgentMode(tab.userAgentMode)
-            applyBackgroundLifecycle(tab.id, existing)
+            applyBackgroundLifecycle(existing)
             trimWarmRenderers()
             return RendererActivation(restoredSavedState = false, reusedLiveRenderer = true)
         }
@@ -123,7 +168,7 @@ class RendererPool(
             pinned = tab.pinned,
         )
         residents[tab.id] = resident
-        applyBackgroundLifecycle(tab.id, resident)
+        applyBackgroundLifecycle(resident)
         val restored = stateStore.restore(tab.id)?.let(session::restoreSerializedState) ?: false
         if (!restored) session.loadUrl(tab.lastCommittedUrl)
         trimWarmRenderers()
@@ -139,12 +184,13 @@ class RendererPool(
     fun deactivate(tabId: TabId) {
         checkMainThread()
         val resident = residents[tabId] ?: return
+        resident.session.releaseContentView()
         resident.session.setLifecycle(
             active = resident.keepRendererAlive,
             focused = false,
             highPriority = resident.keepRendererAlive || resident.pinned,
         )
-        if (activeTabId == tabId) clearActiveProjection()
+        if (activeTabId == tabId) clearActiveProjection(releaseView = false)
     }
 
     fun setUserAgentMode(tabId: TabId, mode: UserAgentMode) {
@@ -161,7 +207,7 @@ class RendererPool(
             resident.keepRendererAlive = enabled
             resident.session.setLifecycle(
                 active = tabId == activeTabId || enabled,
-                focused = tabId == activeTabId,
+                focused = tabId == activeTabId && hostContext != null,
                 highPriority = enabled || resident.pinned,
             )
         }
@@ -194,7 +240,7 @@ class RendererPool(
     suspend fun release(tabId: TabId, discardSavedState: Boolean) {
         checkMainThread()
         val resident = residents.remove(tabId)
-        if (activeTabId == tabId) clearActiveProjection()
+        if (activeTabId == tabId) clearActiveProjection(releaseView = false)
         resident?.session?.destroy()
         if (discardSavedState) stateStore.delete(tabId)
     }
@@ -205,7 +251,7 @@ class RendererPool(
         resident.session.setLifecycle(active = false, focused = false, highPriority = false)
         val saved = stateStore.save(tabId, resident.session.serializedState())
         resident.session.destroy()
-        if (activeTabId == tabId) clearActiveProjection()
+        if (activeTabId == tabId) clearActiveProjection(releaseView = false)
         return saved
     }
 
@@ -213,7 +259,8 @@ class RendererPool(
         checkMainThread()
         residents.values.forEach { resident -> runCatching { resident.session.destroy() } }
         residents.clear()
-        clearActiveProjection()
+        clearActiveProjection(releaseView = false)
+        hostContext = null
     }
 
     override fun onPageState(tabId: TabId, state: EnginePageState) {
@@ -224,7 +271,7 @@ class RendererPool(
 
     override fun onRendererGone(tabId: TabId, didCrash: Boolean) {
         val dead = residents.remove(tabId)
-        if (activeTabId == tabId) clearActiveProjection()
+        if (activeTabId == tabId) clearActiveProjection(releaseView = false)
         listener?.onRendererGone(tabId, didCrash)
         if (dead != null) mainHandler.post { runCatching { dead.session.destroy() } }
     }
@@ -263,10 +310,14 @@ class RendererPool(
     private fun demoteCurrentIfNeeded(nextTabId: TabId) {
         val currentId = activeTabId ?: return
         if (currentId == nextTabId) return
-        residents[currentId]?.let { applyBackgroundLifecycle(currentId, it) }
+        residents[currentId]?.let { resident ->
+            resident.session.releaseContentView()
+            applyBackgroundLifecycle(resident)
+        }
+        mutableActiveWebView.value = null
     }
 
-    private fun applyBackgroundLifecycle(tabId: TabId, resident: Resident) {
+    private fun applyBackgroundLifecycle(resident: Resident) {
         resident.session.setLifecycle(
             active = resident.keepRendererAlive,
             focused = false,
@@ -274,13 +325,19 @@ class RendererPool(
         )
     }
 
-    private fun clearActiveProjection() {
+    private fun projectActiveView(session: BrowserEngineSession) {
+        mutableActiveWebView.value = hostContext?.let(session::createContentView)
+    }
+
+    private fun clearActiveProjection(releaseView: Boolean = true) {
+        if (releaseView) activeSession()?.releaseContentView()
         activeTabId = null
         mutableActiveWebView.value = null
         mutableActivePageState.value = EnginePageState()
     }
 
-    private fun activeSession(): BrowserEngineSession? = activeTabId?.let { residents[it]?.session }
+    private fun activeResident(): Resident? = activeTabId?.let(residents::get)
+    private fun activeSession(): BrowserEngineSession? = activeResident()?.session
 
     private fun checkMainThread() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "RendererPool must run on the main thread" }
