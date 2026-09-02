@@ -29,7 +29,6 @@ import kotlinx.coroutines.launch
 
 class BrowserActivity : ComponentActivity() {
     private var notificationPermissionRequestedThisActivity = false
-    private var lastCollapsedWorkspaceIds: Set<String>? = null
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -59,8 +58,6 @@ class BrowserActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         val app = application as BubbleApplication
-        // GeckoView itself is Activity/window UI. Attach this Activity as the renderer host before
-        // activating/restoring the selected tab so the compositor surface is created correctly.
         app.runtime.rendererPool.attachHost(this)
         app.runtime.setBrowserForeground(true)
         lifecycleScope.launch {
@@ -72,8 +69,6 @@ class BrowserActivity : ComponentActivity() {
     override fun onStop() {
         val app = application as BubbleApplication
         app.runtime.setBrowserForeground(false)
-        // Release only the Activity-owned GeckoView. Durable GeckoSession instances, including
-        // keep-live ChatGPT sessions, remain in RendererPool and keep their background policy.
         app.runtime.rendererPool.detachHost(this)
         super.onStop()
     }
@@ -120,31 +115,12 @@ class BrowserActivity : ComponentActivity() {
     private fun observeAiWorkspaceState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                val app = application as BubbleApplication
-                launch {
-                    app.runtime.aiWorkspaces.state
-                        .map { state -> state.workspaces.isNotEmpty() }
-                        .distinctUntilChanged()
-                        .collect { hasWorkspace ->
-                            if (hasWorkspace) requestNotificationPermissionIfNeeded()
-                        }
-                }
-                launch {
-                    app.runtime.aiWorkspaces.state
-                        .map { state ->
-                            state.workspaces
-                                .filter { it.collapsedToBubble }
-                                .mapTo(linkedSetOf()) { it.id.value }
-                        }
-                        .distinctUntilChanged()
-                        .collect { collapsedIds ->
-                            val previous = lastCollapsedWorkspaceIds
-                            lastCollapsedWorkspaceIds = collapsedIds
-                            if (previous != null && (collapsedIds - previous).isNotEmpty()) {
-                                moveTaskToBack(true)
-                            }
-                        }
-                }
+                (application as BubbleApplication).runtime.aiWorkspaces.state
+                    .map { state -> state.workspaces.isNotEmpty() }
+                    .distinctUntilChanged()
+                    .collect { hasWorkspace ->
+                        if (hasWorkspace) requestNotificationPermissionIfNeeded()
+                    }
             }
         }
     }
