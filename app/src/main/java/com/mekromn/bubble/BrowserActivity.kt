@@ -59,6 +59,9 @@ class BrowserActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         val app = application as BubbleApplication
+        // GeckoView itself is Activity/window UI. Attach this Activity as the renderer host before
+        // activating/restoring the selected tab so the compositor surface is created correctly.
+        app.runtime.rendererPool.attachHost(this)
         app.runtime.setBrowserForeground(true)
         lifecycleScope.launch {
             app.runtime.sessions.initialize()
@@ -67,7 +70,11 @@ class BrowserActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        (application as BubbleApplication).runtime.setBrowserForeground(false)
+        val app = application as BubbleApplication
+        app.runtime.setBrowserForeground(false)
+        // Release only the Activity-owned GeckoView. Durable GeckoSession instances, including
+        // keep-live ChatGPT sessions, remain in RendererPool and keep their background policy.
+        app.runtime.rendererPool.detachHost(this)
         super.onStop()
     }
 
