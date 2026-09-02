@@ -6,6 +6,7 @@ import com.mekromn.bubble.ai.chatgpt.ChatGptAdapter
 import com.mekromn.bubble.ai.notifications.AiReplyNotificationCoordinator
 import com.mekromn.bubble.ai.workspace.AiWorkspaceCoordinator
 import com.mekromn.bubble.browser.engine.WebViewStateStore
+import com.mekromn.bubble.browser.navigation.NavigationResolver
 import com.mekromn.bubble.browser.session.BrowsingDataRecorder
 import com.mekromn.bubble.browser.session.RendererPool
 import com.mekromn.bubble.browser.session.TabSessionManager
@@ -54,8 +55,17 @@ class BubbleRuntime(
     )
 
     init {
-        scope.launch { aiWorkspaces.initialize() }
-        scope.launch { sessions.initialize() }
+        scope.launch {
+            sessions.initialize()
+            val onlyTab = sessions.state.value.tabs.singleOrNull()
+            if (
+                onlyTab != null &&
+                onlyTab.lastCommittedUrl == NavigationResolver.NEW_TAB_URL &&
+                onlyTab.title == "New tab"
+            ) {
+                sessions.navigate(ChatGptAdapter.TRUSTED_ORIGIN + "/")
+            }
+        }
         scope.launch {
             container.settings.settings
                 .map { it.rendererMemoryMode }

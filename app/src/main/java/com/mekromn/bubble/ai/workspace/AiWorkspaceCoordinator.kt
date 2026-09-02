@@ -8,6 +8,7 @@ import com.mekromn.bubble.ai.model.ChatWorkspace
 import com.mekromn.bubble.ai.model.WorkspaceId
 import com.mekromn.bubble.ai.monitor.AiChatSignal
 import com.mekromn.bubble.ai.monitor.AiChatSignalSink
+import com.mekromn.bubble.browser.session.PresentationState
 import com.mekromn.bubble.browser.session.Tab
 import com.mekromn.bubble.browser.session.TabId
 import com.mekromn.bubble.data.db.AiWorkspacePlacement
@@ -54,7 +55,7 @@ class AiWorkspaceCoordinator(
                 profileId = tab.profileId,
                 tabIds = emptyList(),
                 lastActiveTabId = if (tab.selected) tab.id else null,
-                collapsedToBubble = false,
+                collapsedToBubble = tab.presentationState == PresentationState.HEAD,
                 notificationsEnabled = true,
                 soundEnabled = true,
                 createdAt = now,
@@ -74,6 +75,7 @@ class AiWorkspaceCoordinator(
             val updated = workspace.copy(
                 tabIds = chats.map(AiChatTabStatus::tabId),
                 lastActiveTabId = if (tab.selected) tab.id else workspace.lastActiveTabId,
+                collapsedToBubble = workspace.collapsedToBubble || tab.presentationState == PresentationState.HEAD,
                 updatedAt = now,
                 chats = chats,
             )
@@ -217,11 +219,7 @@ class AiWorkspaceCoordinator(
     private fun replaceWorkspace(updated: ChatWorkspace) {
         val current = mutableState.value.workspaces
         val index = current.indexOfFirst { it.id == updated.id }
-        val next = if (index < 0) {
-            current + updated
-        } else {
-            current.toMutableList().also { it[index] = updated }
-        }
+        val next = if (index < 0) current + updated else current.toMutableList().also { it[index] = updated }
         mutableState.value = AiWorkspaceState(initialized = true, workspaces = next)
     }
 
