@@ -7,9 +7,8 @@ plugins {
 
 android {
     namespace = "com.mekromn.bubble"
-    // GeckoView 154 and its current AndroidX dependency line require the Android 17.1
-    // compile stubs. This does NOT opt Bubble into Android 17 runtime behavior: targetSdk
-    // intentionally remains 36 / Android 16 for the current production/test contract.
+    // Mozilla's current Gecko/Android Components line requires the Android 17.1 compile stubs.
+    // Runtime behavior remains targeted to Android 16.
     compileSdk = 37
     compileSdkMinor = 1
 
@@ -17,8 +16,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.4.3"
+        versionCode = 8
+        versionName = "0.4.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -90,7 +89,12 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     implementation("androidx.webkit:webkit:1.17.0")
-    implementation("org.mozilla.geckoview:geckoview-arm64-v8a:154.0.20260824154132")
+
+    // Use Mozilla's browser-oriented Gecko integration instead of hand-managing GeckoView /
+    // GeckoSession as Bubble's primary bring-up path. Android Components owns the defensive
+    // Gecko view/session attachment behavior used by Firefox-family Android browsers.
+    implementation("org.mozilla.components:browser-engine-gecko:154.0")
+
     ksp("androidx.room:room-compiler:2.8.4")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
