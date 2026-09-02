@@ -32,10 +32,23 @@ android {
         buildConfig = true
     }
 
+    // Development/test APKs use a repository-pinned key so every CI build has the same
+    // signing identity forever. This key is intentionally public and MUST NEVER sign a
+    // production/release package. Production signing must use a separate private key.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("signing/bubble-debug.jks")
+            storePassword = "bubble-debug-2026"
+            keyAlias = "bubble-debug"
+            keyPassword = "bubble-debug-2026"
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             isMinifyEnabled = false

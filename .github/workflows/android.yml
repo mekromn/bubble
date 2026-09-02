@@ -36,14 +36,11 @@ jobs:
           cmdline-tools-version: '11076708'
           packages: platform-tools
 
-      # Keep the development signing identity stable across clean GitHub runners
-      # without storing a keystore in the repository. The first successful run
-      # seeds this cache; later debug APKs can then install as normal updates.
-      - name: Restore stable debug signing identity
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: bubble-debug-signing-v1
+      # The debug keystore is deliberately repository-pinned. Unlike an Actions cache,
+      # this identity cannot disappear between clean runners. It signs ONLY the
+      # com.mekromn.bubble.debug development package; production must use a private key.
+      - name: Verify pinned debug signing key
+        run: echo "4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks" | sha256sum -c -
 
       # GeckoView 154 requires compile SDK 37.1. Bubble still targets API 36 at
       # runtime; installing a newer compile SDK does not opt into target-37 behavior.
