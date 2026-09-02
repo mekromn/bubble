@@ -1,13 +1,12 @@
 package com.mekromn.bubble.ui.browser
 
-import android.content.MutableContextWrapper
 import android.view.View
 import android.view.ViewGroup
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,21 +19,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.mekromn.bubble.browser.engine.EnginePageState
 
 /**
- * Engine-neutral browser surface used by Gecko-backed tabs.
+ * Engine-neutral browser surface for the active renderer.
  *
- * BrowserScreen predates the Gecko migration and still contains a private WebView-specific
- * overload. RendererPool now exposes View?, so this overload is the correct static match for
- * GeckoView and prevents the new engine from being lost behind the old WebView-only boundary.
+ * RendererPool guarantees the View was constructed with the foreground Activity context. Compose
+ * only mounts/unmounts it; it never rewrites the view's Context. This keeps GeckoView's compositor
+ * tied to the real Activity/window while GeckoSession remains durable in the renderer pool.
  */
 @Composable
 internal fun BrowserContent(
@@ -42,16 +39,7 @@ internal fun BrowserContent(
     page: EnginePageState,
     navigationError: String?,
 ) {
-    val hostContext = LocalContext.current
     val newTab = page.url.isBlank() || page.url == "about:blank"
-
-    DisposableEffect(webView, hostContext) {
-        val wrapper = webView?.context as? MutableContextWrapper
-        wrapper?.setBaseContext(hostContext)
-        onDispose {
-            wrapper?.setBaseContext(hostContext.applicationContext)
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         when {
