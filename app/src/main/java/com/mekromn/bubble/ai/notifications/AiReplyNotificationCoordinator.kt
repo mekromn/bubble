@@ -100,6 +100,7 @@ class AiReplyNotificationCoordinator(
             .setContentText("Tap to open the completed chat")
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setGroup(GROUP_KEY)
