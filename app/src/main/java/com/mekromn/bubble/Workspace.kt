@@ -159,9 +159,12 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun engine(): GeckoRuntime {
         runtime?.let { return it }
         val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder()
-            .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
             .remoteDebuggingEnabled(false).consoleOutput(false).build())
         runtime = created
+        // GeckoRuntimeSettings.updateSettings() does not copy mPreferredColorScheme from a
+        // builder. Set the public property on the ATTACHED settings after runtime creation.
+        // This notifies Gecko's system-state listener before our first document is navigated.
+        created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
         main.postDelayed(monitorTimeout, 10_000)
         created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local")
             .accept({ addon -> finishMonitor(addon) }, { finishMonitor(null) })
