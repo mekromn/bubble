@@ -1,0 +1,131 @@
+name: Clean obsolete Bubble artifacts
+# A user-approved, bounded cleanup. No builds, caches, source mutation or artifact uploads.
+on:
+  push:
+    branches: [rebuild-v2]
+    paths: ['.github/workflows/cleanup-obsolete-artifacts.yml']
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete the previewed superseded artifacts (otherwise preview only)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: bubble-obsolete-artifact-cleanup
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    if: github.repository == 'mekromn/bubble' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[cleanup-approved]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inventory, protect latest verified build, and remove approved older artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLY: ${{ github.event_name == 'push' || inputs.apply }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, time, urllib.request, urllib.error
+          REPO = 'mekromn/bubble'
+          REPO_ID = 1345570523
+          PROTECTED_RUN = 33995262749
+          CUTOFF = '2026-09-05T22:13:00Z'
+          NAMES = {'Bubble-rebuild-ARM64', 'Bubble-runtime-evidence'}
+          PROTECTED = {
+              9977882487: 'sha256:192b79020dddc0d73442e3fe15c8beb454f633ce84c37c8a1cf196cb126c5538',
+              9978067645: 'sha256:6dbdde0ef1bdefa3df37d91483d6ee2f598a470878877679d48f89f35055a630',
+          }
+          assert os.environ['GITHUB_REPOSITORY'] == REPO
+          BASE = f'https://api.github.com/repos/{REPO}/actions/'
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                     'Accept': 'application/vnd.github+json',
+                     'X-GitHub-Api-Version': '2022-11-28',
+                     'User-Agent': 'Bubble-user-approved-artifact-maintenance'}
+          def api(path, method='GET'):
+              assert path.startswith('artifacts') and not path.startswith('/')
+              request = urllib.request.Request(BASE + path, headers=headers, method=method)
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          raw = response.read()
+                          return response.status, json.loads(raw) if raw else None
+                  except urllib.error.HTTPError as error:
+                      if error.code == 404:
+                          return 404, None
+                      if error.code in (500, 502, 503, 504) and attempt < 2:
+                          time.sleep(2 ** attempt)
+                          continue
+                      raise
+          def verify_protected():
+              for ident, digest in PROTECTED.items():
+                  status, item = api(f'artifacts/{ident}')
+                  assert status == 200 and item['workflow_run']['id'] == PROTECTED_RUN, 'Protected build missing; aborting'
+                  assert item.get('digest') == digest and not item.get('expired'), 'Protected artifact identity changed; aborting'
+          def eligible(item):
+              run = item.get('workflow_run') or {}
+              return (item.get('id') not in PROTECTED
+                  and item.get('name') in NAMES
+                  and run.get('head_branch') == 'rebuild-v2'
+                  and run.get('repository_id') == REPO_ID
+                  and run.get('head_repository_id') == REPO_ID
+                  and isinstance(run.get('id'), int) and run['id'] < PROTECTED_RUN
+                  and bool(item.get('created_at')) and item['created_at'] < CUTOFF
+                  and not item.get('expired', True))
+          verify_protected()
+          inventory = {}
+          # Finish inventory BEFORE deletion so index-based API pagination cannot skip entries.
+          for page in range(1, 101):
+              status, payload = api(f'artifacts?per_page=100&page={page}')
+              assert status == 200
+              rows = payload['artifacts']
+              for item in rows:
+                  inventory[item['id']] = item
+              if len(rows) < 100:
+                  break
+          else:
+              raise RuntimeError('Inventory exceeded safety bound; no deletion attempted')
+          candidates = [a for a in inventory.values() if eligible(a)]
+          candidates.sort(key=lambda a: a['id'])
+          apply = os.environ['APPLY'].lower() == 'true'
+          print('Inventory count:', len(inventory), 'Eligible count:', len(candidates), 'Apply:', apply, flush=True)
+          for item in candidates:
+              print(json.dumps({k: item[k] for k in ('id','name','size_in_bytes','created_at')}, sort_keys=True), flush=True)
+          deleted = []
+          skipped = []
+          if apply:
+              for old in candidates:
+                  ident = old['id']
+                  status, current = api(f'artifacts/{ident}')
+                  if status == 404:
+                      skipped.append(ident)
+                      continue
+                  assert status == 200 and eligible(current), 'Candidate changed; aborting'
+                  assert current['size_in_bytes'] == old['size_in_bytes'] and current.get('digest') == old.get('digest'), 'Artifact changed; aborting'
+                  status, _ = api(f'artifacts/{ident}', 'DELETE')
+                  if status == 204:
+                      deleted.append(old)
+                  elif status == 404:
+                      skipped.append(ident)
+                  else:
+                      raise RuntimeError(f'Deletion not confirmed: {ident}, status {status}')
+                  time.sleep(.12)
+          verify_protected()
+          result = {'repository': REPO, 'applied': apply, 'inventory_count': len(inventory),
+                    'eligible_count': len(candidates), 'deleted_count': len(deleted),
+                    'deleted_bytes': sum(a['size_in_bytes'] for a in deleted),
+                    'deleted_ids': [a['id'] for a in deleted], 'already_absent_ids': skipped,
+                    'protected_run': PROTECTED_RUN, 'protected_artifacts_verified': list(PROTECTED),
+                    'scope': 'Known Bubble APK/evidence artifacts on rebuild-v2 before protected run; no other data'}
+          print('BUBBLE_CLEANUP_RESULT=' + json.dumps(result, sort_keys=True), flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## User-approved Bubble artifact cleanup\n\n')
+              summary.write(f"Deleted **{result['deleted_count']}** obsolete artifacts, **{result['deleted_bytes']:,} bytes**.\n\n")
+              summary.write('Protected 0.7.1 APK and evidence were verified before and after cleanup.\n\n')
+              summary.write('No source commits, branches, signing keys, Releases, caches, logs, runs or other repositories were deleted.\n\n')
+              summary.write('```json\n' + json.dumps(result, indent=2) + '\n```\n')
+          PY
