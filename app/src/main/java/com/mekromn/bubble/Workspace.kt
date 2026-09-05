@@ -41,6 +41,32 @@ internal class Workspace private constructor(private val app: Context, initialUr
     var bubbleX = 0.88f
     var bubbleY = 0.3f
     var visible = false
+    var covered = false
+    var floatingVisible = false
+    private var surface = WeakReference<GeckoView>(null)
+    var windowX = .5f
+    var windowY = .25f
+    var windowWidth = .92f
+    var windowHeight = .72f
+    val chatVisible: Boolean get() = (visible && !covered) || floatingVisible
+
+    /** A GeckoSession has exactly one display owner, even across Activity/service handoffs. */
+    fun attachSurface(view: GeckoView, session: GeckoSession) {
+        if (surface.get() === view && view.session === session) return
+        surface.get()?.let { old -> if (old.session != null) old.releaseSession() }
+        if (view.session != null) view.releaseSession()
+        view.setSession(session)
+        surface = WeakReference(view)
+        applyPolicy()
+    }
+    fun detachSurface(view: GeckoView) {
+        if (view.session != null) view.releaseSession()
+        if (surface.get() === view) surface.clear()
+        applyPolicy()
+    }
+    private fun detachTab(session: GeckoSession?) {
+        surface.get()?.takeIf { it.session === session }?.let(::detachSurface)
+    }
     var host = WeakReference<BrowserActivity>(null)
     private val main = Handler(Looper.getMainLooper())
     private val store = WorkspaceStore(app)
@@ -59,6 +85,8 @@ internal class Workspace private constructor(private val app: Context, initialUr
             notice = error
             saved?.let { state ->
                 bubbleX = state.bubbleX; bubbleY = state.bubbleY
+                windowX = state.windowX; windowY = state.windowY
+                windowWidth = state.windowWidth; windowHeight = state.windowHeight
                 state.tabs.forEach { t -> tabs += ChatTab(t.id, t.url, t.title, t.desktop).apply {
                     savedState = t.state; unread = t.unread; lastNotice = t.lastNotice
                 } }
@@ -70,7 +98,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
             ready = true
             ensureSession(selected!!)
             changed(true)
-            val pending = tabs.filter { it.id != selectedId && Policy.isChat(it.url) }.map { it.id }
+            val pending = tabs.filter { it.id != selectedId }.map { it.id }
             pending.forEachIndexed { index, id -> main.postDelayed({
                 tabs.firstOrNull { it.id == id }?.let(::ensureSession)
             }, 250L + index * 120L) }
@@ -111,7 +139,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         val tab = tabs.firstOrNull { it.id == id } ?: return
         pendingStarts.remove(id)
         tabs.remove(tab)
-        host.get()?.detachSession(tab.session)
+        detachTab(tab.session)
         tab.session?.close(); tab.session = null
         Replies.clear(app, id)
         if (tabs.isEmpty()) tabs += ChatTab()
@@ -150,10 +178,11 @@ internal class Workspace private constructor(private val app: Context, initialUr
         checkMain()
         tabs.forEach { tab -> tab.session?.let { session ->
             if (!session.isOpen) return@let
-            val live = Policy.isChat(tab.url) || tab.generating
-            session.setActive(live || (visible && tab.id == selectedId))
-            session.setFocused(visible && tab.id == selectedId)
-            session.setPriorityHint(if (live || tab.id == selectedId) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT)
+            // Every open workspace tab is live. Only actual input focus follows the visible tab.
+            // Do not call setFocused(true) on all tabs: that steals keyboard/accessibility focus.
+            session.setActive(true)
+            session.setFocused(chatVisible && tab.id == selectedId && surface.get()?.hasWindowFocus() == true)
+            session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
         } }
     }
     private fun engine(): GeckoRuntime {
@@ -281,7 +310,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
             override fun onCanGoForward(s: GeckoSession, canGoForward: Boolean) { if (tab.session === s) { tab.forward = canGoForward; changed() } }
             override fun onLoadRequest(s: GeckoSession, request: GeckoSession.NavigationDelegate.LoadRequest): GeckoResult<AllowOrDeny>? {
                 if (Policy.isWeb(request.uri) || request.uri == "about:blank" || request.uri.startsWith("blob:")) return null
-                if (request.hasUserGesture) host.get()?.offerExternal(request.uri)
+                if (request.hasUserGesture && tab.id == selectedId) {
+                    if (floatingVisible) BubbleService.active?.window?.offerExternal(request.uri)
+                    else if (visible) host.get()?.offerExternal(request.uri)
+                }
                 return GeckoResult.deny()
             }
             override fun onNewSession(s: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
@@ -300,8 +332,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
         }
         session.promptDelegate = object : GeckoSession.PromptDelegate {
             override fun onFilePrompt(s: GeckoSession, prompt: GeckoSession.PromptDelegate.FilePrompt): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
-                return if (visible && tab.id == selectedId) host.get()?.chooseFile(prompt)
-                    ?: GeckoResult.fromValue(prompt.dismiss()) else GeckoResult.fromValue(prompt.dismiss())
+                if (!chatVisible || tab.id != selectedId) return GeckoResult.fromValue(prompt.dismiss())
+                return if (floatingVisible) FloatingFileActivity.launch(app, tab.id, s, prompt)
+                else host.get()?.chooseFile(prompt) ?: GeckoResult.fromValue(prompt.dismiss())
             }
         }
         extension?.let { installMonitor(tab, session, it) }
@@ -311,13 +344,11 @@ internal class Workspace private constructor(private val app: Context, initialUr
         if (tab.session !== session || tab !in tabs) return
         main.post {
             if (tab.session !== session || tab !in tabs) return@post
-            host.get()?.detachSession(session)
+            detachTab(session)
             pendingStarts.remove(tab.id)
             tab.session = null; tab.loading = false; tab.painted = false; tab.generating = false
             runCatching { session.close() }
-            val needsRecovery = tab.id == selectedId || Policy.isChat(tab.url)
-            if (!needsRecovery) tab.error = null
-            else if (tab.recovery.allow(SystemClock.elapsedRealtime())) {
+            if (tab.recovery.allow(SystemClock.elapsedRealtime())) {
                 tab.error = null
                 main.postDelayed({ if (tab in tabs && tab.session == null) ensureSession(tab) }, 500)
             } else tab.error = "This page's renderer failed repeatedly. Automatic recovery is paused; tap Retry. Your tab is retained."
@@ -338,7 +369,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
                     "finished" -> {
                         if (!tab.generating || tab.run != run || tab.lastNotice == run) return null
                         tab.generating = false; tab.lastNotice = run
-                        tab.unread = !(visible && tab.id == selectedId)
+                        tab.unread = !(chatVisible && tab.id == selectedId)
                         changed()
                         checkpoint { saved ->
                             if (saved && tab in tabs && tab.unread && tab.lastNotice == run) Replies.finished(app, tab.id)
@@ -353,7 +384,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         if (!ready) return
         main.removeCallbacks(saveTask)
         saveScheduled = false
-        store.save(StoredWorkspace(selectedId, tabs.map { StoredTab(it.id, it.url, it.title, it.desktop, it.savedState, it.unread, it.lastNotice) }, bubbleX, bubbleY)) { saved ->
+        store.save(StoredWorkspace(selectedId, tabs.map { StoredTab(it.id, it.url, it.title, it.desktop, it.savedState, it.unread, it.lastNotice) }, bubbleX, bubbleY, windowX, windowY, windowWidth, windowHeight)) { saved ->
             if (!saved && notice == null) { notice = "Workspace changes could not be saved. Check free storage; the previous snapshot is preserved."; changed() }
             done?.invoke(saved)
         }
@@ -362,6 +393,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun checkMain() { check(Looper.myLooper() == Looper.getMainLooper()) }
     companion object {
         private var instance: Workspace? = null
+        fun peek(): Workspace? = instance
         fun get(context: Context, initialUrl: String? = null): Workspace {
             check(Looper.myLooper() == Looper.getMainLooper())
             if (Build.VERSION.SDK_INT >= 28) check(Application.getProcessName() == context.packageName) {

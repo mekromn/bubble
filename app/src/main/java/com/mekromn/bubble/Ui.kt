@@ -75,9 +75,16 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
         set(value) { if (field != value) { field = value; countLabel = if(value>99) "99+" else value.toString(); invalidate() } }
     init {
         contentDescription = label; isFocusable = true; isClickable = true
-        background = Ui.ripple(c, if (accented) Ui.SURFACE_HIGH else Ui.BG, 20f)
+        background = Ui.ripple(c, if (accented) Ui.SURFACE_HIGH else android.graphics.Color.TRANSPARENT, 16f)
         minimumWidth = Ui.dp(c, 48f); minimumHeight = Ui.dp(c, 48f)
         tooltipText = label
+    }
+    override fun drawableStateChanged() {
+        super.drawableStateChanged()
+        if (isLaidOut && ValueAnimator.areAnimatorsEnabled()) {
+            animate().scaleX(if (isPressed) .86f else 1f).scaleY(if (isPressed) .86f else 1f)
+                .setDuration(if (isPressed) 90L else 180L).setInterpolator(Ui.ease).start()
+        }
     }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -107,6 +114,19 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
                 path.moveTo(7f,17f);path.lineTo(7f,21f);path.lineTo(12f,17f);canvas.drawPath(path,paint)
                 canvas.drawLine(8f,9f,16f,9f,paint)
             }
+            "collapse" -> { canvas.drawLine(5f,12f,19f,12f,paint) }
+            "expand" -> {
+                path.moveTo(9f,4f); path.lineTo(4f,4f); path.lineTo(4f,9f)
+                path.moveTo(15f,4f); path.lineTo(20f,4f); path.lineTo(20f,9f)
+                path.moveTo(20f,15f); path.lineTo(20f,20f); path.lineTo(15f,20f)
+                path.moveTo(9f,20f); path.lineTo(4f,20f); path.lineTo(4f,15f)
+                canvas.drawPath(path,paint)
+            }
+            "pip", "float" -> {
+                canvas.drawRoundRect(2f,4f,22f,20f,3f,3f,paint)
+                paint.style=Paint.Style.FILL; canvas.drawRoundRect(12f,11f,19f,17f,1.5f,1.5f,paint)
+            }
+            "resize" -> { canvas.drawLine(8f,19f,19f,8f,paint); canvas.drawLine(14f,19f,19f,14f,paint) }
             "tabs" -> {
                 canvas.drawRoundRect(3f,3f,21f,21f,5f,5f,paint)
                 paint.style=Paint.Style.FILL;paint.textSize=10f;paint.textAlign=Paint.Align.CENTER

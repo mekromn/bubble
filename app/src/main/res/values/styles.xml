@@ -6,4 +6,10 @@
         <item name="android:windowBackground">#080B12</item>
         <item name="android:colorAccent">#ADCAFF</item>
     </style>
+    <style name="Theme.Bubble.Prompt" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

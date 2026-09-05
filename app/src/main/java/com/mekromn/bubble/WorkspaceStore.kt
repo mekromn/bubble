@@ -14,7 +14,9 @@ internal data class StoredTab(val id: String, val url: String, val title: String
     val desktop: Boolean = false, val state: String? = null, val unread: Boolean = false,
     val lastNotice: String = "")
 internal data class StoredWorkspace(val selected: String, val tabs: List<StoredTab>,
-    val bubbleX: Float = 0.88f, val bubbleY: Float = 0.3f)
+    val bubbleX: Float = 0.88f, val bubbleY: Float = 0.3f,
+    val windowX: Float = .5f, val windowY: Float = .25f,
+    val windowWidth: Float = .92f, val windowHeight: Float = .72f)
 
 /** Single ordered IO lane; immutable snapshots; atomic rename; never serialize Activity/View. */
 internal class WorkspaceStore(context: Context) {
@@ -46,7 +48,9 @@ internal class WorkspaceStore(context: Context) {
                             item.optBoolean("unread"), item.optString("lastNotice").take(128))
                     }
                     result = StoredWorkspace(json.optString("selected"), tabs,
-                        json.optDouble("x", 0.88).toFloat(), json.optDouble("y", 0.3).toFloat())
+                        json.optDouble("x", 0.88).toFloat(), json.optDouble("y", 0.3).toFloat(),
+                        json.optDouble("windowX", .5).toFloat(), json.optDouble("windowY", .25).toFloat(),
+                        json.optDouble("windowWidth", .92).toFloat(), json.optDouble("windowHeight", .72).toFloat())
                 }
             } catch (_: Exception) {
                 // Preserve evidence/old data. A corrupt file must not silently become an empty save.
@@ -77,6 +81,8 @@ internal class WorkspaceStore(context: Context) {
                     }
                     val bytes = JSONObject().put("version", 1).put("selected", snapshot.selected)
                         .put("x", snapshot.bubbleX.toDouble()).put("y", snapshot.bubbleY.toDouble())
+                        .put("windowX", snapshot.windowX.toDouble()).put("windowY", snapshot.windowY.toDouble())
+                        .put("windowWidth", snapshot.windowWidth.toDouble()).put("windowHeight", snapshot.windowHeight.toDouble())
                         .put("tabs", tabs).toString().toByteArray()
                     require(bytes.size <= 20 * 1024 * 1024)
                     stream = file.startWrite()
