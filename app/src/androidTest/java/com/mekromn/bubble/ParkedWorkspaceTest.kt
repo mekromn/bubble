@@ -17,12 +17,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.GeckoSession
 
-/** Synthetic pages only. Real touch drags and real SystemUI notification taps exercise the route. */
+/** Synthetic pages only. Real drag and SystemUI notification taps, including repainted pixels. */
 @RunWith(AndroidJUnit4::class)
 class ParkedWorkspaceTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -66,11 +68,10 @@ class ParkedWorkspaceTest {
                 event(time, MotionEvent.ACTION_DOWN, x, y)
                 event(time, MotionEvent.ACTION_MOVE, x - 45, y + 45)
                 await { main { BubbleService.active?.window?.dismissTargetAttached == true } }
-                screenshot("v061-drag-hide-target.png")
+                Thread.sleep(300); screenshot("v061-drag-hide-target.png")
                 event(time, MotionEvent.ACTION_CANCEL, x - 45, y + 45)
                 await { main { BubbleService.active?.window?.dismissTargetAttached == false } }
                 assertTrue(main { BubbleService.active?.isParked == false })
-                // Cancellation preserves the resting placement and never hides the workspace.
                 assertTrue(main { BubbleService.active?.window?.box == initial })
                 time = SystemClock.uptimeMillis()
                 event(time, MotionEvent.ACTION_DOWN, x, y)
@@ -79,20 +80,19 @@ class ParkedWorkspaceTest {
                     event(time, MotionEvent.ACTION_MOVE, x + (targetX - x) * p, y + (targetY - y) * p)
                     Thread.sleep(20)
                 }
-                Thread.sleep(100)
-                screenshot("v061-drag-armed.png")
+                Thread.sleep(300); screenshot("v061-drag-armed.png")
                 event(time, MotionEvent.ACTION_UP, targetX, targetY)
                 await { main { BubbleService.active?.isParked == true && BubbleService.active?.window == null } }
                 assertTrue(main { Workspace.peek()?.selected?.session === original })
                 val notes = context.getSystemService(NotificationManager::class.java)
                 assertTrue(notes.activeNotifications.any { it.id == BubbleService.NOTICE_ID && it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.contains("hidden") == true })
                 shell("cmd statusbar expand-notifications")
-                tapText("Bubble hidden · tap to restore")
+                tapText("Bubble hidden · tap to restore", "v061-hidden-notification.png")
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE && BubbleService.active?.isParked == false } }
                 assertTrue(main { BubbleService.active?.window?.box == initial && Workspace.peek()?.selected?.session === original })
-                screenshot("v061-notification-restored-bubble.png")
-                // Exercise the Android alert layer; lifecycle detection is independently tested
-                // against DOM fixtures in tools/test-monitor.cjs (no real ChatGPT prompt is sent).
+                Thread.sleep(300); screenshot("v061-notification-restored-bubble.png")
+                // Android alert delivery is tested independently from the DOM lifecycle fixture
+                // tests: no real ChatGPT request/account is necessary or implied by this test.
                 instrumentation.runOnMainSync {
                     assertTrue(BubbleService.active!!.park())
                     Workspace.peek()!!.selected!!.unread = true
@@ -103,13 +103,13 @@ class ParkedWorkspaceTest {
                 assertEquals(Notification.CATEGORY_MESSAGE, reply.category)
                 assertEquals(Notification.VISIBILITY_PRIVATE, reply.visibility)
                 shell("cmd statusbar expand-notifications")
-                screenshot("v061-reply-notification.png")
-                tapText("Your ChatGPT reply is ready")
+                tapText("Your ChatGPT reply is ready", "v061-reply-notification.png")
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.geckoView?.session === original } }
                 await { main { BubbleService.active?.window?.isTransitioning == false } }
                 assertFalse(notes.activeNotifications.any { it.tag == tabId && it.id == 2 })
+                awaitRepaintedPixels()
                 screenshot("v061-reply-opened-floating.png")
-                File(folder(), "v061-parking-result.txt").writeText("Cancelled drag preserved placement. Drag-to-target hid both windows. Real notification tap restored the original placement and same GeckoSession. Reply notification tap opened the exact floating session and cleared unread.\n")
+                File(folder(), "v061-parking-result.txt").writeText("Cancelled drag preserved placement. Drag-to-target hid both windows. A real notification tap restored the original placement and same GeckoSession. A reply notification tap opened the exact floating session, cleared unread and returned nonblank Gecko compositor pixels.\n")
             }
         } finally {
             context.stopService(Intent(context, BubbleService::class.java))
@@ -119,11 +119,31 @@ class ParkedWorkspaceTest {
             server.close(); worker.join(1000)
         }
     }
+    private fun awaitRepaintedPixels() {
+        await {
+            val latch = CountDownLatch(1); var pixels: Bitmap? = null
+            instrumentation.runOnMainSync {
+                val view = BubbleService.active?.window?.geckoView
+                if (view == null) latch.countDown()
+                else view.capturePixels().accept({ pixels = it; latch.countDown() }, { latch.countDown() })
+            }
+            assertTrue("Restored compositor capture timed out", latch.await(15, TimeUnit.SECONDS))
+            val image = pixels
+            if (image == null) false else {
+                val colors = HashSet<Int>()
+                for (y in 0 until image.height step 8) for (x in 0 until image.width step 8) colors += image.getPixel(x,y) and 0x00f0f0f0
+                val content = colors.size > 8
+                if (content) File(folder(), "v061-restored-compositor.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) }
+                image.recycle(); content
+            }
+        }
+        Thread.sleep(200)
+    }
     private fun event(down: Long, action: Int, x: Float, y: Float) {
         val e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
         try { assertTrue(automation.injectInputEvent(e, true)) } finally { e.recycle() }
     }
-    private fun tapText(text: String) {
+    private fun tapText(text: String, evidence: String) {
         var found: AccessibilityNodeInfo? = null
         fun visit(node: AccessibilityNodeInfo?) {
             if (node == null || found != null) return
@@ -131,6 +151,7 @@ class ParkedWorkspaceTest {
             for (i in 0 until node.childCount) visit(node.getChild(i))
         }
         await { found = null; automation.windows.forEach { visit(it.root) }; found != null }
+        Thread.sleep(300); screenshot(evidence)
         val r = Rect(); found!!.getBoundsInScreen(r)
         val down = SystemClock.uptimeMillis()
         event(down, MotionEvent.ACTION_DOWN, r.exactCenterX(), r.exactCenterY()); Thread.sleep(60)
@@ -144,5 +165,5 @@ class ParkedWorkspaceTest {
     }
     private fun shell(command: String) = ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command)).bufferedReader().use { it.readText() }
     private fun folder() = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
-    private fun screenshot(name: String) { automation.takeScreenshot()?.let { image -> File(folder(), name).outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) } } }
+    private fun screenshot(name: String) { automation.takeScreenshot()?.let { image -> File(folder(),name).outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) } } }
 }

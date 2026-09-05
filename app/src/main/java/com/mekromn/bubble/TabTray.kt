@@ -1,17 +1,25 @@
 package com.mekromn.bubble
 
 import android.content.Context
+import android.os.Build
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
-/** Compact workspace sheet. It is native UI only, so its temporary animation layer is safe. */
+/** A native sheet owns Back ahead of the webpage/old IME callback only while visible.
+ * Search keyboard still dismisses first. Closing the sheet immediately releases that priority. */
 internal class TabTray(c: Context, select: (String) -> Unit, close: (String) -> Unit,
-    newChat: () -> Unit, dismiss: () -> Unit) : LinearLayout(c) {
+    newChat: () -> Unit, private val dismiss: () -> Unit) : LinearLayout(c) {
     private val conversations = ConversationList(c, select, close)
     private val count = Ui.text(c, "", 12f, Ui.MUTED)
+    private var backCallback: android.window.OnBackInvokedCallback? = null
+    private var backDispatcher: android.window.OnBackInvokedDispatcher? = null
     init {
         orientation = VERTICAL; setBackgroundColor(Ui.BG); isClickable = true; isFocusable = true
         setPadding(d(12), d(8), d(12), d(12))
@@ -37,6 +45,29 @@ internal class TabTray(c: Context, select: (String) -> Unit, close: (String) -> 
         addView(Ui.text(c, "＋  New ChatGPT chat", 15f, Ui.BG, true).apply {
             gravity = Gravity.CENTER; background = Ui.ripple(c, Ui.BLUE, 24f); setOnClickListener { newChat() }
         }, LayoutParams(-1, d(50)).apply { setMargins(d(8), d(8), d(8), 0) })
+    }
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); syncBackHandler() }
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (isAttachedToWindow) syncBackHandler()
+    }
+    override fun onDetachedFromWindow() { releaseBackHandler(); super.onDetachedFromWindow() }
+    private fun syncBackHandler() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (!isShown) { releaseBackHandler(); return }
+        if (backCallback != null) return
+        val dispatcher = findOnBackInvokedDispatcher() ?: return
+        val callback = android.window.OnBackInvokedCallback {
+            if (ViewCompat.getRootWindowInsets(this)?.isVisible(WindowInsetsCompat.Type.ime()) == true) {
+                context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(windowToken, 0)
+            } else dismiss()
+        }
+        backDispatcher = dispatcher; backCallback = callback
+        dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_OVERLAY, callback)
+    }
+    private fun releaseBackHandler() {
+        if (Build.VERSION.SDK_INT >= 33) backCallback?.let { backDispatcher?.unregisterOnBackInvokedCallback(it) }
+        backCallback = null; backDispatcher = null
     }
     fun refresh(workspace: Workspace) {
         val value = "${workspace.tabs.size} tabs · all kept live"
