@@ -28,7 +28,8 @@ class NotificationReturnActivity : Activity() {
         try {
             startForegroundService(Intent(this, BubbleService::class.java)
                 .putExtra(BubbleService.MODE, intent.getStringExtra(BubbleService.MODE) ?: FloatingMode.BUBBLE.name)
-                .putExtra(BrowserActivity.EXTRA_TAB, id).putExtra(BubbleService.READY, reply))
+                .putExtra(BrowserActivity.EXTRA_TAB, id).putExtra(BubbleService.READY, reply)
+                .putExtra(BubbleService.FORCE_BUBBLE, intent.getBooleanExtra(BubbleService.FORCE_BUBBLE, false)))
             main.postDelayed({ if (!isFinishing) fallback(id) }, 15_000)
         } catch (_: RuntimeException) { fallback(id) }
     }
@@ -40,11 +41,12 @@ class NotificationReturnActivity : Activity() {
     }
     override fun onDestroy() { main.removeCallbacksAndMessages(null); super.onDestroy() }
     companion object {
-        internal fun pending(context: Context, tabId: String?, mode: FloatingMode): PendingIntent = PendingIntent.getActivity(context, 0,
+        internal fun pending(context: Context, tabId: String?, mode: FloatingMode, forceBubble: Boolean = false): PendingIntent = PendingIntent.getActivity(context, 0,
             Intent(context, NotificationReturnActivity::class.java).apply {
-                data = Uri.parse("bubble://notification/${mode.name}/${tabId ?: "workspace"}")
+                data = Uri.parse("bubble://notification/${mode.name}/${tabId ?: "workspace"}/$forceBubble")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
                 putExtra(BrowserActivity.EXTRA_TAB, tabId); putExtra(BubbleService.MODE, mode.name)
+                putExtra(BubbleService.FORCE_BUBBLE, forceBubble)
             }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 }

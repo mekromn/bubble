@@ -78,9 +78,9 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         else if(imeBottom>0)context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         else collapse()
     }
-    fun attach(initial: FloatingMode=FloatingMode.BUBBLE) {
+    fun attach(initial: FloatingMode=FloatingMode.BUBBLE, origin: WindowBox?=null) {
         root.isFocusableInTouchMode=true; root.elevation=d(12).toFloat()
-        rectangle=headBox(); target=rectangle
+        rectangle=if(origin==null)headBox() else WindowGeometry.fit(WindowBox(origin.x+origin.width/2-d(32),origin.y+origin.height/2-d(32),d(64),d(64)),safeArea()); target=rectangle
         params=WindowManager.LayoutParams(rectangle.width,rectangle.height,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             flags(FloatingMode.BUBBLE),PixelFormat.TRANSLUCENT).apply {
             gravity=Gravity.TOP or Gravity.LEFT; x=rectangle.x; y=rectangle.y
@@ -118,6 +118,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     /** Reverse the reveal, never squash the webpage. Move only the circle afterward. */
     fun collapse() {
         if(destroyed || mode==FloatingMode.BUBBLE || hiding)return
+        if(service.prefersEdge()) { exitToRestingEdge(); return }
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true)
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f
@@ -128,6 +129,29 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         motion.reveal(root,cx,cy,radius.toFloat(),false) {
             if(!destroyed) { switchContents(FloatingMode.BUBBLE); place(startHead,true); motion.move(startHead,end,{ place(it,false) }) { render() } }
         }
+    }
+    /** Long press is the same notification-only state as a successful drop on the x target. */
+    internal fun hideToNotification() {
+        if(destroyed || hiding)return
+        if(!service.canPark()) { service.park(); return }
+        QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
+        context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
+        hiding=true
+        root.animate().cancel(); root.animate().withEndAction(null)
+        if(!ValueAnimator.areAnimatorsEnabled()) { if(!service.park())hiding=false; return }
+        root.animate().alpha(0f).setDuration(140).setInterpolator(Ui.ease).withEndAction {
+            if(!destroyed && !service.park()) { hiding=false; root.alpha=1f }
+        }.start()
+    }
+    private fun exitToRestingEdge() {
+        QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
+        context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
+        hiding=true; root.animate().cancel(); root.animate().withEndAction(null)
+        if(!ValueAnimator.areAnimatorsEnabled()) { service.showMinimized(); return }
+        val direction=if(AccessPreferences.get(context).options.left)-1 else 1
+        // A short directional exit toward the selected edge, no squashing or page re-layout.
+        root.animate().alpha(0f).translationX(direction*d(18).toFloat()).setDuration(170).setInterpolator(Ui.ease)
+            .withEndAction { if(!destroyed)service.showMinimized() }.start()
     }
     private fun present(next: FloatingMode) {
         if(destroyed || hiding)return
@@ -198,6 +222,9 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             footer.addView(Ui.text(context,"Chat tools",12f,Ui.ACCENT,true).apply {
                 gravity=Gravity.CENTER; background=Ui.ripple(context); setOnClickListener { QuickMenus.tools(top,workspace,::openChat) }
             },LinearLayout.LayoutParams(0,d(48),1f))
+            footer.addView(Ui.text(context,"Edge access",12f,Ui.ACCENT).apply {
+                gravity=Gravity.CENTER; background=Ui.ripple(context); setOnClickListener { AccessMenu.show(top,workspace) }
+            },LinearLayout.LayoutParams(0,d(48),1f))
             footer.addView(Ui.text(context,"Reply sound",12f,Ui.ACCENT).apply {
                 gravity=Gravity.CENTER; background=Ui.ripple(context); contentDescription="ChatGPT notification settings"; setOnClickListener { Replies.settings(context) }
             },LinearLayout.LayoutParams(0,d(48),1f))
@@ -221,6 +248,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         setOnClickListener { click() }
         when(glyph) {
             "back" -> { tooltipText="Back · hold for Forward, Stop and Refresh"; setOnLongClickListener { QuickMenus.navigation(this,workspace); true } }
+            "collapse" -> { tooltipText="Minimize · hold to hide in notification"; setOnLongClickListener { hideToNotification(); true } }
             "tabs" -> { tooltipText="Tabs · hold for quick tabs"; setOnLongClickListener { QuickMenus.tabs(this,workspace,::openChat); true } }
         }
     }

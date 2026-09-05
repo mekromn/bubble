@@ -48,6 +48,7 @@ class BrowserActivity : Activity() {
     private var awaitingOverlay = false
     private var pendingMode = FloatingMode.BUBBLE
     private var notificationAsked = false
+    private var pendingHide = false
     private var externalFlow = false
     private var enteringPip = false
     private var currentUrl = ""
@@ -62,6 +63,7 @@ class BrowserActivity : Activity() {
         buildUi()
         val url = if (state == null) incomingUrl(intent) else null
         workspace = Workspace.get(this, url)
+        AccessPreferences.get(this)
         if (url != null && workspace.ready || intent.hasExtra(EXTRA_TAB) || intent.hasExtra(EXTRA_PIP)) pendingIntent = intent
         if (Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.registerOnBackInvokedCallback(
             android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
@@ -190,7 +192,8 @@ class BrowserActivity : Activity() {
         }
         bar.addView(tabs, LinearLayout.LayoutParams(d(48), d(48)))
         bar.addView(control("float", "Open interactive floating chat", true) { collapse(FloatingMode.CHAT) }.apply {
-            setOnLongClickListener { collapse(FloatingMode.BUBBLE); true }
+            tooltipText = "Floating chat · hold to hide in notification"
+            setOnLongClickListener { hideToNotification(); true }
         }, LinearLayout.LayoutParams(d(48), d(48)))
         menuButton = control("menu", "Browser menu") { menu() }.apply {
             tooltipText = "Menu · hold for chat tools"
@@ -227,6 +230,8 @@ class BrowserActivity : Activity() {
             "Forward in webpage" to { selectedSession?.goForward(); Unit },
             (if (workspace.selected?.loading == true) "Stop loading" else "Reload page") to { if (workspace.selected?.loading == true) workspace.stopLoading() else workspace.retry() },
             "Floating chat · interactive" to { collapse(FloatingMode.CHAT) },
+            "Hide to notification" to { hideToNotification() },
+            "Bubble / edge access" to { AccessMenu.show(menuButton, workspace) },
             "Minimize to bubble" to { collapse(FloatingMode.BUBBLE) },
             "Android picture-in-picture · view only" to { enterNativePip(); Unit },
             (if (workspace.selected?.desktop == true) "Use mobile site" else "Use desktop site") to { workspace.desktop() },
@@ -271,7 +276,33 @@ class BrowserActivity : Activity() {
     }
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, result: IntArray) {
         super.onRequestPermissionsResult(code, permissions, result)
-        if (code == NOTIFICATIONS) { externalFlow = false; collapse(pendingMode) }
+        if (code == NOTIFICATIONS) {
+            externalFlow = false
+            if (pendingHide) { pendingHide = false; hideToNotification() } else collapse(pendingMode)
+        }
+    }
+    /** Park directly without briefly creating a bubble or an edge trigger. */
+    internal fun hideToNotification() {
+        if (!started || !workspace.ready || collapsePending) return
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            if (!notificationAsked) {
+                notificationAsked = true; pendingHide = true; externalFlow = true
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS)
+            } else toast("Enable Bubble notifications before hiding. Your workspace stays open.")
+            return
+        }
+        QuickPanel.dismissFor(root); hideKeyboard(); workspace.flush()
+        collapsePending = true; handoff = true
+        val wasPip = isInPictureInPictureMode
+        val reply = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+            override fun onReceiveResult(code: Int, data: Bundle?) {
+                collapsePending = false
+                if (code == 1 && !isFinishing) { if (wasPip) finish() else moveTaskToBack(true) }
+                else { handoff = false; if (started) render() }
+            }
+        }
+        try { startForegroundService(Intent(this, BubbleService::class.java).setAction(BubbleService.HIDE).putExtra(BubbleService.READY, reply)) }
+        catch (_: RuntimeException) { collapsePending = false; handoff = false; toast("Android blocked hiding. Your workspace stays open.") }
     }
     internal fun enterNativePip(): Boolean {
         if (!started || isInPictureInPictureMode || !packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return false
