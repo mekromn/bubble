@@ -51,7 +51,8 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private val monitorTimeout = Runnable { finishMonitor(null) }
     private val listeners = LinkedHashSet<() -> Unit>()
     private var renderScheduled = false
-    private val saveTask = Runnable { checkpoint() }
+    private var saveScheduled = false
+    private val saveTask = Runnable { saveScheduled = false; checkpoint() }
 
     init {
         store.load { saved, error ->
@@ -69,7 +70,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
             ready = true
             ensureSession(selected!!)
             changed(true)
-            // Rehydrate protected sessions in small main-loop slices rather than one startup burst.
             val pending = tabs.filter { it.id != selectedId && Policy.isChat(it.url) }.map { it.id }
             pending.forEachIndexed { index, id -> main.postDelayed({
                 tabs.firstOrNull { it.id == id }?.let(::ensureSession)
@@ -80,8 +80,13 @@ internal class Workspace private constructor(private val app: Context, initialUr
     fun unlisten(listener: () -> Unit) { listeners -= listener }
     fun changed(persist: Boolean = false) {
         checkMain()
-        if (persist && ready) { main.removeCallbacks(saveTask); main.postDelayed(saveTask, 500) }
-        if (renderScheduled) return
+        // Coalesce into the first scheduled checkpoint, NOT a trailing debounce. A streaming
+        // page that updates metadata every 250ms must not postpone saving forever.
+        if (persist && ready && !saveScheduled) {
+            saveScheduled = true
+            main.postDelayed(saveTask, 500)
+        }
+        if (renderScheduled || listeners.isEmpty()) return
         renderScheduled = true
         Choreographer.getInstance().postFrameCallback {
             renderScheduled = false
@@ -154,6 +159,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun engine(): GeckoRuntime {
         runtime?.let { return it }
         val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder()
+            .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
             .remoteDebuggingEnabled(false).consoleOutput(false).build())
         runtime = created
         main.postDelayed(monitorTimeout, 10_000)
@@ -178,12 +184,25 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun loadWhenReady(tab: ChatTab, session: GeckoSession, saved: String?) {
         val start = start@{
             if (tab !in tabs || tab.session !== session || !session.isOpen) return@start
-            val restored = saved?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
-            if (restored != null) session.restoreState(restored)
-            else { if (saved != null) tab.savedState = null; session.loadUri(tab.url) }
+            // This callback can execute after ensureSession's try/catch has returned. Contain
+            // restoration errors HERE as well, and preserve the canonical URL as the fallback.
+            try {
+                val restored = saved?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
+                var resumed = false
+                if (restored != null) {
+                    resumed = runCatching { session.restoreState(restored) }.isSuccess
+                }
+                if (!resumed) {
+                    if (saved != null) tab.savedState = null
+                    session.loadUri(tab.url)
+                }
+            } catch (error: RuntimeException) {
+                tab.loading = false
+                tab.error = "This tab could not be restored (${error.javaClass.simpleName}). Its address is retained; tap Retry."
+                changed()
+            }
         }
         pendingStarts.remove(tab.id)
-        // Register the exact-origin content script before the first ChatGPT document is loaded.
         if (Policy.isChat(tab.url) && !monitorSettled) {
             tab.loading = true; pendingStarts[tab.id] = start
         } else start()
@@ -267,7 +286,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
                 val popup = ChatTab(url = if (Policy.isWeb(uri)) uri else Policy.HOME)
                 tabs += popup; selectedId = popup.id
                 val child = newSession(popup)
-                // Gecko opens and navigates this NEW session itself. Never call loadUri here.
                 main.post { applyPolicy(); changed(true) }
                 return GeckoResult.fromValue(child)
             }
@@ -288,7 +306,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun lost(tab: ChatTab, session: GeckoSession) {
         if (tab.session !== session || tab !in tabs) return
-        // Leave the Gecko callback before detaching, closing or reopening native resources.
         main.post {
             if (tab.session !== session || tab !in tabs) return@post
             host.get()?.detachSession(session)
@@ -332,6 +349,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     fun checkpoint(done: ((Boolean) -> Unit)? = null) {
         if (!ready) return
         main.removeCallbacks(saveTask)
+        saveScheduled = false
         store.save(StoredWorkspace(selectedId, tabs.map { StoredTab(it.id, it.url, it.title, it.desktop, it.savedState, it.unread, it.lastNotice) }, bubbleX, bubbleY)) { saved ->
             if (!saved && notice == null) { notice = "Workspace changes could not be saved. Check free storage; the previous snapshot is preserved."; changed() }
             done?.invoke(saved)

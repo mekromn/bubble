@@ -23,6 +23,8 @@ internal object Ui {
     const val MUTED = 0xffa5afc1.toInt()
     const val LINE = 0xff2c3a50.toInt()
     val ease = PathInterpolator(0.2f, 0f, 0f, 1f)
+    private val normalFont = Typeface.create("sans-serif", Typeface.NORMAL)
+    private val mediumFont = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     fun dp(c: Context, n: Float): Int = (n * c.resources.displayMetrics.density + 0.5f).toInt()
     fun shape(c: Context, color: Int = SURFACE, radius: Float = 24f, border: Int? = null): GradientDrawable =
         GradientDrawable().apply {
@@ -33,20 +35,30 @@ internal object Ui {
         RippleDrawable(ColorStateList.valueOf(0x25adcaff), shape(c, color, radius), null)
     fun text(c: Context, value: String, size: Float, color: Int = TEXT, bold: Boolean = false) = TextView(c).apply {
         text = value; textSize = size; setTextColor(color)
-        typeface = Typeface.create(if (bold) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+        typeface = if (bold) mediumFont else normalFont
         includeFontPadding = false
     }
+    /** Cache only the native tray during its transition. Never apply a layer to GeckoView. */
     fun show(view: View, shown: Boolean) {
+        val wasVisible = view.isLaidOut && view.visibility == View.VISIBLE
         view.animate().cancel()
         view.animate().withEndAction(null)
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            view.visibility = if (shown) View.VISIBLE else View.GONE
+            view.alpha = 1f; view.translationY = 0f
+            return
+        }
         if (shown) {
             view.visibility = View.VISIBLE
-            if (!ValueAnimator.areAnimatorsEnabled()) { view.alpha = 1f; view.translationY = 0f; return }
-            view.alpha = 0f; view.translationY = dp(view.context, 18f).toFloat()
-            view.animate().alpha(1f).translationY(0f).setDuration(210).setInterpolator(ease).start()
-        } else if (ValueAnimator.areAnimatorsEnabled()) {
-            view.animate().alpha(0f).translationY(dp(view.context, 12f).toFloat()).setDuration(150)
-                .setInterpolator(ease).withEndAction { view.visibility = View.GONE; view.translationY = 0f }.start()
+            // A rapid reversal continues at the current position rather than jumping to zero.
+            if (!wasVisible) { view.alpha = 0f; view.translationY = dp(view.context, 18f).toFloat() }
+            view.animate().withLayer().alpha(1f).translationY(0f)
+                .setDuration(210).setInterpolator(ease).start()
+        } else if (wasVisible) {
+            view.animate().withLayer().alpha(0f).translationY(dp(view.context, 12f).toFloat()).setDuration(150)
+                .setInterpolator(ease).withEndAction {
+                    view.visibility = View.GONE; view.alpha = 1f; view.translationY = 0f
+                }.start()
         } else view.visibility = View.GONE
     }
 }
@@ -57,6 +69,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
         style = Paint.Style.STROKE; strokeWidth = 1.8f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val path = Path()
+    private val iconSize = Ui.dp(c, 24f).toFloat()
     private var countLabel = "0"
     var count: Int = 0
         set(value) { if (field != value) { field = value; countLabel = if(value>99) "99+" else value.toString(); invalidate() } }
@@ -68,7 +81,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
     }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val size = Ui.dp(context, 24f).toFloat()
+        val size = iconSize
         canvas.save(); canvas.translate((width-size)/2, (height-size)/2); canvas.scale(size/24, size/24)
         paint.color = if (accented) Ui.BLUE else Ui.TEXT
         paint.alpha = if (isEnabled) 255 else 75

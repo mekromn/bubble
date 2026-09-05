@@ -34,7 +34,8 @@ jobs:
           set -o pipefail
           gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug 2>&1 | tee build-output.txt
           mkdir -p dist
-          cp app/build/outputs/apk/debug/*.apk dist/Bubble-0.5.0-Rebuild-ARM64.apk
+          VERSION=$(python3 -c 'import json; print(json.load(open("app/build/outputs/apk/debug/output-metadata.json"))["elements"][0]["versionName"])')
+          cp app/build/outputs/apk/debug/*.apk "dist/Bubble-${VERSION}-Rebuild-ARM64.apk"
           $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs dist/*.apk | tee dist/signature.txt
           sha256sum dist/*.apk > dist/SHA256SUMS
           git rev-parse HEAD > dist/COMMIT.txt
