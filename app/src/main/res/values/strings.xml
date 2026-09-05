@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Bubble</string>
-    <string name="browser_isolation_status">Android Components Gecko · isolated browser core</string>
-    <string name="browser_engine_failure_status">Engine failure captured</string>
-</resources>
