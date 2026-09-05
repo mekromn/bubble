@@ -29,7 +29,7 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
     val recovery = RecoveryBudget()
 }
 
-/** Main-thread session owner. Never referenced from an Application initializer or child service. */
+/** Main-thread session owner. No initialization from Application or Gecko child processes. */
 internal class Workspace private constructor(private val app: Context, initialUrl: String?) {
     val tabs = ArrayList<ChatTab>()
     var selectedId = ""
@@ -46,6 +46,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private val store = WorkspaceStore(app)
     private var runtime: GeckoRuntime? = null
     private var extension: WebExtension? = null
+    private var monitorSettled = false
+    private val pendingStarts = LinkedHashMap<String, () -> Unit>()
+    private val monitorTimeout = Runnable { finishMonitor(null) }
     private val listeners = LinkedHashSet<() -> Unit>()
     private var renderScheduled = false
     private val saveTask = Runnable { checkpoint() }
@@ -66,14 +69,13 @@ internal class Workspace private constructor(private val app: Context, initialUr
             ready = true
             ensureSession(selected!!)
             changed(true)
-            // Rehydrate live chats in small main-loop slices, not a cold-start renderer storm.
+            // Rehydrate protected sessions in small main-loop slices rather than one startup burst.
             val pending = tabs.filter { it.id != selectedId && Policy.isChat(it.url) }.map { it.id }
             pending.forEachIndexed { index, id -> main.postDelayed({
                 tabs.firstOrNull { it.id == id }?.let(::ensureSession)
             }, 250L + index * 120L) }
         }
     }
-
     fun listen(listener: () -> Unit) { listeners += listener; listener() }
     fun unlisten(listener: () -> Unit) { listeners -= listener }
     fun changed(persist: Boolean = false) {
@@ -102,6 +104,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     fun close(id: String) {
         checkMain()
         val tab = tabs.firstOrNull { it.id == id } ?: return
+        pendingStarts.remove(id)
         tabs.remove(tab)
         host.get()?.detachSession(tab.session)
         tab.session?.close(); tab.session = null
@@ -111,17 +114,21 @@ internal class Workspace private constructor(private val app: Context, initialUr
         ensureSession(selected!!); applyPolicy(); changed(true)
     }
     fun navigate(raw: String) {
+        checkMain()
         val url = Policy.resolve(raw)
         if (url == null) { notice = "That address scheme is not supported."; changed(); return }
         val tab = selected ?: return
         tab.url = url; tab.error = null; tab.recovery.reset()
         tab.generating = false; tab.run = ""; tab.savedState = null
-        ensureSession(tab)?.loadUri(url); changed(true)
+        val session = tab.session
+        if (session == null) ensureSession(tab) else loadWhenReady(tab, session, null)
+        changed(true)
     }
     fun retry() {
         selected?.let { tab ->
             tab.error = null; tab.recovery.reset()
-            if (tab.session == null) ensureSession(tab) else tab.session?.reload()
+            if (tab.session == null) ensureSession(tab)
+            else if (!pendingStarts.containsKey(tab.id)) tab.session?.reload()
         }
         changed()
     }
@@ -130,7 +137,8 @@ internal class Workspace private constructor(private val app: Context, initialUr
             tab.desktop = !tab.desktop
             tab.session?.settings?.userAgentMode = if (tab.desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE
             tab.session?.settings?.viewportMode = if (tab.desktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE
-            tab.session?.reload(); changed(true)
+            if (!pendingStarts.containsKey(tab.id)) tab.session?.reload()
+            changed(true)
         }
     }
     fun applyPolicy() {
@@ -148,14 +156,37 @@ internal class Workspace private constructor(private val app: Context, initialUr
         val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder()
             .remoteDebuggingEnabled(false).consoleOutput(false).build())
         runtime = created
-        created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local").accept({ addon ->
+        main.postDelayed(monitorTimeout, 10_000)
+        created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local")
+            .accept({ addon -> finishMonitor(addon) }, { finishMonitor(null) })
+        return created
+    }
+    private fun finishMonitor(addon: WebExtension?) {
+        if (addon != null) {
             extension = addon
             tabs.forEach { tab -> tab.session?.let { installMonitor(tab, it, addon) } }
-        }, {
-            notice = "Reply detection is unavailable. Browsing is still available."
-            changed()
-        })
-        return created
+        }
+        if (monitorSettled) return
+        monitorSettled = true
+        main.removeCallbacks(monitorTimeout)
+        if (addon == null) notice = "Reply detection is unavailable. Browsing remains available."
+        val starts = pendingStarts.values.toList()
+        pendingStarts.clear()
+        starts.forEach { it() }
+        changed()
+    }
+    private fun loadWhenReady(tab: ChatTab, session: GeckoSession, saved: String?) {
+        val start = start@{
+            if (tab !in tabs || tab.session !== session || !session.isOpen) return@start
+            val restored = saved?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
+            if (restored != null) session.restoreState(restored)
+            else { if (saved != null) tab.savedState = null; session.loadUri(tab.url) }
+        }
+        pendingStarts.remove(tab.id)
+        // Register the exact-origin content script before the first ChatGPT document is loaded.
+        if (Policy.isChat(tab.url) && !monitorSettled) {
+            tab.loading = true; pendingStarts[tab.id] = start
+        } else start()
     }
     fun ensureSession(tab: ChatTab): GeckoSession? {
         checkMain()
@@ -164,15 +195,12 @@ internal class Workspace private constructor(private val app: Context, initialUr
         return try {
             val session = newSession(tab)
             session.open(engine())
-            val saved = tab.savedState
-            if (saved != null) {
-                try { session.restoreState(GeckoSession.SessionState.fromString(saved)) }
-                catch (_: Exception) { tab.savedState = null; session.loadUri(tab.url) }
-            } else session.loadUri(tab.url)
+            loadWhenReady(tab, session, tab.savedState)
             applyPolicy()
             session
         } catch (error: RuntimeException) {
             tab.error = "Browser startup failed (${error.javaClass.simpleName}). Tap Retry."
+            pendingStarts.remove(tab.id)
             tab.session?.let { runCatching { it.close() } }; tab.session = null
             changed(); null
         }
@@ -202,7 +230,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
                 changed(true)
             }
             override fun onSessionStateChange(s: GeckoSession, state: GeckoSession.SessionState) {
-                if (tab.session !== s) return
+                if (tab.session !== s || pendingStarts.containsKey(tab.id)) return
                 val value = state.toString()
                 tab.savedState = value.takeIf { it.length <= 524288 }
                 changed(true)
@@ -239,7 +267,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
                 val popup = ChatTab(url = if (Policy.isWeb(uri)) uri else Policy.HOME)
                 tabs += popup; selectedId = popup.id
                 val child = newSession(popup)
-                // Gecko must open and navigate this NEW session itself; never loadUri here.
+                // Gecko opens and navigates this NEW session itself. Never call loadUri here.
                 main.post { applyPolicy(); changed(true) }
                 return GeckoResult.fromValue(child)
             }
@@ -260,13 +288,16 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun lost(tab: ChatTab, session: GeckoSession) {
         if (tab.session !== session || tab !in tabs) return
-        // Exit the Gecko callback before detaching/closing/reopening native session resources.
+        // Leave the Gecko callback before detaching, closing or reopening native resources.
         main.post {
             if (tab.session !== session || tab !in tabs) return@post
             host.get()?.detachSession(session)
+            pendingStarts.remove(tab.id)
             tab.session = null; tab.loading = false; tab.painted = false; tab.generating = false
             runCatching { session.close() }
-            if (tab.recovery.allow(SystemClock.elapsedRealtime())) {
+            val needsRecovery = tab.id == selectedId || Policy.isChat(tab.url)
+            if (!needsRecovery) tab.error = null
+            else if (tab.recovery.allow(SystemClock.elapsedRealtime())) {
                 tab.error = null
                 main.postDelayed({ if (tab in tabs && tab.session == null) ensureSession(tab) }, 500)
             } else tab.error = "This page's renderer failed repeatedly. Automatic recovery is paused; tap Retry. Your tab is retained."
@@ -289,7 +320,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
                         tab.generating = false; tab.lastNotice = run
                         tab.unread = !(visible && tab.id == selectedId)
                         changed()
-                        // Persist acknowledgement BEFORE sound, and recheck read/closed state.
                         checkpoint { saved ->
                             if (saved && tab in tabs && tab.unread && tab.lastNotice == run) Replies.finished(app, tab.id)
                         }
@@ -302,7 +332,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
     fun checkpoint(done: ((Boolean) -> Unit)? = null) {
         if (!ready) return
         main.removeCallbacks(saveTask)
-        store.save(StoredWorkspace(selectedId, tabs.map { StoredTab(it.id, it.url, it.title, it.desktop, it.savedState, it.unread, it.lastNotice) }, bubbleX, bubbleY), done)
+        store.save(StoredWorkspace(selectedId, tabs.map { StoredTab(it.id, it.url, it.title, it.desktop, it.savedState, it.unread, it.lastNotice) }, bubbleX, bubbleY)) { saved ->
+            if (!saved && notice == null) { notice = "Workspace changes could not be saved. Check free storage; the previous snapshot is preserved."; changed() }
+            done?.invoke(saved)
+        }
     }
     fun flush() { tabs.forEach { it.session?.flushSessionState() }; checkpoint() }
     private fun checkMain() { check(Looper.myLooper() == Looper.getMainLooper()) }

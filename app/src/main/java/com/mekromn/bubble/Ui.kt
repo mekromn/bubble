@@ -38,6 +38,7 @@ internal object Ui {
     }
     fun show(view: View, shown: Boolean) {
         view.animate().cancel()
+        view.animate().withEndAction(null)
         if (shown) {
             view.visibility = View.VISIBLE
             if (!ValueAnimator.areAnimatorsEnabled()) { view.alpha = 1f; view.translationY = 0f; return }
@@ -50,14 +51,15 @@ internal object Ui {
     }
 }
 
-/** Lightweight vector control: cached paints/path, no per-frame bitmaps or allocations. */
+/** Cached vector paints/path; no per-frame bitmaps or temporary collections. */
 internal class GlyphView(c: Context, var glyph: String, label: String, private val accented: Boolean = false) : View(c) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; strokeWidth = 1.8f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val path = Path()
+    private var countLabel = "0"
     var count: Int = 0
-        set(value) { if (field != value) { field = value; invalidate() } }
+        set(value) { if (field != value) { field = value; countLabel = if(value>99) "99+" else value.toString(); invalidate() } }
     init {
         contentDescription = label; isFocusable = true; isClickable = true
         background = Ui.ripple(c, if (accented) Ui.SURFACE_HIGH else Ui.BG, 20f)
@@ -79,7 +81,10 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
             }
             "add" -> { canvas.drawLine(12f, 5f, 12f, 19f, paint); canvas.drawLine(5f,12f,19f,12f,paint) }
             "close" -> { canvas.drawLine(6f,6f,18f,18f,paint); canvas.drawLine(18f,6f,6f,18f,paint) }
-            "menu" -> { paint.style=Paint.Style.FILL; for (x in listOf(5f,12f,19f)) canvas.drawCircle(x,12f,1.5f,paint) }
+            "menu" -> {
+                paint.style=Paint.Style.FILL
+                canvas.drawCircle(5f,12f,1.5f,paint); canvas.drawCircle(12f,12f,1.5f,paint); canvas.drawCircle(19f,12f,1.5f,paint)
+            }
             "reload" -> {
                 canvas.drawArc(4f,4f,20f,20f,35f,290f,false,paint)
                 path.moveTo(19f,3f); path.lineTo(19f,8f); path.lineTo(14f,8f); canvas.drawPath(path,paint)
@@ -92,7 +97,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
             "tabs" -> {
                 canvas.drawRoundRect(3f,3f,21f,21f,5f,5f,paint)
                 paint.style=Paint.Style.FILL;paint.textSize=10f;paint.textAlign=Paint.Align.CENTER
-                canvas.drawText(if(count>99) "99+" else count.toString(),12f,15.7f,paint)
+                canvas.drawText(countLabel,12f,15.7f,paint)
             }
             else -> { canvas.drawCircle(12f,12f,8f,paint);canvas.drawLine(4f,12f,20f,12f,paint);canvas.drawOval(8f,4f,16f,20f,paint) }
         }
