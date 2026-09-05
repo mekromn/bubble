@@ -1,53 +1,58 @@
-# Bubble clean-rebuild validation — 0.5.2
+# Bubble 0.6.1 — verified development candidate
 
-## Exact tested candidate
+## Exact build and artifact identity
 
-- Application source commit: `91353eaf4784be0a5b05c723d168381979291862` on `rebuild-v2`, draft PR #12.
-- VersionName 0.5.2; versionCode 22; package `com.mekromn.bubble.debug`; ARM64 phone APK; minSdk 26; targetSdk 36.
-- GitHub Actions run `33970576013` completed successfully. Debug assembly, release assembly, Android lint, signing verification, emulator compilation, and runtime instrumentation passed.
-- ARM64 artifact `9970820451`; runtime-evidence artifact `9970915073`.
-- APK size: 196,869,248 bytes.
-- APK SHA-256: `1f71d05bef36f1cfcc6717694c645e1d5b01b3692f2e43e08deaa332e656f0b1`.
-- Certificate SHA-256: `001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f`.
+Tested source commit: `fd7255e4c0baa5f79a08d04ed9a4b09df442c8b7` on `rebuild-v2`, draft PR #12. VersionName 0.6.1; versionCode 31; package `com.mekromn.bubble.debug`; ARM64 phone APK; minSdk 26; targetSdk 36.
 
-The downloaded artifact digests, ZIP CRCs, exact source identity, APK checksum, official CI apksigner result, and independent local APK v2 RSA signature/whole protected-content digest were verified. The certificate was compared against the actual permanent-key 0.4.3 APK and matches exactly. No debug key rotation occurred. The development key is intentionally public and is not a private production signing identity.
+GitHub Actions run `33981459029`, job `101347309505`, completed successfully on September 5, 2026. The run passed Node foreground/reply-monitor fixtures, 9 JVM unit tests (zero failures or skips), debug and release assembly, Android lint (0 errors, 26 warnings), permanent-key verification, x86_64 test compilation and all 11 Android 16 emulator instrumentation tests. Instrumentation reported `OK (11 tests)` in 310.421 seconds. Warnings are not represented as a warnings-free lint result.
 
-## Observed functional tests
+ARM64 artifact: `9973898676`. Runtime-evidence artifact: `9974026283`. Runtime ZIP SHA-256: `87b21de0bcc972265147d04eefbcfb809db76fccec56057e6f5501d78e9eba39`.
 
-Four unit tests passed, zero failures/skips. Android 16 x86_64 instrumentation reported `OK (8 tests)` in 189.708 seconds. This is emulator runtime evidence, not a claim that the ARM64 build was installed on a physical Pixel.
+APK: `Bubble-0.6.1-Hide-Restore-Motion-ARM64.apk`; 196,904,663 bytes.
+APK SHA-256: `8a2223aa225b21903a4d72391fe91be48a234e02739934f3f6bacdfe8d60192f`.
+Certificate SHA-256: `001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f`.
 
-1. Native touch and text entry into a local HTML input, IME/system back, and tab-tray navigation.
-2. Contentful paint, advancing JavaScript for more than 12 seconds, continued Activity lifetime, and actual nonblank compositor pixels.
-3. Starting the floating service twice produces exactly one accessible workspace bubble. Its tap restores the same browser session and removes the foreground-owned overlay.
-4. Multiple independent native sessions, repeated tab switching, Activity recreation, foreground/background transitions, and synthetic active-generation JavaScript progress while backgrounded. The synthetic test is not a real authenticated ChatGPT generation.
-5. Stable nonblank compositor output for Google's homepage and the signed-out ChatGPT homepage. Inspected screenshots show the actual dark ChatGPT home and composer, not a challenge page.
-6. Continuous metadata updates every 70ms still reach the committed workspace file; there is no 500ms idle gap to satisfy the old trailing debounce.
-7. A real webpage sees the dark color-scheme preference; a malformed Gecko saved-state string falls back to the retained canonical URL and renders successfully.
-8. Rapid reversal of the native tab-tray animation neither accidentally hides it nor retains its temporary hardware layer. GeckoView is never used as that animation layer.
+Downloaded ZIP checksums/CRCs, APK checksum and embedded certificate identity were inspected. CI apksigner verified the APK. Binary-manifest inspection confirmed package/version, SDK levels and application hardwareAcceleration=true. The final APK is byte-identical to the preceding `2acacb0` application build because the last commit changes only the instrumentation harness. The permanent debug certificate has NOT changed. Compatible 0.6.0/debug installs can update without uninstalling. This intentionally public development key is not production signing.
 
-The public-site report records Google at `https://www.google.com/` and ChatGPT at `https://chatgpt.com/`, both with loading=false, FCP=true, and nonblankStable=true. No account credentials or real conversation contents were used in CI.
+## User-requested behavior implemented
 
-## Changes since the first clean-rebuild candidate
+Drag the bubble to the bottom circular × target to hide it in a persistent notification, not close the chats. The target appears only during dragging and is a small non-touchable overlay. Capture has radial hysteresis and an entry haptic. A cancelled drag does not hide. The restore notification is published before removing the windows; the original resting location and GeckoSessions survive. Hiding is refused when the notification route is blocked, so the user is not stranded. The notification provides Show bubble and Stop service and displays tab/generating/unread counts.
 
-The old application source remains replaced: one lazy main-process GeckoRuntime, no custom Application browser bootstrap in Gecko subprocesses, one Activity-owned native GeckoView, durable UUID tabs with independent GeckoSessions, and one explicitly requested aggregate workspace bubble. ChatGPT sessions are kept active/high-priority while retained, without voluntary hibernation. This does not make them immune to Android process reclamation or website behavior.
+Opening is an anchored hardware circular reveal from the actual bubble; closing conceals to a circle, then moves only the small bubble to its resting position. The page is not stretched nonuniformly. Chooser and chat share stable resting bounds; keyboard accommodation is temporary. Structural list changes, control-sheet entry/exit, button feedback and unread acknowledgement use bounded motion rather than idle animation loops.
 
-Native tray transitions use a temporary hardware layer that is released on completion/cancellation; their animation does not rebuild or transform the webpage renderer. Font and icon measurements are cached. Rapid reversals continue from their current visual position.
+ChatGPT lifecycle monitoring handles observed completion, same-node regeneration, cancellation, errors, history and BFCache restoration. It emits only a random run ID and a coarse lifecycle event through the exact-origin bridge, not conversation text. The existing audible ChatGPT replies channel and user preferences are retained. Multiple replies group without an extra summary sound; tapping a reply restores its exact floating conversation. The floating chooser includes notification sound settings.
 
-Persistence is coalesced into the first scheduled checkpoint rather than postponed until page updates stop. Deferred restoration failures are contained at the asynchronous boundary. Unobserved native UI updates do not request extra frame callbacks.
+Fullscreen Gecko retains SurfaceView. The interactive/clipped floating Gecko uses TextureView. Actual supported display mode/rate and API 35 view frame-rate votes are applied to the floating view and drag target. No software-rendering fallback, permanent webpage bitmap cache or quality-reducing rendering switch was introduced.
 
-The 0.5.1 runtime run passed seven tests and failed the dark-preference assertion. Inspection found that GeckoRuntimeSettings.updateSettings() omitted the non-Pref color-scheme field when copying builder settings. Version 0.5.2 applies the supported color-scheme setter directly to the attached runtime before initial navigation. The unchanged dark-preference/fallback test now passes.
+## Observed Android runtime tests
 
-## Performance: NOT PASSED
+- BrowserInputTest: real touch and typing into an HTML input; IME Back; native tab chooser Back; window frame diagnostics.
+- BrowserSmokeTest: contentful paint, advancing JavaScript, sustained Activity lifetime and distinct captured compositor pixels.
+- FloatingWorkspaceTest (three tests): tapping bubble opens chooser without promoting fullscreen; selecting a tab renders and accepts keyboard input in the floating window; explicit fullscreen and system Back preserve the same session; two background tabs remain visible to Gecko and their timers continue after Home; native Android PiP enters and Previous/Next controls select the original sessions. The floating view reports hardwareAcceleration=true. This reports the tested API/session behavior, not a screenshot-derived claim about transition smoothness.
+- ParkedWorkspaceTest: actual drag cancellation restores placement; actual drag-to-× removes floating UI; an actual SystemUI notification tap restores original bubble placement and the same GeckoSession; a reply-notification tap opens the exact floating session and clears unread. The restored view returns actual nonblank Gecko compositor pixels. The notification layer is invoked with synthetic state here; this is not an authenticated ChatGPT generation.
+- RebuildRegressionTest (three tests): continuous metadata updates still persist without waiting for idle; actual webpage dark-color preference plus malformed-session fallback; reversing native tray motion neither hides it incorrectly nor retains its temporary hardware layer.
+- WorkspaceRuntimeTest (two tests): repeated tab switching and Activity recreation preserve independent sessions and actual rendered pixels; Google and signed-out ChatGPT produce stable nonblank documents.
 
-The final run's native frame report is: 60.0Hz software-rendered emulator, 46 sampled native frames, recent p95 424.72ms, 46/46 deadline misses, no lost callbacks. These are poor timings, not a performance success. The previous baseline was also slow. Different short emulator samples must not be presented as calibrated optimization gains or physical Pixel performance.
+The inspected public ChatGPT screenshot shows the actual dark homepage, composer and Log in control, not a challenge page. The report records both public sites with loading=false, FCP=true and nonblankStable=true. CI used only synthetic local pages and signed-out public sites, with no user credentials or private conversation contents.
 
-Bubble requests high refresh on supported displays and separates native animations from Gecko, but neither that code nor passing functional tests proves 120fps or zero jank. Physical-device frame pacing, webpage compositor performance, and broader UI polish remain open gates. The optional local frame meter measures native-window timing, not webpage FPS.
+Node fixtures separately verify history/no replay, completion, same-node regeneration, stop, missing positive end markers, error, old action buttons, conversation navigation, BFCache reconnect, deduplication and exact-origin/element-event isolation. Those fixtures do not certify current signed-in website selectors.
 
-## Still unproven or incomplete
+## Failures fixed during verification
 
-- Pixel 9 Pro XL installation, real 120Hz frame pacing, thermal/power behavior and long-running crash/renderer soak.
-- Authenticated ChatGPT sign-in, real concurrent background generations, and completion-notification behavior. Origin-restricted lifecycle monitoring is implemented, but its real-site behavior is not yet certified.
-- File uploads across actual document providers, microphone/camera permission flows, and downloads. Voice/media grants and downloads are not complete.
-- Legacy Room tab import and legacy cookie-profile continuity. Old database files are left untouched, but old tabs are not imported into the new workspace. A preserved file is not the same as a completed migration.
+The prior run exposed a real native tab-sheet Back/IME priority problem. The visible sheet now owns an overlay-priority Back callback, dismisses its own search keyboard first and releases priority when hidden. The unchanged Back behavior assertion passes.
 
-This is a runtime-tested development candidate, not a production-complete browser or a zero-jank release. Future docs-only commits do not change the binary's exact source commit recorded above.
+The last remaining test failure was ActivityScenario filtering out a real RESUMED event after fullscreen restoration changed the Activity Intent. Logs showed RESTARTED/STARTED/RESUMED and explicitly reported an Intent mismatch. The corrected test uses the same component-only launch as restoration, then navigates its synthetic fixture after launch. All lifecycle, input, session and rendering assertions remain. This was a test-only correction; it did not change the APK.
+
+## Performance gate: NOT PASSED
+
+The final run's optional native frame diagnostic reports a 60.0Hz SwiftShader software-rendered emulator, 45 native frames, recent p95 434.66ms, 45/45 deadline misses and no lost callbacks. These are poor timings, not a performance success. They cannot establish physical GPU performance or a speedup. A functional green CI does not waive the performance gate.
+
+The code requests high refresh and uses hardware-capable rendering paths, but sustained 120fps, minimal jank on the Pixel 9 Pro XL, native GPU/compositor frame pacing and long-duration thermal/memory behavior remain unmeasured. The local meter measures native-window duration, not webpage FPS. Do not advertise certified 120fps or zero jank.
+
+## Remaining device/product gates
+
+Authenticated ChatGPT concurrent generations and completion-alert behavior require live-device testing. DOM-based monitoring may miss future or unsupported page states; it is not server push after force-stop. Android can reclaim processes or restrict execution. Parking preserves resident sessions but cannot guarantee survival after force-stop or memory reclamation.
+
+Provider-specific file uploads, microphone/camera permission flows, downloads, legacy Room import and old cookie-profile migration are not certified by these tests. Old workspace database files remain preserved. Release signing remains separate. This is a functionally runtime-tested development build, not a production-complete browser.
+
+Documentation-only commits after the tested source commit do not change the APK identity above.

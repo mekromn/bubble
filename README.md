@@ -1,33 +1,33 @@
-# Bubble 0.5 — native clean rebuild
+# Bubble 0.6.1 — live ChatGPT floating workspace
 
-`rebuild-v2` replaces the failed application source tree. The old implementation remains in Git history and on `implementation-v1`, but no old application source is compiled here.
+Tap one draggable bubble to choose among independent conversation tabs, then chat in an interactive floating browser. Fullscreen is explicit. Home and system Back minimize to the bubble after transient UI, with overlay permission granted. Native Android picture-in-picture is separately available as a view-only mode with tab controls.
 
-## Architecture
+Drag the bubble to the bottom × target to hide it in a persistent notification without closing tabs. Tap Show bubble to restore its previous resting position. The target does not intercept the screen; hiding requires a usable notification restore route. Stop service is separate from hiding.
 
-- Kotlin with native Android Views. One Activity-owned GeckoView is independent from the animated/recycled tab tray and controls.
-- One lazily created GeckoRuntime in the main application process. There is no custom Application initializer to run again in Gecko child processes.
-- A new Workspace owns durable UUID tabs and GeckoSessions. Switching tabs/recreating an Activity does not recreate sessions. ChatGPT sessions are kept active and high-priority while retained, including when collapsed.
-- One explicit foreground service owns one non-focusable workspace bubble. The Activity moves behind other apps only after an explicit user action and a successful overlay attachment acknowledgement. A tap opens the selected chat; long press opens the workspace tray. Dragging is free-positioned, frame-coalesced and persisted after release.
-- Versioned AtomicFile workspace snapshots run on one ordered IO worker. Old Room workspace files are preserved, not silently deleted or imported. Corrupt new snapshots are preserved rather than overwritten by a fresh empty workspace.
-- A built-in extension is restricted to the exact ChatGPT HTTPS origin. It sends coarse reply lifecycle events only, never conversation text or account data. Completion notifications are generic and deep-link to a durable tab ID. This DOM-based detector requires live-site validation and may prefer missing a signal over false notification.
-- No TLS bypass, automatic permission grants, analytics SDK or remote debugging endpoint is added.
+## Motion and rendering
 
-## Performance contract
+Anchored reveal/conceal replaces stretching a webpage into a circle. Chooser/chat resting position is stable; keyboard resizing is temporary. Row insertion/removal, controls, press feedback and new unread state receive short animations without perpetual idle effects. Fullscreen uses Gecko SurfaceView; only the clipped/animated floating browser uses TextureView. High refresh is requested using supported display modes and view votes. Sustained 120fps/zero jank is NOT yet verified on a physical device.
 
-Native animations use display-synchronized property animation; no 60fps timer drives animation and the browser surface is never scaled for a tab-tray transition. Bubble requests the highest supported display mode at the current resolution. Android retains authority over refresh rate and process lifetime. Neither this request nor an emulator benchmark proves 120fps or zero jank on a physical Pixel.
+## Session ownership and privacy
 
-The optional local frame meter reports native-window deadlines and p95 frame duration, not Gecko compositor FPS. It has no network output and is stopped when the Activity stops.
+One lazy main-process GeckoRuntime owns independent GeckoSessions with durable UUID tabs. Each session has one display owner at a time, either the fullscreen Activity or a bounded floating WindowContext. There is no custom Application browser bootstrap in Gecko child processes. Open workspace sessions remain active/high-priority while retained, but Android can still kill/restrict processes.
 
-## Validation
+Workspace snapshots use ordered off-main-thread AtomicFile writes. The exact-origin ChatGPT extension sends only lifecycle events and random run IDs to native completion notifications, never prompt/answer text. Reply taps open the corresponding floating chat. Completion detection is DOM-based and requires authenticated live-site testing; it is not server push after force-stop. No TLS bypass or universal JavaScript bridge is added.
 
-The pipeline builds ARM64 and x86_64 from the same source/engine version. Android 16 instrumentation checks actual compositor pixels, JavaScript progress, sustained Activity lifetime, multiple sessions, tab-tray interaction, Activity recreation and public-site painting. A painted ChatGPT challenge is not counted as proof of a usable authenticated ChatGPT session. Review the captured titles/screenshots and test report.
+## Verified build
 
-The initial rewrite does not claim full feature parity with every old browser option. Voice/media grants, downloads, named workspace export/import and production release signing need separate implementation/validation. Existing app-private Gecko profile storage is retained, but prior login restoration is not assumed proven.
+Source `fd7255e4c0baa5f79a08d04ed9a4b09df442c8b7`; GitHub Actions run `33981459029`; all 11 Android 16 emulator tests, 9 JVM tests and foreground/reply-script fixtures passed. Debug/release assembly and lint passed (0 errors, 26 warnings). Actual drag, notification tap, restoration, floating input and nonblank compositor output were exercised.
 
-## Build and signing
+APK version 0.6.1 / code 31 / package `com.mekromn.bubble.debug` retains the existing permanent public DEBUG key. Compatible earlier permanent-key debug versions update without uninstalling. This key must not be used for production release signing. APK SHA-256: `8a2223aa225b21903a4d72391fe91be48a234e02739934f3f6bacdfe8d60192f`.
 
-JDK 17, Gradle 9.5.0, AGP 9.3.0, Kotlin 2.4.10; compile SDK 37.1, target SDK 36, min 26. `gradle :app:testDebugUnitTest :app:assembleDebug :app:lintDebug`. Set `-PgeckoAbi=x86_64` for emulator builds.
+Read `docs/VALIDATION_STATUS.md` for exact artifacts, observed results, poor software-emulator frame diagnostics and open physical-device/performance/product gates. Green functional CI does not certify 120fps or authenticated ChatGPT notifications.
 
-Test package: `com.mekromn.bubble.debug`, versionCode 20. The original public TEST keystore is unchanged so compatible previous debug builds can update without uninstalling. Never use this public development key to sign a production/release package. The release target remains separately unsigned.
+## Build
 
-See `AGENTS.md` and `docs/REBUILD_V2.md`. Legacy spec files are product/history references, not instructions to restore the old runtime.
+JDK 17; Gradle 9.5.0; AGP 9.3.0; Kotlin 2.4.10; compile SDK 37.1; target SDK 36; min SDK 26.
+
+`gradle :app:testDebugUnitTest :app:assembleDebug :app:lintDebug`
+
+Set `-PgeckoAbi=x86_64` for emulator builds; default is arm64-v8a. The failed legacy implementation stays recoverable in Git history/on `implementation-v1`, not compiled here. Old Room files are preserved but not imported. Full browser feature parity, voice/downloads and production release signing remain separate work.
+
+Implementation contracts: `AGENTS.md`, `docs/FLOATING_V060.md`, `docs/MOTION_AND_ALERTS_V061.md`.
