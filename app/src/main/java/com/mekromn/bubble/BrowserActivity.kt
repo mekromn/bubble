@@ -24,7 +24,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 
-/** Fullscreen browsing has one 56dp bar. Surface ownership is shared, never session ownership. */
+/** Fullscreen browsing retains one 56dp bar. Long-press actions use bounded native panels. */
 class BrowserActivity : Activity() {
     lateinit var geckoView: GeckoView
         private set
@@ -39,6 +39,7 @@ class BrowserActivity : Activity() {
     private lateinit var error: TextView
     private lateinit var tabs: GlyphView
     private lateinit var back: GlyphView
+    private lateinit var menuButton: GlyphView
     private var tray: TabTray? = null
     private var pendingIntent: Intent? = null
     private var started = false
@@ -67,8 +68,7 @@ class BrowserActivity : Activity() {
     }
     override fun onStart() {
         super.onStart(); started = true; handoff = false
-        BubbleService.active?.releaseForActivity()
-        stopService(Intent(this, BubbleService::class.java))
+        BubbleService.active?.releaseForActivity(); stopService(Intent(this, BubbleService::class.java))
         workspace.host = WeakReference(this); workspace.visible = true
         workspace.listen(changed); workspace.applyPolicy(); Refresh.request(this)
         if (measuring) meter.start(this)
@@ -77,37 +77,30 @@ class BrowserActivity : Activity() {
         super.onResume(); externalFlow = false; enteringPip = false
         if (awaitingOverlay) {
             awaitingOverlay = false
-            if (Settings.canDrawOverlays(this)) collapse(pendingMode)
-            else toast("Floating mode needs display-over-other-apps permission.")
+            if (Settings.canDrawOverlays(this)) collapse(pendingMode) else toast("Floating mode needs display-over-other-apps permission.")
         }
     }
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // Home/Recents are user-driven minimization. Picker, permission and sharing Activities
-        // are not: never float unexpectedly over a system permission/file-selection dialog.
         if (started && workspace.ready && !externalFlow && !handoff && !enteringPip && !isInPictureInPictureMode && Settings.canDrawOverlays(this)) {
             collapse(FloatingMode.BUBBLE, alreadyLeaving = true)
         }
     }
     override fun onStop() {
-        started = false; workspace.unlisten(changed)
-        if (workspace.host.get() === this) {
-            workspace.visible = false; workspace.covered = false
-            workspace.detachSurface(geckoView); workspace.flush()
-        }
+        started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed)
+        if (workspace.host.get() === this) { workspace.visible = false; workspace.covered = false; workspace.detachSurface(geckoView); workspace.flush() }
         meter.stop(); super.onStop()
     }
     override fun onDestroy() {
-        if (::workspace.isInitialized) {
-            workspace.detachSurface(geckoView)
-            if (workspace.host.get() === this) workspace.host.clear()
-        }
+        QuickPanel.dismissFor(root)
+        if (::workspace.isInitialized) { workspace.detachSurface(geckoView); if (workspace.host.get() === this) workspace.host.clear() }
         super.onDestroy()
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); pendingIntent = intent; render() }
     @Deprecated("API 26-32 back compatibility") override fun onBackPressed() = handleBack()
     private fun handleBack() {
         when {
+            workspace.quickMenuVisible -> QuickPanel.dismissFor(root)
             tray?.visibility == View.VISIBLE -> showTabs(false)
             address.hasFocus() -> { address.clearFocus(); hideKeyboard() }
             !Settings.canDrawOverlays(this) -> {
@@ -118,9 +111,19 @@ class BrowserActivity : Activity() {
             else -> collapse(FloatingMode.BUBBLE)
         }
     }
-    internal fun detachSession(session: GeckoSession?) {
-        if (geckoView.session === session && session != null) workspace.detachSurface(geckoView)
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isCtrlPressed && ::workspace.isInitialized && workspace.ready && !isInPictureInPictureMode) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_T -> { if (event.isShiftPressed) workspace.reopen() else workspace.create(); return true }
+                KeyEvent.KEYCODE_TAB -> { workspace.cycle(event.isShiftPressed); return true }
+                KeyEvent.KEYCODE_F -> { QuickMenus.find(menuButton, workspace); return true }
+                KeyEvent.KEYCODE_L -> { address.requestFocus(); address.selectAll(); getSystemService(InputMethodManager::class.java).showSoftInput(address, InputMethodManager.SHOW_IMPLICIT); return true }
+                KeyEvent.KEYCODE_W -> { QuickMenus.close(menuButton, workspace, workspace.selectedId); return true }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
+    internal fun detachSession(session: GeckoSession?) { if (geckoView.session === session && session != null) workspace.detachSurface(geckoView) }
     private fun render() {
         if (!started || handoff || !workspace.ready) return
         pendingIntent?.let { incoming ->
@@ -131,22 +134,20 @@ class BrowserActivity : Activity() {
         }
         val tab = workspace.selected ?: return
         val session = tab.session
-        if (session != null && session.isOpen) workspace.attachSurface(geckoView, session)
-        else if (geckoView.session != null) workspace.detachSurface(geckoView)
+        if (session != null && session.isOpen) workspace.attachSurface(geckoView, session) else if (geckoView.session != null) workspace.detachSurface(geckoView)
         currentUrl = tab.url
         if (!address.hasFocus()) {
             val label = (if (tab.url.startsWith("http://")) "Not secure · " else "") + Policy.host(tab.url)
             if (address.text.toString() != label) address.setText(label)
         }
-        if (back.isEnabled != tab.back) { back.isEnabled = tab.back; back.invalidate() }
-        tabs.count = workspace.tabs.size
-        tabs.contentDescription = "Workspace tabs, ${workspace.tabs.size} open"
-        progress.visibility = if (tab.loading && !isInPictureInPictureMode) View.VISIBLE else View.INVISIBLE
-        progress.progress = tab.progress
+        // Do not disable this View: long press must work even when history is empty.
+        val backAlpha = if (tab.back) 1f else .55f
+        if (back.alpha != backAlpha) back.alpha = backAlpha
+        tabs.count = workspace.tabs.size; tabs.contentDescription = "Workspace tabs, ${workspace.tabs.size} open"
+        progress.visibility = if (tab.loading && !isInPictureInPictureMode) View.VISIBLE else View.INVISIBLE; progress.progress = tab.progress
         error.visibility = if (tab.error != null && !isInPictureInPictureMode) View.VISIBLE else View.GONE
-        val message = tab.error?.plus("\n\nTap to retry").orEmpty()
-        if (error.text.toString() != message) error.text = message
-        if (tab.unread && !workspace.covered) { tab.unread = false; Replies.clear(this, tab.id); workspace.changed(true) }
+        val message = tab.error?.plus("\n\nTap to retry").orEmpty(); if (error.text.toString() != message) error.text = message
+        if (tab.unread && workspace.chatVisible) { tab.unread = false; Replies.clear(this, tab.id); workspace.changed(true) }
         tray?.takeIf { it.visibility == View.VISIBLE }?.refresh(workspace)
         workspace.notice?.let { if (notice != it) { notice = it; toast(it) } }
     }
@@ -154,56 +155,53 @@ class BrowserActivity : Activity() {
         root = FrameLayout(this).apply { setBackgroundColor(Ui.BG); isFocusableInTouchMode = true }
         val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(column, FrameLayout.LayoutParams(-1, -1))
-        val content = FrameLayout(this)
-        geckoView = LiveGeckoView(this)
+        val content = FrameLayout(this); geckoView = LiveGeckoView(this)
         content.addView(geckoView, FrameLayout.LayoutParams(-1, -1))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100; progressTintList = ColorStateList.valueOf(Ui.BLUE)
-            progressBackgroundTintList = ColorStateList.valueOf(Ui.LINE); visibility = View.INVISIBLE
+            max = 100; progressTintList = ColorStateList.valueOf(Ui.BLUE); progressBackgroundTintList = ColorStateList.valueOf(Ui.LINE); visibility = View.INVISIBLE
         }
         content.addView(progress, FrameLayout.LayoutParams(-1, d(2), Gravity.TOP))
         error = Ui.text(this, "", 14f).apply {
-            gravity = Gravity.CENTER; setPadding(d(20), d(22), d(20), d(22))
-            background = Ui.shape(this@BrowserActivity, Ui.SURFACE, 24f, Ui.LINE)
+            gravity = Gravity.CENTER; setPadding(d(20), d(22), d(20), d(22)); background = Ui.shape(this@BrowserActivity, Ui.SURFACE, 24f, Ui.LINE)
             visibility = View.GONE; setOnClickListener { workspace.retry() }
         }
         content.addView(error, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER).apply { setMargins(d(22), 0, d(22), 0) })
         column.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
-        bar = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL; setPadding(d(4), d(4), d(4), d(4)); setBackgroundColor(Ui.SURFACE)
+        bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(d(4), d(4), d(4), d(4)); setBackgroundColor(Ui.SURFACE) }
+        back = control("back", "Back in webpage") { if (workspace.selected?.back == true) selectedSession?.goBack() }.apply {
+            tooltipText = "Back · hold for Forward, Stop and Refresh"
+            setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.navigation(this, workspace); true }
         }
-        back = control("back", "Back in webpage") { selectedSession?.goBack() }
         bar.addView(back, LinearLayout.LayoutParams(d(48), d(48)))
         address = EditText(this).apply {
             setSingleLine(true); textSize = 13f; setTextColor(Ui.TEXT); setHintTextColor(Ui.MUTED)
             hint = "Search or address"; contentDescription = "Address and search"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            imeOptions = EditorInfo.IME_ACTION_GO
-            background = Ui.shape(this@BrowserActivity, Ui.BG, 16f); setPadding(d(12), 0, d(8), 0)
-            setSelectAllOnFocus(true)
-            setOnFocusChangeListener { _, focused ->
-                if (focused) { setText(currentUrl); selectAll() } else if (::workspace.isInitialized) render()
-            }
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI; imeOptions = EditorInfo.IME_ACTION_GO
+            background = Ui.shape(this@BrowserActivity, Ui.BG, 16f); setPadding(d(12), 0, d(8), 0); setSelectAllOnFocus(true)
+            setOnFocusChangeListener { _, focused -> if (focused) { setText(currentUrl); selectAll() } else if (::workspace.isInitialized) render() }
             setOnEditorActionListener { _, action, _ ->
-                if (action == EditorInfo.IME_ACTION_GO) {
-                    val url = text.toString(); clearFocus(); root.requestFocus(); hideKeyboard(); workspace.navigate(url); true
-                } else false
+                if (action == EditorInfo.IME_ACTION_GO) { val url = text.toString(); clearFocus(); root.requestFocus(); hideKeyboard(); workspace.navigate(url); true } else false
             }
         }
         bar.addView(address, LinearLayout.LayoutParams(0, d(44), 1f))
-        tabs = control("tabs", "Workspace tabs") { showTabs(true) }
+        tabs = control("tabs", "Workspace tabs") { showTabs(true) }.apply {
+            tooltipText = "Workspace · hold for quick tabs"
+            setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.tabs(this, workspace); true }
+        }
         bar.addView(tabs, LinearLayout.LayoutParams(d(48), d(48)))
         bar.addView(control("float", "Open interactive floating chat", true) { collapse(FloatingMode.CHAT) }.apply {
             setOnLongClickListener { collapse(FloatingMode.BUBBLE); true }
         }, LinearLayout.LayoutParams(d(48), d(48)))
-        bar.addView(control("menu", "Browser menu") { menu() }, LinearLayout.LayoutParams(d(48), d(48)))
-        column.addView(bar, LinearLayout.LayoutParams(-1, -2))
+        menuButton = control("menu", "Browser menu") { menu() }.apply {
+            tooltipText = "Menu · hold for chat tools"
+            setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.tools(this, workspace); true }
+        }
+        bar.addView(menuButton, LinearLayout.LayoutParams(d(48), d(48))); column.addView(bar, LinearLayout.LayoutParams(-1, -2))
         setContentView(root); root.requestFocus()
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
-            if (isInPictureInPictureMode) root.setPadding(0, 0, 0, 0)
-            else root.setPadding(safe.left, safe.top, safe.right, maxOf(safe.bottom, keyboard.bottom))
+            if (isInPictureInPictureMode) root.setPadding(0, 0, 0, 0) else root.setPadding(safe.left, safe.top, safe.right, maxOf(safe.bottom, keyboard.bottom))
             insets
         }
         ViewCompat.requestApplyInsets(root)
@@ -212,8 +210,7 @@ class BrowserActivity : Activity() {
         setOnClickListener { if (::workspace.isInitialized && workspace.ready) action() }
     }
     internal fun showTabs(show: Boolean) {
-        hideKeyboard(); address.clearFocus(); root.requestFocus()
-        workspace.covered = show
+        QuickPanel.dismissFor(root); hideKeyboard(); address.clearFocus(); root.requestFocus(); workspace.covered = show
         if (show && tray == null) {
             tray = TabTray(this, { workspace.select(it); showTabs(false) }, workspace::close,
                 { workspace.create(); showTabs(false) }, { showTabs(false) })
@@ -223,9 +220,12 @@ class BrowserActivity : Activity() {
     }
     private fun menu() {
         ControlsSheet.show(this, "Browser controls", listOf(
+            "Chat tools · prompts, notes and tabs" to { QuickMenus.tools(menuButton, workspace) },
             "New ChatGPT chat" to { workspace.create(); Unit },
+            "Reopen last closed tab" to { if (workspace.reopen() == null) toast("No recently closed tabs"); Unit },
+            "Find in conversation / page" to { QuickMenus.find(menuButton, workspace) },
             "Forward in webpage" to { selectedSession?.goForward(); Unit },
-            (if (workspace.selected?.loading == true) "Stop loading" else "Reload page") to { if (workspace.selected?.loading == true) selectedSession?.stop() else workspace.retry(); Unit },
+            (if (workspace.selected?.loading == true) "Stop loading" else "Reload page") to { if (workspace.selected?.loading == true) workspace.stopLoading() else workspace.retry() },
             "Floating chat · interactive" to { collapse(FloatingMode.CHAT) },
             "Minimize to bubble" to { collapse(FloatingMode.BUBBLE) },
             "Android picture-in-picture · view only" to { enterNativePip(); Unit },
@@ -242,7 +242,7 @@ class BrowserActivity : Activity() {
     }
     internal fun collapse(mode: FloatingMode = FloatingMode.BUBBLE, alreadyLeaving: Boolean = false) {
         if (collapsePending || !started || !workspace.ready) return
-        pendingMode = mode
+        QuickPanel.dismissFor(root); pendingMode = mode
         if (!Settings.canDrawOverlays(this)) {
             if (alreadyLeaving) return
             AlertDialog.Builder(this).setTitle("Enable floating workspace")
@@ -255,8 +255,7 @@ class BrowserActivity : Activity() {
             return
         }
         if (!alreadyLeaving && Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED && !notificationAsked) {
-            notificationAsked = true; externalFlow = true
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS); return
+            notificationAsked = true; externalFlow = true; requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS); return
         }
         collapsePending = true; handoff = true; workspace.flush()
         val wasPip = isInPictureInPictureMode
@@ -264,9 +263,7 @@ class BrowserActivity : Activity() {
             override fun onReceiveResult(code: Int, data: Bundle?) {
                 collapsePending = false
                 if (code != 1) { handoff = false; if (started) { render(); toast("Floating window could not be attached. Your chats are retained.") }; return }
-                if (!alreadyLeaving && !isFinishing) {
-                    if (wasPip) finish() else moveTaskToBack(true)
-                }
+                if (!alreadyLeaving && !isFinishing) { if (wasPip) finish() else moveTaskToBack(true) }
             }
         }
         try { startForegroundService(Intent(this, BubbleService::class.java).putExtra(BubbleService.READY, reply).putExtra(BubbleService.MODE, mode.name)) }
@@ -298,15 +295,11 @@ class BrowserActivity : Activity() {
         ViewCompat.requestApplyInsets(root); workspace.applyPolicy()
     }
     override fun onPictureInPictureUiStateChanged(state: PictureInPictureUiState) {
-        if (Build.VERSION.SDK_INT >= 35) {
-            super.onPictureInPictureUiStateChanged(state)
-            if (state.isTransitioningToPip) bar.visibility = View.GONE
-        }
+        if (Build.VERSION.SDK_INT >= 35) { super.onPictureInPictureUiStateChanged(state); if (state.isTransitioningToPip) bar.visibility = View.GONE }
     }
     internal fun chooseFile(prompt: GeckoSession.PromptDelegate.FilePrompt): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
         val session = selectedSession ?: return GeckoResult.fromValue(prompt.dismiss())
-        externalFlow = true
-        return FloatingFileActivity.launch(this, workspace.selectedId, session, prompt)
+        externalFlow = true; return FloatingFileActivity.launch(this, workspace.selectedId, session, prompt)
     }
     internal fun offerExternal(raw: String) {
         val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return

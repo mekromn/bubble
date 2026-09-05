@@ -7,14 +7,11 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.6.1"
+        versionCode = 40
+        versionName = "0.7.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { buildConfig = true }
     signingConfigs {
         getByName("debug") {
