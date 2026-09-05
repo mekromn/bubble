@@ -25,22 +25,29 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           log-accepted-android-sdk-licenses: false
+          packages: platform-tools
       - name: Verify existing signing identity
         run: echo '4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks' | sha256sum -c -
       - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
       - name: Compile and inspect ARM64 APK
         run: |
-          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug
+          set -o pipefail
+          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug 2>&1 | tee build-output.txt
           mkdir -p dist
           cp app/build/outputs/apk/debug/*.apk dist/Bubble-0.5.0-Rebuild-ARM64.apk
           $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs dist/*.apk | tee dist/signature.txt
           sha256sum dist/*.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/COMMIT.txt
       - uses: actions/upload-artifact@v4
         with:
           name: Bubble-rebuild-ARM64
           path: dist/
       - name: Compile emulator build
-        run: gradle --no-daemon -PgeckoAbi=x86_64 :app:assembleDebug :app:assembleDebugAndroidTest
+        run: |
+          set -o pipefail
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee emulator-build.txt
+      - name: Enable runner access to emulator accelerator
+        run: sudo chmod a+rw /dev/kvm
       - name: Android 16 compositor smoke test
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -58,6 +65,9 @@ jobs:
             adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence/ evidence/ || true
             adb logcat -d > emulator-logcat.txt
             grep -q 'OK (' instrumentation.txt
+      - name: Source snapshot
+        if: always()
+        run: git archive --format=zip HEAD -o Bubble-rebuild-source.zip
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -66,4 +76,7 @@ jobs:
             evidence/
             instrumentation.txt
             emulator-logcat.txt
+            build-output.txt
+            emulator-build.txt
             app/build/reports/
+            Bubble-rebuild-source.zip
