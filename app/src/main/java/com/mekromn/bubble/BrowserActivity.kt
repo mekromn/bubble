@@ -140,7 +140,8 @@ class BrowserActivity : Activity() {
         currentUrl = tab.url
         if (!address.hasFocus()) {
             val label = (if (tab.url.startsWith("http://")) "Not secure · " else "") + Policy.host(tab.url)
-            if (address.text.toString() != label) address.setText(label)
+            val display = if (tab.profileId == ProfilePolicy.DEFAULT_ID) label else "${workspace.profileName(tab.profileId)} · $label"
+            if (address.text.toString() != display) address.setText(display)
         }
         // Do not disable this View: long press must work even when history is empty.
         val backAlpha = if (tab.back) 1f else .55f
@@ -223,6 +224,7 @@ class BrowserActivity : Activity() {
     }
     private fun menu() {
         ControlsSheet.show(this, "Browser controls", listOf(
+            "Profiles / accounts · ${workspace.profileName()}" to { ProfileMenus.show(tabs, workspace) },
             "Chat tools · prompts, notes and tabs" to { QuickMenus.tools(menuButton, workspace) },
             "New ChatGPT chat" to { workspace.create(); Unit },
             "Reopen last closed tab" to { if (workspace.reopen() == null) toast("No recently closed tabs"); Unit },

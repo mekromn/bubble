@@ -28,6 +28,7 @@ internal class ConversationList(context: Context, private val select: (String) -
     }
     fun refresh(workspace: Workspace) {
         val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab -> Row(tab.id, tab.displayName,
+            (if (workspace.profiles.size > 1) "${workspace.profileName(tab.profileId)} · " else "") +
             (if (tab.pinned) "Pinned · " else "") + when {
                 tab.error != null -> "Needs attention · tap to open"
                 tab.generating -> "Generating a reply"

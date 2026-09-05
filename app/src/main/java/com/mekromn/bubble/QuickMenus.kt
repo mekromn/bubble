@@ -71,6 +71,7 @@ internal object QuickMenus {
         val tab = ws.selected
         actions(anchor, ws, "Chat tools", listOf(
             Action("New ChatGPT chat") { choose(ws.create().id) },
+            Action("Profiles / accounts · ${ws.profileName()}") { ProfileMenus.show(anchor, ws, choose) },
             Action("Next unread reply", ws.tabs.any { it.unread }) { ws.nextUnread()?.let { choose(it.id) } },
             Action("Prompt library · local") { prompts(anchor, ws) },
             Action("Find in conversation / page", tab?.session != null) { find(anchor, ws) },
@@ -88,6 +89,7 @@ internal object QuickMenus {
             Action("Rename locally") { edit(anchor, ws, "Local tab name", "Name (blank uses page title)", tab.localName, false, 120) { ws.rename(id, it) } },
             Action("Local notes") { notes(anchor, ws, id) },
             Action(if (tab.muted) "Enable reply alerts for this tab" else "Mute reply alerts for this tab") { ws.toggleMute(id) },
+            Action("Profile · ${ws.profileName(tab.profileId)}") { ProfileMenus.show(anchor, ws, choose, id) },
             Action("Duplicate tab") { ws.duplicate(id)?.let { choose(it.id) } },
             Action("Copy conversation address") { copy(anchor, "Conversation address", tab.url) },
             Action("Close tab · not the conversation") { close(anchor, ws, id) }

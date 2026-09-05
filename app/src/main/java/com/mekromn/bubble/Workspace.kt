@@ -13,7 +13,8 @@ import org.mozilla.geckoview.*
 import org.json.JSONObject
 
 internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: String = Policy.HOME,
-    var title: String = "New chat", var desktop: Boolean = false) {
+    var title: String = "New chat", var desktop: Boolean = false,
+    val profileId: String = ProfilePolicy.DEFAULT_ID) {
     var session: GeckoSession? = null
     var savedState: String? = null
     var painted = false
@@ -33,9 +34,9 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
     var cancelledLoad = false
     val displayName: String get() = localName.ifBlank { title.ifBlank { "New ChatGPT chat" } }
     val recovery = RecoveryBudget()
-    fun snapshot() = StoredTab(id, url, title, desktop, savedState, unread, lastNotice, localName, pinned, note, muted)
+    fun snapshot() = StoredTab(id, url, title, desktop, savedState, unread, lastNotice, localName, pinned, note, muted, profileId)
     companion object {
-        fun restore(t: StoredTab) = ChatTab(t.id, t.url, t.title, t.desktop).apply {
+        fun restore(t: StoredTab) = ChatTab(t.id, t.url, t.title, t.desktop, t.profileId).apply {
             savedState = t.state; unread = t.unread; lastNotice = t.lastNotice
             localName = t.localName; pinned = t.pinned; note = t.note; muted = t.muted
         }
@@ -47,6 +48,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     val tabs = ArrayList<ChatTab>()
     val closedTabs = ArrayList<StoredTab>()
     val prompts = ArrayList<PromptSnippet>()
+    val profiles = ArrayList<BrowserProfile>()
     var selectedId = ""
         private set
     val selected: ChatTab? get() = tabs.firstOrNull { it.id == selectedId }
@@ -99,6 +101,8 @@ internal class Workspace private constructor(private val app: Context, initialUr
     init {
         store.load { saved, error ->
             notice = error
+            profiles += ProfilePolicy.restore(saved?.profiles ?: ProfilePolicy.defaults(),
+                saved?.let { (it.tabs + it.closedTabs).map { tab -> tab.profileId } } ?: emptyList())
             saved?.let { state ->
                 bubbleX = state.bubbleX; bubbleY = state.bubbleY
                 windowX = state.windowX; windowY = state.windowY
@@ -109,7 +113,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
             }
             prompts += saved?.prompts ?: StarterPrompts.items()
             if (tabs.isEmpty()) tabs += ChatTab(url = initialUrl ?: Policy.HOME)
-            else if (initialUrl != null) tabs += ChatTab(url = initialUrl).also { selectedId = it.id }
+            else if (initialUrl != null) tabs += ChatTab(url = initialUrl, profileId = selected?.profileId ?: ProfilePolicy.DEFAULT_ID).also { selectedId = it.id }
             if (selected == null) selectedId = tabs.first().id
             ready = true; ensureSession(selected!!); changed(true)
             // All logical tabs restore, paced across main-loop turns rather than one startup burst.
@@ -129,9 +133,33 @@ internal class Workspace private constructor(private val app: Context, initialUr
             renderScheduled = false; listeners.toList().forEach { it() }
         }
     }
-    fun create(url: String = Policy.HOME): ChatTab {
+    fun profileName(id: String = selected?.profileId ?: ProfilePolicy.DEFAULT_ID): String =
+        profiles.firstOrNull { it.id == id }?.name ?: "Unknown profile"
+    fun createProfile(raw: String): BrowserProfile {
+        checkMain()
+        require(ProfilePolicy.nameProblem(raw, profiles) == null) { ProfilePolicy.nameProblem(raw, profiles).orEmpty() }
+        val profile = BrowserProfile(ProfilePolicy.newId(), ProfilePolicy.name(raw))
+        profiles += profile; changed(true); return profile
+    }
+    fun renameProfile(id: String, raw: String) {
+        checkMain()
+        val index = profiles.indexOfFirst { it.id == id }
+        require(index >= 0)
+        require(ProfilePolicy.nameProblem(raw, profiles, id) == null) { ProfilePolicy.nameProblem(raw, profiles, id).orEmpty() }
+        profiles[index] = profiles[index].copy(name = ProfilePolicy.name(raw)); changed(true)
+    }
+    fun create(url: String = Policy.HOME, profileId: String = selected?.profileId ?: ProfilePolicy.DEFAULT_ID): ChatTab {
         checkMain(); require(Policy.isWeb(url))
-        val tab = ChatTab(url = url); tabs += tab; select(tab.id); return tab
+        require(profiles.any { it.id == profileId }) { "Unknown storage profile" }
+        val tab = ChatTab(url = url, profileId = profileId); tabs += tab; select(tab.id); return tab
+    }
+    /** Open URL only. Never transfer cookies, form state, session history or generation to another profile. */
+    fun openInProfile(id: String, profileId: String): ChatTab? {
+        checkMain()
+        val original = tabs.firstOrNull { it.id == id } ?: return null
+        if (profiles.none { it.id == profileId }) return null
+        val tab = ChatTab(url = original.url, title = original.title, desktop = original.desktop, profileId = profileId)
+        tabs += tab; select(tab.id); return tab
     }
     fun select(id: String) {
         checkMain()
@@ -155,7 +183,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         val original = tabs.firstOrNull { it.id == id } ?: return null
         // A separate browser tab at the same URL; not a server-side conversation branch and
         // never a copy/replay of an unsent composer or an in-flight generation.
-        val copy = ChatTab(url = original.url, title = original.title, desktop = original.desktop)
+        val copy = ChatTab(url = original.url, title = original.title, desktop = original.desktop, profileId = original.profileId)
         if (original.localName.isNotEmpty()) copy.localName = QuickTabPolicy.localName(original.localName + " · copy")
         tabs += copy; select(copy.id); return copy
     }
@@ -167,7 +195,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         while (closedTabs.size > 20) closedTabs.removeAt(closedTabs.lastIndex)
         pendingStarts.remove(id); tabs.remove(tab); detachTab(tab.session)
         tab.session?.close(); tab.session = null; Replies.clear(app, id)
-        if (tabs.isEmpty()) tabs += ChatTab()
+        if (tabs.isEmpty()) tabs += ChatTab(profileId = tab.profileId)
         if (selected == null) selectedId = tabs.first().id
         ensureSession(selected!!); applyPolicy(); changed(true)
     }
@@ -283,7 +311,8 @@ internal class Workspace private constructor(private val app: Context, initialUr
         }
     }
     private fun newSession(tab: ChatTab): GeckoSession {
-        val session = GeckoSession(GeckoSessionSettings.Builder().allowJavascript(true).contextId("normal").suspendMediaWhenInactive(false)
+        require(profiles.any { it.id == tab.profileId } && ProfilePolicy.validId(tab.profileId))
+        val session = GeckoSession(GeckoSessionSettings.Builder().allowJavascript(true).contextId(tab.profileId).suspendMediaWhenInactive(false)
             .userAgentMode(if (tab.desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
             .viewportMode(if (tab.desktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE).build())
         tab.session = session
@@ -330,8 +359,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
                 return GeckoResult.deny()
             }
             override fun onNewSession(s: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
-                if (!Policy.isWeb(uri) && uri != "about:blank") return null
-                val popup = ChatTab(url = if (Policy.isWeb(uri)) uri else Policy.HOME)
+                if (tab.session !== s || tab !in tabs || (!Policy.isWeb(uri) && uri != "about:blank")) return null
+                // Login popups must share the opener's container, even if another tab is selected.
+                val popup = ChatTab(url = if (Policy.isWeb(uri)) uri else Policy.HOME, profileId = tab.profileId)
                 tabs += popup; selectedId = popup.id
                 val child = newSession(popup)
                 main.post { applyPolicy(); changed(true) }
@@ -392,7 +422,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         if (!ready) return
         main.removeCallbacks(saveTask); saveScheduled = false
         store.save(StoredWorkspace(selectedId, tabs.map { it.snapshot() }, bubbleX, bubbleY, windowX, windowY, windowWidth, windowHeight,
-            closedTabs.toList(), prompts.toList())) { saved ->
+            closedTabs.toList(), prompts.toList(), profiles.toList())) { saved ->
             if (!saved && notice == null) { notice = "Workspace changes could not be saved. Check free storage; the previous snapshot is preserved."; changed() }
             done?.invoke(saved)
         }

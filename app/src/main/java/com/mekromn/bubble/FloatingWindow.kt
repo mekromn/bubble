@@ -262,7 +262,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         backControl?.let { val alpha=if(tab.back)1f else .55f; if(it.alpha!=alpha)it.alpha=alpha }
         if(heading?.text!=tab.displayName)heading?.text=tab.displayName
         val state=when { tab.generating -> "Generating · kept live"; tab.loading -> "Loading ${tab.progress}%"; else -> "${Policy.host(tab.url)} · live" }
-        if(subtitle?.text!=state)subtitle?.text=state
+        val profileState=if(tab.profileId==ProfilePolicy.DEFAULT_ID)state else "${workspace.profileName(tab.profileId)} · $state"
+        if(subtitle?.text!=profileState)subtitle?.text=profileState
         gecko?.let { view -> val session=tab.session; if(session!=null && session.isOpen)workspace.attachSurface(view,session) else if(view.session!=null)workspace.detachSurface(view) }
         error?.visibility=if(tab.error==null)View.GONE else View.VISIBLE
         val message=tab.error?.plus("\n\nTap to retry").orEmpty(); if(error?.text?.toString()!=message)error?.text=message

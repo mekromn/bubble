@@ -1,0 +1,13 @@
+name: Verify profile-isolation update
+# One consolidated verification of the user-requested update. Routine source edits do not run CI.
+on:
+  push:
+    branches: [rebuild-v2]
+    paths: ['.github/workflows/verify-profiles-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    if: github.repository == 'mekromn/bubble' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify-profiles]'))
+    uses: ./.github/workflows/android.yml

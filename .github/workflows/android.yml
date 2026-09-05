@@ -2,6 +2,7 @@ name: Bubble build and verification
 # Explicit builds only: editing source or documentation must not start another paid/storage run.
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:

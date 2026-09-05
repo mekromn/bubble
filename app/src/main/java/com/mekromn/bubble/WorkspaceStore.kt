@@ -13,12 +13,13 @@ import java.util.concurrent.Executors
 internal data class StoredTab(val id: String, val url: String, val title: String,
     val desktop: Boolean = false, val state: String? = null, val unread: Boolean = false,
     val lastNotice: String = "", val localName: String = "", val pinned: Boolean = false,
-    val note: String = "", val muted: Boolean = false)
+    val note: String = "", val muted: Boolean = false, val profileId: String = ProfilePolicy.DEFAULT_ID)
 internal data class StoredWorkspace(val selected: String, val tabs: List<StoredTab>,
     val bubbleX: Float = 0.88f, val bubbleY: Float = 0.3f,
     val windowX: Float = .5f, val windowY: Float = .25f,
     val windowWidth: Float = .92f, val windowHeight: Float = .72f,
-    val closedTabs: List<StoredTab> = emptyList(), val prompts: List<PromptSnippet> = StarterPrompts.items())
+    val closedTabs: List<StoredTab> = emptyList(), val prompts: List<PromptSnippet> = StarterPrompts.items(),
+    val profiles: List<BrowserProfile> = ProfilePolicy.defaults())
 
 /** One ordered IO lane; immutable snapshots; atomic rename. Existing version-1 files remain valid. */
 internal class WorkspaceStore(context: Context) {
@@ -30,10 +31,12 @@ internal class WorkspaceStore(context: Context) {
         val id = item.getString("id"); UUID.fromString(id)
         val url = item.getString("url")
         if (!Policy.isWeb(url)) return null
+        val profileId = if (item.has("profileId")) item.getString("profileId") else ProfilePolicy.DEFAULT_ID
+        require(ProfilePolicy.validId(profileId)) // Never send a malformed-profile tab to the default account.
         return StoredTab(id, url, item.optString("title").take(512), item.optBoolean("desktop"),
             item.optString("state").takeIf { it.length in 1..524288 }, item.optBoolean("unread"),
             item.optString("lastNotice").take(128), QuickTabPolicy.localName(item.optString("localName")),
-            item.optBoolean("pinned"), item.optString("note").take(16384), item.optBoolean("muted"))
+            item.optBoolean("pinned"), item.optString("note").take(16384), item.optBoolean("muted"), profileId)
     }
     fun load(done: (StoredWorkspace?, String?) -> Unit) {
         io.execute {
@@ -66,10 +69,17 @@ internal class WorkspaceStore(context: Context) {
                             PromptSnippet(id, QuickTabPolicy.localName(item.getString("title")), item.getString("body").take(16384))
                         }
                     } ?: StarterPrompts.items()
+                    val savedProfiles = json.optJSONArray("profiles")?.let { array ->
+                        (0 until array.length()).map { i ->
+                            val item = array.getJSONObject(i)
+                            BrowserProfile(item.getString("id"), item.getString("name"))
+                        }
+                    } ?: ProfilePolicy.defaults()
+                    val profiles = ProfilePolicy.restore(savedProfiles, (tabs + closed).map { it.profileId })
                     result = StoredWorkspace(json.optString("selected"), tabs,
                         json.optDouble("x", .88).toFloat(), json.optDouble("y", .3).toFloat(),
                         json.optDouble("windowX", .5).toFloat(), json.optDouble("windowY", .25).toFloat(),
-                        json.optDouble("windowWidth", .92).toFloat(), json.optDouble("windowHeight", .72).toFloat(), closed, snippets)
+                        json.optDouble("windowWidth", .92).toFloat(), json.optDouble("windowHeight", .72).toFloat(), closed, snippets, profiles)
                 }
             } catch (_: Exception) {
                 writable = false
@@ -88,9 +98,10 @@ internal class WorkspaceStore(context: Context) {
                     fun writeTabs(tabs: List<StoredTab>): JSONArray {
                         val array = JSONArray()
                         tabs.forEach { tab ->
+                            require(ProfilePolicy.validId(tab.profileId))
                             val item = JSONObject().put("id", tab.id).put("url", tab.url).put("title", tab.title.take(512))
                                 .put("desktop", tab.desktop).put("unread", tab.unread).put("lastNotice", tab.lastNotice)
-                                .put("localName", tab.localName).put("pinned", tab.pinned).put("note", tab.note.take(16384)).put("muted", tab.muted)
+                                .put("localName", tab.localName).put("pinned", tab.pinned).put("note", tab.note.take(16384)).put("muted", tab.muted).put("profileId", tab.profileId)
                             val state = tab.state
                             if (state != null && state.length <= 524288 && state.length <= remaining) {
                                 remaining -= state.length; item.put("state", state)
@@ -103,11 +114,15 @@ internal class WorkspaceStore(context: Context) {
                     val closed = writeTabs(snapshot.closedTabs.take(20))
                     val snippets = JSONArray()
                     snapshot.prompts.forEach { snippets.put(JSONObject().put("id", it.id).put("title", it.title).put("body", it.body.take(16384))) }
+                    val profiles = JSONArray()
+                    ProfilePolicy.restore(snapshot.profiles, (snapshot.tabs + snapshot.closedTabs).map { it.profileId }).forEach {
+                        profiles.put(JSONObject().put("id", it.id).put("name", it.name))
+                    }
                     val bytes = JSONObject().put("version", 1).put("selected", snapshot.selected)
                         .put("x", snapshot.bubbleX.toDouble()).put("y", snapshot.bubbleY.toDouble())
                         .put("windowX", snapshot.windowX.toDouble()).put("windowY", snapshot.windowY.toDouble())
                         .put("windowWidth", snapshot.windowWidth.toDouble()).put("windowHeight", snapshot.windowHeight.toDouble())
-                        .put("tabs", tabs).put("closedTabs", closed).put("prompts", snippets).toString().toByteArray()
+                        .put("tabs", tabs).put("closedTabs", closed).put("prompts", snippets).put("profiles", profiles).toString().toByteArray()
                     require(bytes.size <= 20 * 1024 * 1024)
                     stream = file.startWrite(); stream.write(bytes); file.finishWrite(stream); success = true
                 } catch (_: Exception) { if (stream != null) file.failWrite(stream) }
