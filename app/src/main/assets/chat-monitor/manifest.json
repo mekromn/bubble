@@ -1,0 +1,8 @@
+{
+  "manifest_version": 2,
+  "name": "Bubble local reply lifecycle",
+  "version": "1.0",
+  "browser_specific_settings": {"gecko": {"id": "chat-monitor@bubble.local"}},
+  "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons"],
+  "content_scripts": [{"matches": ["https://chatgpt.com/*"], "js": ["monitor.js"], "run_at": "document_idle", "all_frames": false}]
+}

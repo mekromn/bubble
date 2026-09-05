@@ -1,52 +1,33 @@
-# Bubble
+# Bubble 0.5 — native clean rebuild
 
-Bubble is an Android browser whose defining interaction is simple: **any tab can be minimized into an independent, draggable heads-up icon that remains available over other apps and can be restored instantly.**
+`rebuild-v2` replaces the failed application source tree. The old implementation remains in Git history and on `implementation-v1`, but no old application source is compiled here.
 
-There is no application-enforced maximum number of logical tabs or heads. Bubble achieves that by separating durable tab/session state from expensive live WebView renderer state. A head does **not** imply that its page must remain resident in memory.
+## Architecture
 
-## Production implementation
+- Kotlin with native Android Views. One Activity-owned GeckoView is independent from the animated/recycled tab tray and controls.
+- One lazily created GeckoRuntime in the main application process. There is no custom Application initializer to run again in Gecko child processes.
+- A new Workspace owns durable UUID tabs and GeckoSessions. Switching tabs/recreating an Activity does not recreate sessions. ChatGPT sessions are kept active and high-priority while retained, including when collapsed.
+- One explicit foreground service owns one non-focusable workspace bubble. The Activity moves behind other apps only after an explicit user action and a successful overlay attachment acknowledgement. A tap opens the selected chat; long press opens the workspace tray. Dragging is free-positioned, frame-coalesced and persisted after release.
+- Versioned AtomicFile workspace snapshots run on one ordered IO worker. Old Room workspace files are preserved, not silently deleted or imported. Corrupt new snapshots are preserved rather than overwritten by a fresh empty workspace.
+- A built-in extension is restricted to the exact ChatGPT HTTPS origin. It sends coarse reply lifecycle events only, never conversation text or account data. Completion notifications are generic and deep-link to a durable tab ID. This DOM-based detector requires live-site validation and may prefer missing a signal over false notification.
+- No TLS bypass, automatic permission grants, analytics SDK or remote debugging endpoint is added.
 
-Production work is on `implementation-v1`, with phase-sized commits corresponding to issues #2 through #9. The specification on `main` is authoritative if implementation and docs ever conflict.
+## Performance contract
 
-### Verified foundation toolchain
+Native animations use display-synchronized property animation; no 60fps timer drives animation and the browser surface is never scaled for a tab-tray transition. Bubble requests the highest supported display mode at the current resolution. Android retains authority over refresh rate and process lifetime. Neither this request nor an emulator benchmark proves 120fps or zero jank on a physical Pixel.
 
-- Android Gradle Plugin 9.3.0
-- Gradle 9.5.0
-- JDK 17
-- Kotlin 2.4.10
-- compileSdk / targetSdk 36
-- minSdk 26
-- Compose BOM 2026.06.00 (stable Compose 1.11 generation; Compose 1.12 requires compileSdk 37)
-- AndroidX WebKit 1.16.0
-- package / namespace `com.mekromn.bubble`
+The optional local frame meter reports native-window deadlines and p95 frame duration, not Gecko compositor FPS. It has no network output and is stopped when the Activity stops.
 
-### Build
+## Validation
 
-Install Android SDK Platform 36, Build Tools 36.0.0, JDK 17, and Gradle 9.5.0, then run:
+The pipeline builds ARM64 and x86_64 from the same source/engine version. Android 16 instrumentation checks actual compositor pixels, JavaScript progress, sustained Activity lifetime, multiple sessions, tab-tray interaction, Activity recreation and public-site painting. A painted ChatGPT challenge is not counted as proof of a usable authenticated ChatGPT session. Review the captured titles/screenshots and test report.
 
-```bash
-gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
-```
+The initial rewrite does not claim full feature parity with every old browser option. Voice/media grants, downloads, named workspace export/import and production release signing need separate implementation/validation. Existing app-private Gecko profile storage is retained, but prior login restoration is not assumed proven.
 
-GitHub Actions performs the same checks plus a release compile check and publishes the debug APK artifact.
+## Build and signing
 
-## Specification
+JDK 17, Gradle 9.5.0, AGP 9.3.0, Kotlin 2.4.10; compile SDK 37.1, target SDK 36, min 26. `gradle :app:testDebugUnitTest :app:assembleDebug :app:lintDebug`. Set `-PgeckoAbi=x86_64` for emulator builds.
 
-- `docs/PRODUCT_SPEC.md`
-- `docs/UX_SPEC.md`
-- `docs/ARCHITECTURE.md`
-- `docs/PLATFORM_SECURITY.md`
-- `docs/TEST_RELEASE.md`
-- `docs/ROADMAP.md`
-- `docs/IMPLEMENTATION_ISSUES.md`
-- `docs/VALIDATION_STATUS.md`
+Test package: `com.mekromn.bubble.debug`, versionCode 20. The original public TEST keystore is unchanged so compatible previous debug builds can update without uninstalling. Never use this public development key to sign a production/release package. The release target remains separately unsigned.
 
-## Non-negotiable product principles
-
-1. No arbitrary tab/head cap.
-2. Heads stay where the user puts them; free placement is default.
-3. A logical tab is not a WebView.
-4. Heads are lightweight native overlay UI; renderer residency is independently managed.
-5. Private mode is exposed only with real profile isolation.
-6. Bubble never bypasses TLS errors or auto-grants arbitrary web permissions.
-7. Process-death recovery, memory behavior, accessibility, security, CI, and runtime validation are release requirements.
+See `AGENTS.md` and `docs/REBUILD_V2.md`. Legacy spec files are product/history references, not instructions to restore the old runtime.
