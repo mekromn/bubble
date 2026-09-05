@@ -18,7 +18,6 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
@@ -30,7 +29,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 
-/** One native Activity view owns the compositor. No transparent touch-routing layers or Compose. */
+/** One Activity-owned compositor view. Native controls never intercept or transform page gestures. */
 class BrowserActivity : Activity() {
     lateinit var geckoView: GeckoView
         private set
@@ -57,6 +56,7 @@ class BrowserActivity : Activity() {
     private var collapsePending = false
     private var awaitingOverlay = false
     private var shownNotice: String? = null
+    private var notificationAsked = false
     private val frameMeter = FrameMeter()
     private var measuring = false
     private val fileIo = Executors.newSingleThreadExecutor { r -> Thread(r, "Bubble-file-selection").apply { isDaemon = true } }
@@ -80,7 +80,7 @@ class BrowserActivity : Activity() {
     override fun onStart() {
         super.onStart(); started = true
         workspace.host = WeakReference(this); workspace.visible = true
-        // Explicit foreground ownership; no persisted flag is allowed to background this Activity.
+        // Foreground ownership is explicit; persisted data cannot background this Activity.
         stopService(Intent(this, BubbleService::class.java))
         workspace.listen(onWorkspaceChanged)
         workspace.applyPolicy()
@@ -108,7 +108,7 @@ class BrowserActivity : Activity() {
     override fun onDestroy() {
         fileRequest?.let { request -> if (!request.prompt.isComplete) request.result.complete(request.prompt.dismiss()) }
         fileRequest = null; fileIo.shutdown()
-        if (workspace.host.get() === this) workspace.host.clear()
+        if (::workspace.isInitialized && workspace.host.get() === this) workspace.host.clear()
         detachSession(displayedSession)
         super.onDestroy()
     }
@@ -146,6 +146,9 @@ class BrowserActivity : Activity() {
             workspace.applyPolicy()
             geckoView.post { if (started) Refresh.request(this) }
         }
+        if (tab.unread && tray?.visibility != View.VISIBLE) {
+            tab.unread = false; Replies.clear(this, tab.id); workspace.changed(true)
+        }
         if (!omnibox.hasFocus() && omnibox.text.toString() != tab.url) omnibox.setText(tab.url)
         val message = when {
             tab.error != null -> "PAGE NEEDS ATTENTION"
@@ -154,19 +157,20 @@ class BrowserActivity : Activity() {
             else -> "${workspace.tabs.size} ${if (workspace.tabs.size == 1) "CHAT" else "TABS"} · WORKSPACE"
         }
         if (status.text != message) status.text = message
-        status.setTextColor(if (tab.generating) Ui.MINT else Ui.MUTED)
+        val statusColor = if (tab.generating) Ui.MINT else Ui.MUTED
+        if (status.currentTextColor != statusColor) status.setTextColor(statusColor)
         progress.visibility = if (tab.loading) View.VISIBLE else View.INVISIBLE
         progress.progress = tab.progress
-        backButton.isEnabled = tab.back; backButton.invalidate()
-        forwardButton.isEnabled = tab.forward; forwardButton.invalidate()
+        if (backButton.isEnabled != tab.back) { backButton.isEnabled = tab.back; backButton.invalidate() }
+        if (forwardButton.isEnabled != tab.forward) { forwardButton.isEnabled = tab.forward; forwardButton.invalidate() }
         val glyph = if (tab.loading) "close" else "reload"
         if (reloadButton.glyph != glyph) { reloadButton.glyph = glyph; reloadButton.invalidate() }
         reloadButton.contentDescription = if (tab.loading) "Stop loading" else "Reload page"
         tabsButton.count = workspace.tabs.size
-        tabsButton.contentDescription = "Open workspace, ${workspace.tabs.size} tabs"
+        tabsButton.contentDescription = "Workspace tabs, ${workspace.tabs.size} open"
         errorCard.visibility = if (tab.error != null) View.VISIBLE else View.GONE
-        errorText.text = tab.error.orEmpty()
-        tray?.refresh(workspace)
+        if (errorText.text.toString() != tab.error.orEmpty()) errorText.text = tab.error.orEmpty()
+        tray?.takeIf { it.visibility == View.VISIBLE }?.refresh(workspace)
         workspace.notice?.let { notice -> if (notice != shownNotice) { shownNotice = notice; toast(notice) } }
     }
     private fun buildChrome() {
@@ -176,9 +180,8 @@ class BrowserActivity : Activity() {
         val header = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL; setPadding(d(16),d(3),d(10),d(3))
         }
-        val brand = Ui.text(this, "bubble", 22f, Ui.TEXT, true)
         val brandStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-        brandStack.addView(brand)
+        brandStack.addView(Ui.text(this, "bubble", 22f, Ui.TEXT, true))
         status = Ui.text(this, "STARTING WORKSPACE", 10f, Ui.MUTED).apply { letterSpacing = 0.1f; setPadding(0,d(4),0,0) }
         brandStack.addView(status)
         header.addView(brandStack, LinearLayout.LayoutParams(0,-2,1f))
@@ -186,7 +189,7 @@ class BrowserActivity : Activity() {
         column.addView(header, LinearLayout.LayoutParams(-1,d(60)))
         pageHost = FrameLayout(this).apply { setBackgroundColor(Ui.BG) }
         geckoView = GeckoView(this)
-        // Gecko handles its own SurfaceView lifecycle; we neither transform nor recreate it for UI animation.
+        // Gecko owns its SurfaceView lifecycle. Animation never recreates the native session or view.
         pageHost.addView(geckoView, FrameLayout.LayoutParams(-1,-1))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100; progressTintList = ColorStateList.valueOf(Ui.BLUE)
@@ -217,7 +220,7 @@ class BrowserActivity : Activity() {
             hint = "Search or enter address"; contentDescription = "Address and search"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             imeOptions = EditorInfo.IME_ACTION_GO; background = null; setPadding(d(12),0,d(4),0)
-            selectAllOnFocus = true
+            setSelectAllOnFocus(true)
             setOnEditorActionListener { _, action, _ ->
                 if (action == EditorInfo.IME_ACTION_GO) {
                     val address = text.toString(); clearFocus(); hideKeyboard(); workspace.navigate(address); true
@@ -269,7 +272,7 @@ class BrowserActivity : Activity() {
                 1 -> workspace.create("https://www.google.com/")
                 2 -> workspace.desktop()
                 3 -> { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Page address",workspace.selected?.url.orEmpty())); toast("Address copied") }
-                4 -> startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type="text/plain"; putExtra(Intent.EXTRA_TEXT,workspace.selected?.url) },"Share page"))
+                4 -> runCatching { startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type="text/plain"; putExtra(Intent.EXTRA_TEXT,workspace.selected?.url) },"Share page")) }
                 5 -> {
                     if (!measuring) { measuring=true; frameMeter.start(this); toast("Measuring locally. Open and close the workspace, then return here.") }
                     else AlertDialog.Builder(this).setTitle("Native frame timing").setMessage(frameMeter.report(this))
@@ -288,7 +291,8 @@ class BrowserActivity : Activity() {
                 .setMessage("Allow Bubble to display one small, draggable workspace button over other apps. Nothing outside that button is intercepted.")
                 .setNegativeButton("Not now",null).setPositiveButton("Allow") { _,_ ->
                     awaitingOverlay=true
-                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")))
+                    try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName"))) }
+                    catch (_: RuntimeException) { awaitingOverlay=false; toast("Android could not open the overlay permission screen.") }
                 }.show()
             return
         }
@@ -309,7 +313,6 @@ class BrowserActivity : Activity() {
         try { startForegroundService(Intent(this,BubbleService::class.java).putExtra(BubbleService.READY,receiver)) }
         catch (_: RuntimeException) { collapsePending=false; toast("Android blocked the floating service. Your chats remain open.") }
     }
-    private var notificationAsked=false
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code,permissions,results)
         if (code == NOTIFICATIONS) collapse()
