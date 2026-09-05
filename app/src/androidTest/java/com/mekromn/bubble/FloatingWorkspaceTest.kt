@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Rect
-import android.net.Uri
 import android.os.*
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -28,8 +27,6 @@ class FloatingWorkspaceTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val automation = instrumentation.uiAutomation
-    // ActivityScenario may throw while the platform is between stable stages. Treat that as
-    // not-yet-ready, never as a successful transition or a reason to drop the assertion.
     private fun state(scenario: ActivityScenario<BrowserActivity>) = runCatching { scenario.state }.getOrNull()
 
     @Test fun bubbleTapChoosesTabsAndTypesInsideFloatingWindow() = withPage { scenario, _ ->
@@ -82,7 +79,6 @@ class FloatingWorkspaceTest {
         shell("input keyevent KEYCODE_BACK")
         await { onMain { BubbleService.active?.window?.mode == FloatingMode.BUBBLE } && state(scenario) == Lifecycle.State.CREATED }
     }
-
     @Test fun allTabsRemainVisibleToGeckoWhileTheActivityIsBehindOtherApps() = withPage { scenario, port ->
         grantOverlay()
         var first = ""; var second = ""
@@ -104,7 +100,6 @@ class FloatingWorkspaceTest {
         }
         screenshot("v061-background-live-tabs.png")
     }
-
     @Test fun nativeAndroidPipCanSwitchBetweenTheSameSessions() = withPage { scenario, port ->
         var first: GeckoSession? = null; var second: GeckoSession? = null
         scenario.onActivity { first = it.selectedSession; it.workspace.create("http://127.0.0.1:$port/two"); second = it.selectedSession }
@@ -166,11 +161,17 @@ class FloatingWorkspaceTest {
                 while (!reader.readLine().isNullOrEmpty()) { }
                 val name = if (request.contains("/two")) "FLOAT-TWO" else "FLOAT-ONE"
                 val html = """<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>$name</title><style>body{margin:0;background:#122237;color:#edf2ff;font:18px sans-serif}h1{padding:16px;font-size:22px;margin:0}input{position:absolute;left:16px;top:80px;width:220px;height:48px;box-sizing:border-box;font-size:20px}</style><h1>$name · live chat</h1><input aria-label="Floating test composer" autocomplete="off"><p style="padding:130px 16px 16px">A real Gecko page inside a floating window.</p><script>let n=0;setInterval(()=>{const v=document.querySelector('input').value;document.title=(v?'TYPED:'+v:'$name')+'|'+(++n)+'|'+document.visibilityState;},250);</script>""".toByteArray()
-                socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray()); socket.getOutputStream().write(html)
+                socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray()); socket.getOutputStream().write(html)
             }} catch (_: Exception) { if (server.isClosed) break }
         }.apply { isDaemon = true; start() }
         try {
-            ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java).setData(Uri.parse("http://127.0.0.1:${server.localPort}/one"))).use { scenario ->
+            // ActivityScenario filters lifecycle events by Intent.filterEquals(). Browser
+            // fullscreen restoration legitimately replaces the Activity Intent in onNewIntent.
+            // Match its component-only launch here; navigate to the fixture AFTER launch.
+            // Otherwise the real RESUMED event is explicitly ignored by the test framework.
+            ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)).use { scenario ->
+                await { onMain { Workspace.peek()?.ready == true } }
+                scenario.onActivity { it.workspace.create("http://127.0.0.1:${server.localPort}/one") }
                 await { onMain { Workspace.peek()?.selected?.title?.startsWith("FLOAT-ONE") == true && Workspace.peek()?.selected?.painted == true } }
                 scenario.onActivity { activity -> val current = activity.workspace.selectedId; activity.workspace.tabs.map { it.id }.filter { it != current }.forEach(activity.workspace::close) }
                 test(scenario, server.localPort)
