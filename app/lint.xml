@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <issue id="GestureBackNavigation">
+        <!-- BrowserActivity registers the platform OnBackInvokedDispatcher callback on API 33+.
+             Its onBackPressed override is ONLY the API 26-32 compatibility path. This lint rule
+             does not recognize the native dual-path implementation (it recommends AndroidX).
+             Do not suppress the rule for any other Activity or replace actual runtime back tests. -->
+        <ignore path="src/main/java/com/mekromn/bubble/BrowserActivity.kt" />
+    </issue>
+</lint>
