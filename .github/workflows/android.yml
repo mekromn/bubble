@@ -1,7 +1,6 @@
-name: Bubble rebuild verification
+name: Bubble build and verification
+# Explicit builds only: editing source or documentation must not start another paid/storage run.
 on:
-  push:
-    branches: [rebuild-v2]
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,10 +10,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+    permissions:
+      contents: write # Only required to publish this build's uniquely named Release assets.
     steps:
       - uses: actions/checkout@v5
-      - name: Foreground script security and compatibility tests
+      - name: Foreground and reply-monitor tests
+        id: scripts
         run: node tools/test-foreground.cjs
       - uses: actions/setup-java@v5
         with:
@@ -29,29 +31,30 @@ jobs:
           log-accepted-android-sdk-licenses: false
           packages: platform-tools
       - name: Verify existing signing identity
+        id: signing
         run: echo '4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks' | sha256sum -c -
       - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
       - name: Compile and inspect ARM64 APK
+        id: compile
         run: |
-          set -o pipefail
+          set -euo pipefail
           gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug 2>&1 | tee build-output.txt
           mkdir -p dist
           VERSION=$(python3 -c 'import json; print(json.load(open("app/build/outputs/apk/debug/output-metadata.json"))["elements"][0]["versionName"])')
-          cp app/build/outputs/apk/debug/*.apk "dist/Bubble-${VERSION}-Rebuild-ARM64.apk"
-          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs dist/*.apk | tee dist/signature.txt
+          echo "BUBBLE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/debug/*.apk "dist/Bubble-${VERSION}-ARM64.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk | tee dist/signature.txt
           sha256sum dist/*.apk > dist/SHA256SUMS
           git rev-parse HEAD > dist/COMMIT.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Bubble-rebuild-ARM64
-          path: dist/
       - name: Compile emulator build
+        id: emulator_compile
         run: |
-          set -o pipefail
+          set -euo pipefail
           gradle --no-daemon -PgeckoAbi=x86_64 :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee emulator-build.txt
       - name: Enable runner access to emulator accelerator
         run: sudo chmod a+rw /dev/kvm
-      - name: Android 16 compositor smoke test
+      - name: Android 16 runtime verification
+        id: runtime
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -68,18 +71,68 @@ jobs:
             adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence/ evidence/ || true
             adb logcat -d > emulator-logcat.txt
             grep -q 'OK (' instrumentation.txt
-      - name: Source snapshot
-        if: always()
-        run: git archive --format=zip HEAD -o Bubble-rebuild-source.zip
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Bubble-runtime-evidence
-          path: |
-            evidence/
-            instrumentation.txt
-            emulator-logcat.txt
-            build-output.txt
-            emulator-build.txt
-            app/build/reports/
-            Bubble-rebuild-source.zip
+      - name: Package verification evidence without Actions artifact storage
+        if: always() && !cancelled()
+        env:
+          VERIFIED: ${{ steps.scripts.outcome == 'success' && steps.signing.outcome == 'success' && steps.compile.outcome == 'success' && steps.emulator_compile.outcome == 'success' && steps.runtime.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import zipfile
+          root = pathlib.Path('.')
+          files = set()
+          for name in ('instrumentation.txt', 'emulator-logcat.txt', 'build-output.txt', 'emulator-build.txt'):
+              path = root / name
+              if path.is_file():
+                  files.add(path)
+          for name in ('evidence', 'app/build/reports', 'app/build/test-results'):
+              path = root / name
+              if path.is_dir():
+                  files.update(p for p in path.rglob('*') if p.is_file())
+          with zipfile.ZipFile('dist/Bubble-Verification.zip', 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+              for path in sorted(files):
+                  archive.write(path, str(path))
+          verified = os.environ['VERIFIED'] == 'true'
+          version = os.environ.get('BUBBLE_VERSION', 'unbuilt')
+          status = 'Build and automated runtime checks passed.' if verified else 'NOT VERIFIED: one or more required build/test steps failed. No APK is published from this run.'
+          notes = f'''Bubble {version} — development build
+
+          {status}
+
+          Source: {os.environ['GITHUB_SHA']}
+          Run: https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
+
+          This uses the existing public DEVELOPMENT signing identity, not a production key.
+          Physical-device 120fps and authenticated ChatGPT behavior are separate validation gates.
+          APKs and this build's accompanying verification files are Release assets, not Actions artifacts.
+          Existing artifacts, repositories, history, signing keys and billing limits are not deleted or changed.
+          '''
+          pathlib.Path('dist/RELEASE_NOTES.txt').write_text(notes)
+          PY
+          sha256sum dist/Bubble-Verification.zip > dist/VERIFICATION-SHA256.txt
+      - name: Save build outputs as Release assets
+        if: always() && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERIFIED: ${{ steps.scripts.outcome == 'success' && steps.signing.outcome == 'success' && steps.compile.outcome == 'success' && steps.emulator_compile.outcome == 'success' && steps.runtime.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          # Unique tag per attempt: never overwrite or delete an existing working release.
+          TAG="bubble-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          VERSION="${BUBBLE_VERSION:-unbuilt}"
+          ASSETS=(dist/Bubble-Verification.zip dist/VERIFICATION-SHA256.txt)
+          if [ "$VERIFIED" = true ]; then
+            ASSETS+=(dist/*.apk dist/SHA256SUMS dist/signature.txt dist/COMMIT.txt)
+          fi
+          gh release create "$TAG" "${ASSETS[@]}" --target "$GITHUB_SHA" \
+            --title "Bubble ${VERSION} — build ${GITHUB_RUN_NUMBER}" \
+            --notes-file dist/RELEASE_NOTES.txt --draft --prerelease
+          if [ "$VERIFIED" = true ]; then
+            gh release edit "$TAG" --draft=false
+          fi
+          echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified: ${VERIFIED}. No Actions artifact uploads were used." >> "$GITHUB_STEP_SUMMARY"
