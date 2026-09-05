@@ -16,7 +16,7 @@ assert.equal(chat.document.visibilityState, 'visible');
 assert.equal(chat.document.hasFocus(), true);
 let suppressed = false;
 chat.handlers.blur({target: {}, stopImmediatePropagation() {suppressed = true;}});
-assert.equal(suppressed, false, 'Element blur must not be suppressed');
+assert.equal(suppressed, false);
 chat.handlers.blur({target: chat.window, stopImmediatePropagation() {suppressed = true;}});
 assert.equal(suppressed, true);
 for (const origin of ['http://chatgpt.com', 'https://chatgpt.com.evil.test', 'https://accounts.google.com']) {
@@ -26,3 +26,4 @@ for (const origin of ['http://chatgpt.com', 'https://chatgpt.com.evil.test', 'ht
   assert.deepEqual(other.handlers, {});
 }
 console.log('Foreground shim: exact origin, visibility/focus and element-event isolation passed.');
+require('./test-monitor.cjs');
