@@ -12,7 +12,7 @@
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
         </activity>
         <activity android:name=".FloatingFileActivity" android:exported="false" android:excludeFromRecents="true"
-            android:taskAffinity="${applicationId}.file-prompts" android:theme="@style/Theme.Bubble.Prompt" />
+            android:taskAffinity="${applicationId}.file_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <receiver android:name=".PipTabReceiver" android:exported="false" />
         <service android:name=".BubbleService" android:exported="false" android:foregroundServiceType="specialUse" tools:targetApi="34">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated floating browser workspace, with a visible draggable bubble and explicit hide action." />
