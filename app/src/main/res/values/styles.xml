@@ -3,13 +3,18 @@
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowBackground">#080B12</item>
-        <item name="android:colorAccent">#ADCAFF</item>
+        <item name="android:windowBackground">#050505</item>
+        <item name="android:colorAccent">#CCCCCC</item>
+        <item name="android:colorControlHighlight">#24FFFFFF</item>
+        <item name="android:textColorPrimary">#F3F3F3</item>
+        <item name="android:textColorSecondary">#B0B0B0</item>
+        <item name="android:colorEdgeEffect">#777777</item>
     </style>
     <style name="Theme.Bubble.Prompt" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:colorAccent">#CCCCCC</item>
     </style>
 </resources>

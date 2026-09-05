@@ -13,14 +13,12 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 
-/** Shared recycled list. Stable IDs, pin-first order and structural motion, never status blinking. */
+/** Recycled shared list: stable logical IDs and pin-first order, no status-change blinking. */
 internal class ConversationList(context: Context, private val select: (String) -> Unit,
     private val close: (String) -> Unit, private val options: ((View, String) -> Unit)? = null) : RecyclerView(context) {
     private data class Row(val id: String, val title: String, val subtitle: String,
         val selected: Boolean, val unread: Boolean, val busy: Boolean, val pinned: Boolean)
-    private var rows = emptyList<Row>()
-    private var query = ""
-    private var filter = TabFilter.ALL
+    private var rows = emptyList<Row>(); private var query = ""; private var filter = TabFilter.ALL
     var onResultCount: ((Int) -> Unit)? = null
     private val cards = Rows()
     init {
@@ -78,14 +76,15 @@ internal class ConversationList(context: Context, private val select: (String) -
             holder.row.setOnClickListener { select(row.id) }
             holder.row.setOnLongClickListener {
                 if (options != null) options.invoke(holder.row, row.id)
-                else Workspace.peek()?.let { QuickMenus.tabOptions(holder.row, it, row.id) }
+                else Workspace.peek()?.let { QuickMenus.tabOptions(QuickPanel.hostAnchor(holder.row), it, row.id) }
                 true
             }
             holder.closeButton.contentDescription = "Close ${row.title}"
             holder.closeButton.setOnClickListener {
                 val ws = Workspace.peek()
-                if (ws?.tabs?.any { it.id == row.id && (it.pinned || it.generating) } == true) QuickMenus.close(holder.row, ws, row.id)
-                else close(row.id)
+                if (ws?.tabs?.any { it.id == row.id && (it.pinned || it.generating) } == true) {
+                    QuickMenus.close(QuickPanel.hostAnchor(holder.row), ws, row.id)
+                } else close(row.id)
             }
         }
     }
