@@ -13,13 +13,13 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import kotlin.math.abs
 import org.mozilla.geckoview.GeckoView
+import kotlin.math.abs
 
 internal enum class FloatingMode { BUBBLE, CHOOSER, CHAT }
 
-/** One bounded interactive window. Session identity survives every presentation change.
- * Only this animated/clipped browser uses TextureView; fullscreen keeps SurfaceView. */
+/** A bounded window with an independently retained browser session. No fullscreen interception
+ * layer or per-animation-frame webpage resize. Only this clipped surface uses TextureView. */
 internal class FloatingWindow(private val service: BubbleService, private val workspace: Workspace) {
     private val context = themedWindowContext(service)
     private val manager = context.getSystemService(WindowManager::class.java)
@@ -31,6 +31,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var imeBottom = 0
     private var params = WindowManager.LayoutParams()
     private var rectangle = WindowBox(0, 0, 64, 64)
+    private var panelBox: WindowBox? = null
     private var target = rectangle
     private var gestureInitial = rectangle
     private var gestureX = 0f
@@ -88,8 +89,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         build(FloatingMode.BUBBLE)
         RenderPolicy.vote(context, root, params)
-        manager.addView(root, params)
-        workspace.listen(listener)
+        manager.addView(root, params); workspace.listen(listener)
         root.post {
             if (!destroyed && Build.VERSION.SDK_INT >= 33) {
                 backDispatcher = root.findOnBackInvokedDispatcher()
@@ -100,6 +100,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bottom = if (insets.isVisible(WindowInsetsCompat.Type.ime())) insets.getInsets(WindowInsetsCompat.Type.ime()).bottom else 0
             if (bottom != imeBottom) {
+                if (imeBottom == 0 && mode != FloatingMode.BUBBLE) panelBox = rectangle
                 imeBottom = bottom
                 if (mode == FloatingMode.CHAT) main.post { if (!destroyed && mode == FloatingMode.CHAT && !motion.busy) place(expandedBox(), false) }
             }
@@ -109,8 +110,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             FloatingMode.CHOOSER -> showChooser()
             FloatingMode.CHAT -> openChat(workspace.selectedId)
             else -> if (ValueAnimator.areAnimatorsEnabled()) {
-                root.alpha = 0f
-                root.animate().alpha(1f).setDuration(160).setInterpolator(Ui.ease).start()
+                root.alpha = 0f; root.animate().alpha(1f).setDuration(160).setInterpolator(Ui.ease).start()
             }
         }
     }
@@ -119,21 +119,19 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if (!workspace.ready || workspace.tabs.none { it.id == id }) return
         workspace.select(id); present(FloatingMode.CHAT)
     }
-    /** Reverse the reveal to a circle, then move ONLY the small bubble to its remembered position. */
+    /** Shrink the reveal, not the page's aspect ratio. Only the small circle then changes position. */
     fun collapse() {
         if (destroyed || mode == FloatingMode.BUBBLE || hiding) return
         main.removeCallbacks(hold); dismiss.hide(true)
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0)
         root.animate().cancel(); root.animate().withEndAction(null); root.alpha = 1f
-        val end = headBox()
-        val radius = d(32)
+        val end = headBox(); val radius = d(32)
         val cx = (end.x + radius - rectangle.x).coerceIn(radius, (rectangle.width - radius).coerceAtLeast(radius))
         val cy = (end.y + radius - rectangle.y).coerceIn(radius, (rectangle.height - radius).coerceAtLeast(radius))
         val startHead = WindowBox(rectangle.x + cx - radius, rectangle.y + cy - radius, d(64), d(64))
         motion.reveal(root, cx, cy, radius.toFloat(), false) {
             if (!destroyed) {
-                switchContents(FloatingMode.BUBBLE)
-                place(startHead, true)
+                switchContents(FloatingMode.BUBBLE); place(startHead, true)
                 motion.move(startHead, end, { place(it, false) }) { render() }
             }
         }
@@ -144,31 +142,33 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
         root.animate().cancel(); root.animate().withEndAction(null); root.alpha = 1f
         val previous = mode; val from = rectangle
+        if (next == FloatingMode.CHOOSER) {
+            context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0)
+            imeBottom = 0
+        }
         switchContents(next)
         var destination = expandedBox()
         if (previous == FloatingMode.BUBBLE) {
-            // Position the final panel to CONTAIN the original circle. It does not jump to
-            // an unrelated anchor, and text is never stretched during the reveal.
+            // The destination contains the actual source circle. It never jumps to an
+            // unrelated origin, and child text remains at its native scale throughout.
             val r = d(32); val cx = from.x + r; val cy = from.y + r
             destination = WindowGeometry.fit(destination.copy(
                 x = destination.x.coerceIn(cx - destination.width + r, cx - r),
                 y = destination.y.coerceIn(cy - destination.height + r, cy - r)), safeArea())
-            place(destination, true); render()
+            panelBox = destination; place(destination, true); render()
             val localX = cx - destination.x; val localY = cy - destination.y
             val mark = BubbleMark(context).apply { isClickable = false; isFocusable = false; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
             root.addView(mark, FrameLayout.LayoutParams(d(64), d(64)).apply { leftMargin = localX - r; topMargin = localY - r })
-            motion.reveal(root, localX, localY, r.toFloat(), true) {
-                if (mark.parent === root) root.removeView(mark)
-            }
+            motion.reveal(root, localX, localY, r.toFloat(), true) { if (mark.parent === root) root.removeView(mark) }
             mark.animate().alpha(0f).setDuration(110).start()
         } else {
-            // Chooser <-> chat stays in the same container. A small content fade indicates
-            // substitution, not minimize/maximize; the web surface is not scaled or cached.
+            // Chooser and chat share the same resting bounds. Keyboard accommodation is
+            // temporary and never overwrites this location or the user's saved dimensions.
+            destination = WindowGeometry.fit(panelBox ?: from, safeArea())
             place(destination, true); render()
             root.getChildAt(0)?.let { content ->
                 if (ValueAnimator.areAnimatorsEnabled()) {
-                    content.alpha = .35f
-                    content.animate().alpha(1f).setDuration(140).setInterpolator(Ui.ease).start()
+                    content.alpha = .35f; content.animate().alpha(1f).setDuration(140).setInterpolator(Ui.ease).start()
                 }
             }
         }
@@ -184,22 +184,16 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         root.background = if (next == FloatingMode.BUBBLE) null else Ui.shape(context, Ui.BG, 26f, Ui.LINE)
         if (next == FloatingMode.BUBBLE) {
             val mark = BubbleMark(context); bubble = mark
-            mark.setOnClickListener { showChooser() }
-            mark.setOnLongClickListener { openChat(workspace.selectedId); true }
+            mark.setOnClickListener { showChooser() }; mark.setOnLongClickListener { openChat(workspace.selectedId); true }
             mark.setOnTouchListener { _, event -> drag(event, false, true) }
-            root.addView(mark, FrameLayout.LayoutParams(-1, -1))
-            accessibilityMoves(mark); return
+            root.addView(mark, FrameLayout.LayoutParams(-1, -1)); accessibilityMoves(mark); return
         }
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         root.addView(column, FrameLayout.LayoutParams(-1, -1))
-        val top = LinearLayout(context).apply {
-            gravity = Gravity.CENTER_VERTICAL; setPadding(d(12), 0, d(4), 0)
-            setBackgroundColor(Ui.SURFACE)
-        }
+        val top = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(d(12), 0, d(4), 0); setBackgroundColor(Ui.SURFACE) }
         val labels = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL
-            contentDescription = "Drag floating window"; isClickable = true
-            setOnTouchListener { _, event -> drag(event, false, false) }
+            contentDescription = "Drag floating window"; isClickable = true; setOnTouchListener { _, event -> drag(event, false, false) }
         }
         heading = Ui.text(context, if (next == FloatingMode.CHOOSER) "Your chats" else "ChatGPT", 14f, Ui.TEXT, true).apply {
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
@@ -210,9 +204,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             count = control("tabs", "Choose another conversation") { showChooser() }
             top.addView(count, LinearLayout.LayoutParams(d(48), d(48)))
             top.addView(control("expand", "Open fullscreen") { fullscreen() }, LinearLayout.LayoutParams(d(48), d(48)))
-        } else top.addView(control("add", "New floating ChatGPT chat", true) {
-            if (workspace.ready) openChat(workspace.create().id)
-        }, LinearLayout.LayoutParams(d(48), d(48)))
+        } else top.addView(control("add", "New floating ChatGPT chat", true) { if (workspace.ready) openChat(workspace.create().id) }, LinearLayout.LayoutParams(d(48), d(48)))
         top.addView(control("collapse", "Minimize floating window") { collapse() }, LinearLayout.LayoutParams(d(48), d(48)))
         column.addView(top, LinearLayout.LayoutParams(-1, d(52)))
         if (next == FloatingMode.CHOOSER) {
@@ -224,8 +216,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }, LinearLayout.LayoutParams(-1, d(48)))
         } else {
             val web = gecko ?: LiveGeckoView(context).also { it.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW); gecko = it }
-            val content = FrameLayout(context)
-            content.addView(web, FrameLayout.LayoutParams(-1, -1))
+            val content = FrameLayout(context); content.addView(web, FrameLayout.LayoutParams(-1, -1))
             error = Ui.text(context, "", 13f, Ui.TEXT).apply {
                 setPadding(d(20), d(20), d(20), d(20)); background = Ui.shape(context, Ui.SURFACE, 20f)
                 gravity = Gravity.CENTER; visibility = View.GONE; setOnClickListener { workspace.retry() }
@@ -239,12 +230,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         RenderPolicy.vote(context, root, params)
     }
-    private fun control(glyph: String, label: String, accent: Boolean = false, click: () -> Unit) =
-        GlyphView(context, glyph, label, accent).apply { setOnClickListener { click() } }
+    private fun control(glyph: String, label: String, accent: Boolean = false, click: () -> Unit) = GlyphView(context, glyph, label, accent).apply { setOnClickListener { click() } }
     private fun render() {
         if (destroyed) return
-        bubble?.update(workspace.tabs.size, workspace.tabs.count { it.unread }, workspace.tabs.any { it.generating })
-        list?.refresh(workspace)
+        bubble?.update(workspace.tabs.size, workspace.tabs.count { it.unread }, workspace.tabs.any { it.generating }); list?.refresh(workspace)
         if (mode == FloatingMode.CHOOSER) {
             val label = "${workspace.tabs.size} conversations · drag to move"
             if (subtitle?.text != label) subtitle?.text = label
@@ -253,24 +242,20 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if (mode != FloatingMode.CHAT) return
         val tab = workspace.selected ?: return
         count?.count = workspace.tabs.size
-        val title = tab.title.ifBlank { "ChatGPT" }
-        if (heading?.text != title) heading?.text = title
+        val title = tab.title.ifBlank { "ChatGPT" }; if (heading?.text != title) heading?.text = title
         val state = when { tab.generating -> "Generating · kept live"; tab.loading -> "Loading ${tab.progress}%"; else -> "${Policy.host(tab.url)} · live" }
         if (subtitle?.text != state) subtitle?.text = state
         gecko?.let { view ->
             val session = tab.session
-            if (session != null && session.isOpen) workspace.attachSurface(view, session)
-            else if (view.session != null) workspace.detachSurface(view)
+            if (session != null && session.isOpen) workspace.attachSurface(view, session) else if (view.session != null) workspace.detachSurface(view)
         }
         error?.visibility = if (tab.error == null) View.GONE else View.VISIBLE
-        val message = tab.error?.plus("\n\nTap to retry").orEmpty()
-        if (error?.text?.toString() != message) error?.text = message
+        val message = tab.error?.plus("\n\nTap to retry").orEmpty(); if (error?.text?.toString() != message) error?.text = message
         if (tab.unread) { tab.unread = false; Replies.clear(context, tab.id); workspace.changed(true) }
     }
     private fun fullscreen() {
         try { service.startActivity(Intent(service, BrowserActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra(BrowserActivity.EXTRA_TAB, workspace.selectedId)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP; putExtra(BrowserActivity.EXTRA_TAB, workspace.selectedId)
         }) } catch (_: RuntimeException) { Toast.makeText(context, "Could not open the browser window", Toast.LENGTH_SHORT).show() }
     }
     fun offerExternal(raw: String) { Toast.makeText(context, "Open fullscreen to confirm this external-app link.", Toast.LENGTH_LONG).show() }
@@ -283,20 +268,19 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if (Build.VERSION.SDK_INT >= 30) {
             val metrics = manager.maximumWindowMetrics
             val inset = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            return WindowBox(inset.left + d(4), inset.top + d(4),
-                (metrics.bounds.width() - inset.left - inset.right - d(8)).coerceAtLeast(1),
-                (metrics.bounds.height() - inset.top - inset.bottom - d(8)).coerceAtLeast(1))
+            return WindowBox(inset.left + d(4), inset.top + d(4), (metrics.bounds.width() - inset.left - inset.right - d(8)).coerceAtLeast(1), (metrics.bounds.height() - inset.top - inset.bottom - d(8)).coerceAtLeast(1))
         }
         val p = Point(); @Suppress("DEPRECATION") manager.defaultDisplay.getRealSize(p)
         return WindowBox(d(4), d(28), (p.x - d(8)).coerceAtLeast(1), (p.y - d(60)).coerceAtLeast(1))
     }
-    private fun headBox(): WindowBox = WindowGeometry.placed(safeArea(), workspace.bubbleX, workspace.bubbleY, d(64), d(64))
+    private fun headBox() = WindowGeometry.placed(safeArea(), workspace.bubbleX, workspace.bubbleY, d(64), d(64))
     private fun expandedBox(): WindowBox {
         val safe = safeArea()
         val width = (safe.width * WindowGeometry.fraction(workspace.windowWidth, .92f)).toInt().coerceAtLeast(d(280)).coerceAtMost(d(560))
         val height = (safe.height * WindowGeometry.fraction(workspace.windowHeight, .72f)).toInt().coerceAtLeast(d(260))
+        val resting = panelBox ?: WindowGeometry.placed(safe, workspace.windowX, workspace.windowY, width, height)
         val area = if (mode == FloatingMode.CHAT && imeBottom > 0) safe.copy(height = (safe.height - imeBottom).coerceAtLeast(d(180))) else safe
-        return WindowGeometry.placed(area, workspace.windowX, workspace.windowY, width, height)
+        return WindowGeometry.fit(resting, area)
     }
     private fun place(box: WindowBox, flagsChanged: Boolean) {
         if (destroyed) return
@@ -310,9 +294,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if (hiding) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                main.removeCallbacks(hold); motion.cancel()
-                root.animate().cancel(); root.animate().withEndAction(null); root.alpha = 1f
-                root.scaleX = 1f; root.scaleY = 1f
+                main.removeCallbacks(hold); motion.cancel(); root.animate().cancel(); root.animate().withEndAction(null)
+                root.alpha = 1f; root.scaleX = 1f; root.scaleY = 1f
                 gestureInitial = rectangle; gestureX = event.rawX; gestureY = event.rawY; dragging = false; held = false
                 if (isHead) main.postDelayed(hold, ViewConfiguration.getLongPressTimeout().toLong())
                 return true
@@ -335,31 +318,28 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                         if (armed) projected = raw.copy(x = (dismiss.centerX - raw.width / 2).toInt(), y = (dismiss.centerY - raw.height / 2).toInt())
                     }
                     target = WindowGeometry.fit(projected, safeArea())
-                    if (!frameQueued) {
-                        frameQueued = true
-                        root.postOnAnimation { frameQueued = false; if (!destroyed && dragging) place(target, false) }
-                    }
+                    if (!frameQueued) { frameQueued = true; root.postOnAnimation { frameQueued = false; if (!destroyed && dragging) place(target, false) } }
                 }
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 main.removeCallbacks(hold)
-                val completed = event.actionMasked == MotionEvent.ACTION_UP
-                val shouldHide = completed && dragging && isHead && dismiss.armed
-                if (dragging) place(target, false)
+                val completed = event.actionMasked == MotionEvent.ACTION_UP; val wasDragging = dragging
+                if (completed && wasDragging && isHead && dismiss.attached) dismiss.track(
+                    gestureInitial.x + (event.rawX - gestureX) + gestureInitial.width / 2f,
+                    gestureInitial.y + (event.rawY - gestureY) + gestureInitial.height / 2f)
+                val shouldHide = completed && wasDragging && isHead && dismiss.armed
+                if (wasDragging) place(target, false)
                 dragging = false
                 if (shouldHide) {
-                    hiding = true; dismiss.hide()
-                    root.pivotX = root.width / 2f; root.pivotY = root.height / 2f
+                    hiding = true; dismiss.hide(); root.pivotX = root.width / 2f; root.pivotY = root.height / 2f
                     root.animate().scaleX(.35f).scaleY(.35f).alpha(0f).setDuration(130).setInterpolator(Ui.ease).withEndAction {
-                        if (!destroyed && !service.park()) {
-                            hiding = false; root.alpha = 1f; root.scaleX = 1f; root.scaleY = 1f; place(headBox(), false)
-                        }
+                        if (!destroyed && !service.park()) { hiding = false; root.alpha = 1f; root.scaleX = 1f; root.scaleY = 1f; place(headBox(), false) }
                     }.start()
                 } else {
                     dismiss.hide()
                     if (!completed) place(gestureInitial, false)
-                    else if (rectangle != gestureInitial) savePosition(resize)
+                    else if (wasDragging) savePosition(resize)
                     else if (!held && isHead) bubble?.performClick()
                 }
                 return true
@@ -368,34 +348,32 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         return true
     }
     private fun savePosition(resized: Boolean) {
+        if (mode != FloatingMode.BUBBLE && imeBottom > 0) return
         val safe = safeArea()
         val nx = if (safe.width > rectangle.width) (rectangle.x - safe.x).toFloat() / (safe.width - rectangle.width) else .5f
         val ny = if (safe.height > rectangle.height) (rectangle.y - safe.y).toFloat() / (safe.height - rectangle.height) else .5f
         if (mode == FloatingMode.BUBBLE) { workspace.bubbleX = nx; workspace.bubbleY = ny }
         else {
-            workspace.windowX = nx; workspace.windowY = ny
-            if (resized && imeBottom == 0) { workspace.windowWidth = rectangle.width.toFloat() / safe.width; workspace.windowHeight = rectangle.height.toFloat() / safe.height }
+            panelBox = rectangle; workspace.windowX = nx; workspace.windowY = ny
+            if (resized) { workspace.windowWidth = rectangle.width.toFloat() / safe.width; workspace.windowHeight = rectangle.height.toFloat() / safe.height }
         }
         workspace.checkpoint()
     }
     private fun accessibilityMoves(view: View) {
         listOf("Move left" to (-1 to 0), "Move right" to (1 to 0), "Move up" to (0 to -1), "Move down" to (0 to 1)).forEach { (name, direction) ->
-            ViewCompat.addAccessibilityAction(view, name) { _, _ ->
-                place(rectangle.copy(x = rectangle.x + direction.first * d(40), y = rectangle.y + direction.second * d(40)), false)
-                savePosition(false); true
-            }
+            ViewCompat.addAccessibilityAction(view, name) { _, _ -> place(rectangle.copy(x = rectangle.x + direction.first * d(40), y = rectangle.y + direction.second * d(40)), false); savePosition(false); true }
         }
         ViewCompat.addAccessibilityAction(view, "Hide in notification") { _, _ -> service.park() }
     }
-    fun configurationChanged() { if (!destroyed) { motion.cancel(); dismiss.hide(true); place(if (mode == FloatingMode.BUBBLE) headBox() else expandedBox(), false) } }
+    fun configurationChanged() {
+        if (!destroyed) { motion.cancel(); dismiss.hide(true); panelBox = null; place(if (mode == FloatingMode.BUBBLE) headBox() else expandedBox(), false) }
+    }
     fun destroy() {
         if (destroyed) return
-        destroyed = true; motion.cancel(); dismiss.hide(true)
-        workspace.unlisten(listener); main.removeCallbacksAndMessages(null)
+        destroyed = true; motion.cancel(); dismiss.hide(true); workspace.unlisten(listener); main.removeCallbacksAndMessages(null)
         root.animate().cancel(); root.animate().withEndAction(null)
         if (Build.VERSION.SDK_INT >= 33) backCallback?.let { backDispatcher?.unregisterOnBackInvokedCallback(it) }
-        gecko?.let { workspace.detachSurface(it) }
-        workspace.floatingVisible = false; workspace.applyPolicy()
+        gecko?.let { workspace.detachSurface(it) }; workspace.floatingVisible = false; workspace.applyPolicy()
         try { manager.removeView(root) } catch (_: RuntimeException) { }
         gecko = null
     }
@@ -423,23 +401,18 @@ private class BubbleMark(context: Context) : View(context) {
         if (label == next && unread == count && busy == generating) return
         val newReply = count > unread
         label = next; unread = count; busy = generating
-        contentDescription = "Choose a conversation, $total tabs, $count unread${if (busy) ", generating" else ""}"
-        invalidate()
+        contentDescription = "Choose a conversation, $total tabs, $count unread${if (busy) ", generating" else ""}"; invalidate()
         if (newReply && isAttachedToWindow && ValueAnimator.areAnimatorsEnabled()) {
             animate().cancel(); scaleX = .92f; scaleY = .92f
             animate().scaleX(1f).scaleY(1f).setDuration(170).setInterpolator(Ui.ease).start()
         }
     }
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        canvas.save(); canvas.scale(width / 64f, height / 64f)
+        super.onDraw(canvas); canvas.save(); canvas.scale(width / 64f, height / 64f)
         paint.style = Paint.Style.FILL; paint.color = Ui.SURFACE; canvas.drawCircle(32f, 32f, 29f, paint)
-        paint.style = Paint.Style.STROKE; paint.color = if (busy) Ui.MINT else Ui.BLUE; paint.strokeWidth = 1.8f
-        canvas.drawCircle(32f, 32f, 28f, paint)
-        paint.strokeWidth = 2f; paint.strokeJoin = Paint.Join.ROUND; paint.strokeCap = Paint.Cap.ROUND
-        canvas.drawRoundRect(18f, 19f, 45f, 40f, 7f, 7f, paint)
-        path.reset(); path.moveTo(24f, 40f); path.lineTo(24f, 46f); path.lineTo(31f, 40f); canvas.drawPath(path, paint)
-        canvas.drawLine(25f, 28f, 38f, 28f, paint)
+        paint.style = Paint.Style.STROKE; paint.color = if (busy) Ui.MINT else Ui.BLUE; paint.strokeWidth = 1.8f; canvas.drawCircle(32f, 32f, 28f, paint)
+        paint.strokeWidth = 2f; paint.strokeJoin = Paint.Join.ROUND; paint.strokeCap = Paint.Cap.ROUND; canvas.drawRoundRect(18f, 19f, 45f, 40f, 7f, 7f, paint)
+        path.reset(); path.moveTo(24f, 40f); path.lineTo(24f, 46f); path.lineTo(31f, 40f); canvas.drawPath(path, paint); canvas.drawLine(25f, 28f, 38f, 28f, paint)
         paint.style = Paint.Style.FILL; paint.color = if (unread > 0) Ui.MINT else Ui.BLUE; canvas.drawCircle(51f, 13f, 10f, paint)
         paint.color = Ui.BG; paint.textSize = 10f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textAlign = Paint.Align.CENTER
         canvas.drawText(label, 51f, 16.5f, paint); canvas.restore()
