@@ -12,9 +12,10 @@ class GlassPaletteTest {
             assertEquals((color ushr 8) and 255,color and 255)
         }
     }
-    @Test fun glassRetainsTransparencyAndTextRemainsOpaque() {
-        assertTrue((GlassPalette.TOP ushr 24) in 200..254)
-        assertTrue((GlassPalette.SURFACE ushr 24) in 200..254)
+    @Test fun glassIsActuallyTranslucentAndTextRemainsOpaque() {
+        assertTrue((GlassPalette.TOP ushr 24) in 140..220)
+        assertTrue((GlassPalette.SURFACE ushr 24) in 140..220)
+        assertTrue((GlassPalette.RAISED ushr 24) in 160..230)
         assertEquals(255,GlassPalette.TEXT ushr 24)
         assertEquals(255,GlassPalette.MUTED ushr 24)
         assertTrue((GlassPalette.TEXT and 255) - (GlassPalette.RAISED and 255) > 170)
