@@ -47,7 +47,7 @@ class FloatingFileActivity : Activity() {
             // does not bypass any server-side ChatGPT/file-format validation.
             val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
+                type = UploadPickerPolicy.PICKER_MIME
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, request.prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
