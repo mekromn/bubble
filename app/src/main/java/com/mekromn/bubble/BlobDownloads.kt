@@ -61,6 +61,7 @@ internal object BlobDownloads {
         }, { error ->
             diagnosticStage = when (error) {
                 is WebRequestError -> "fetch-error-${error.category}-${error.code}"
+                null -> "fetch-error-null"
                 else -> "fetch-error-${error.javaClass.simpleName.take(48)}"
             }
             main.post { failed(workspace, tab, session) }
