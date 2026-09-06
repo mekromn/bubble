@@ -437,11 +437,20 @@ internal class Workspace private constructor(private val app: Context, initialUr
         }
     }
     private fun installMonitor(tab: ChatTab, session: GeckoSession, addon: WebExtension) {
+        val blobRuntime = engine()
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
-                if (nativeApp != "bubble" || sender.session !== session || !sender.isTopLevel || sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT ||
-                    !Policy.isChat(sender.url) || !Policy.isChat(tab.url) || tab.session !== session || tab !in tabs) return null
+                if (nativeApp != "bubble" || sender.session !== session ||
+                    sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT ||
+                    tab.session !== session || tab !in tabs) return null
                 val objectMessage = message as? JSONObject ?: return null
+                if (objectMessage.optString("event") == "blob-download") {
+                    if (sender.isTopLevel && Policy.isWeb(sender.url)) {
+                        BlobDownloads.receive(app, this@Workspace, tab, session, blobRuntime, sender.url, objectMessage)
+                    }
+                    return null
+                }
+                if (!sender.isTopLevel || !Policy.isChat(sender.url) || !Policy.isChat(tab.url)) return null
                 val run = objectMessage.optString("run").takeIf { it.length in 1..128 } ?: return null
                 when (objectMessage.optString("event")) {
                     "started" -> {
