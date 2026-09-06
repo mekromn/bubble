@@ -4,6 +4,14 @@
  * Do not spoof userActivation, permissions, trusted events or hardware idle state. */
 (() => {
   'use strict';
+  // Google Voice deliberately receives REAL visibility/focus state. Voice uses background/hidden
+  // state as part of deciding when to emit browser notifications; pretending that its page is
+  // always visible can suppress exactly the message/call/voicemail alerts Bubble is trying to
+  // preserve. Its GeckoSession is already kept active/high-priority natively, so it does not need
+  // this compatibility shim to remain resident.
+  if (location.protocol === 'https:' && location.hostname === 'voice.google.com' &&
+      (location.port === '' || location.port === '443')) return;
+
   // about/data/blob documents are eligible only when the browser matched their web initiator.
   // Privileged browser, file and extension pages are never modified by this script.
   if (!['http:', 'https:', 'about:', 'blob:', 'data:'].includes(location.protocol)) return;
