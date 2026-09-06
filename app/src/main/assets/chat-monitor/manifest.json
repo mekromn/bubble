@@ -1,11 +1,12 @@
 {
   "manifest_version": 2,
   "name": "Bubble live workspace and local reply lifecycle",
-  "version": "1.4",
+  "version": "1.5",
   "browser_specific_settings": {"gecko": {"id": "chat-monitor@bubble.local"}},
   "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons"],
   "content_scripts": [
     {"matches": ["http://*/*", "https://*/*"], "js": ["foreground.js"], "run_at": "document_start", "all_frames": true, "match_about_blank": true, "match_origin_as_fallback": true, "world": "MAIN"},
+    {"matches": ["http://*/*", "https://*/*"], "js": ["download-hook.js"], "run_at": "document_start", "all_frames": false, "world": "MAIN"},
     {"matches": ["http://*/*", "https://*/*"], "js": ["download-bridge.js"], "run_at": "document_start", "all_frames": false},
     {"matches": ["https://chatgpt.com/*"], "js": ["monitor.js"], "run_at": "document_idle", "all_frames": false}
   ]
