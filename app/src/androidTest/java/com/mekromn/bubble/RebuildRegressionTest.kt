@@ -83,6 +83,14 @@ class RebuildRegressionTest {
     }
 
     @Test fun compactBrowserBarHasRefreshShareAndFloatingBeforeTabs() = withPage { scenario ->
+        // ActivityScenario can report the Activity ready slightly before the first measured layout
+        // and accessibility pass. Wait until every requested control exists and is laid out.
+        waitFor(scenario) { activity ->
+            val root = activity.window.decorView
+            listOf("Refresh page", "Share page", "Open interactive floating chat", "Workspace tabs", "Browser menu")
+                .map { findControl(root, it) }
+                .all { it != null && it.isLaidOut && it.width > 0 && it.height > 0 }
+        }
         scenario.onActivity { activity ->
             val root = activity.window.decorView
             val refresh = requireNotNull(findControl(root, "Refresh page"))
