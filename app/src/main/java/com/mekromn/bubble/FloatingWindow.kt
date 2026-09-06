@@ -40,6 +40,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var gestureY=0f
     private var dragging=false
     private var held=false
+    private var glassBlur=OverlayGlass.available(manager)
     private val slop=ViewConfiguration.get(context).scaledTouchSlop
     private val hold=Runnable { if(!dragging && mode==FloatingMode.BUBBLE) { held=true; openChat(workspace.selectedId) } }
     private var list: ConversationList?=null
@@ -88,6 +89,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             gravity=Gravity.TOP or Gravity.LEFT; x=rectangle.x; y=rectangle.y
             title="Bubble floating workspace"; softInputMode=WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
+        OverlayGlass.apply(context,manager,params,false)
         build(FloatingMode.BUBBLE); RenderPolicy.vote(context,root,params)
         manager.addView(root,params); workspace.listen(listener)
         root.post {
@@ -199,7 +201,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private fun build(next: FloatingMode) {
         root.removeAllViews(); list=null; heading=null; subtitle=null; error=null; bubble=null; count=null; backControl=null
         root.clipToOutline=next!=FloatingMode.BUBBLE
-        root.background=if(next==FloatingMode.BUBBLE)null else Ui.shape(context,Ui.SURFACE,26f,Ui.LINE)
+        root.background=if(next==FloatingMode.BUBBLE)null else Ui.glassPanel(context,26f,glassBlur)
         if(next==FloatingMode.BUBBLE) {
             val mark=GlassBubble(context); bubble=mark
             mark.setOnClickListener { showChooser() }; mark.setOnLongClickListener { openChat(workspace.selectedId); true }
@@ -354,6 +356,12 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     }
     private fun render() {
         if(destroyed)return
+        val nowBlur=OverlayGlass.available(manager)
+        if(nowBlur!=glassBlur) {
+            glassBlur=nowBlur
+            if(mode!=FloatingMode.BUBBLE)root.background=Ui.glassPanel(context,26f,glassBlur)
+            place(rectangle,true)
+        }
         bubble?.update(workspace.tabs.size,workspace.tabs.count { it.unread },workspace.tabs.any { it.generating }); list?.refresh(workspace)
         if(mode==FloatingMode.CHOOSER) { val text="${workspace.tabs.size} conversations · drag to move"; if(subtitle?.text!=text)subtitle?.text=text; return }
         if(mode!=FloatingMode.CHAT)return
@@ -410,6 +418,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(!flagsChanged && rectangle==fitted)return
         rectangle=fitted; target=fitted
         params.x=fitted.x; params.y=fitted.y; params.width=fitted.width; params.height=fitted.height; params.flags=flags(mode)
+        OverlayGlass.apply(context,manager,params,mode!=FloatingMode.BUBBLE)
         try { manager.updateViewLayout(root,params) } catch(_:RuntimeException) { service.stopSelf() }
     }
     private fun drag(event: MotionEvent,resize: Boolean,isHead: Boolean): Boolean {
@@ -477,7 +486,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         ViewCompat.addAccessibilityAction(view,"Hide in notification") { _,_ -> service.park() }
     }
     fun configurationChanged() {
-        if(!destroyed) { QuickPanel.dismissFor(root); motion.cancel(); dismiss.hide(true); panelBox=null; place(if(mode==FloatingMode.BUBBLE)headBox() else expandedBox(),false) }
+        if(!destroyed) { QuickPanel.dismissFor(root); motion.cancel(); dismiss.hide(true); panelBox=null; place(if(mode==FloatingMode.BUBBLE)headBox() else expandedBox(),true) }
     }
     fun destroy() {
         if(destroyed)return
