@@ -51,11 +51,15 @@ Do not lose these newer requirements while fixing the 0.7.3 runtime gate:
 - Tab order must be user-controlled and persisted. In the shared tab/conversation list, the **tab icon is the drag handle** for smooth drag-and-drop rearranging. Preserve stable tab IDs and existing pinned semantics; dragging must not close/recreate sessions or conversations.
 - Google Voice tabs need a separate first-class notification path and controls so messages/calls/voicemail are not lost among ChatGPT reply alerts. Preserve the Google Voice web app/account session; do not scrape/store message contents beyond transient Android notification presentation.
 
-### Glass blur correction after physical-device test
+### Glass blur correction after physical-device tests
 
-The first real cross-window-blur build put `FLAG_BLUR_BEHIND` directly on the Gecko-containing `TYPE_APPLICATION_OVERLAY` window. On the Pixel 9 Pro XL this visibly blurred far more of floating mode than intended instead of limiting the effect to the glass/translucent chrome.
+The first physical-device glass attempt used `FLAG_BLUR_BEHIND` / `WindowManager.LayoutParams.setBlurBehindRadius`. That was fundamentally the wrong API: Android defines blur-behind as blurring the **whole screen behind the window**. Putting it on the Gecko overlay blurred far too much; moving it into one or several helper overlay rectangles still could not create a hard shape boundary, and the Pixel 9 Pro XL continued to show blur outside Bubble's windows/bubble.
 
-**Corrected architecture:** the real floating Gecko/native-content window is now explicitly kept blur-free. A separate non-focusable/non-touchable transparent overlay backdrop is inserted immediately *below* the floating window and carries Android's compositor blur. The Gecko/native window is composited above that backdrop, so opaque webpage pixels remain sharp and the blur can only show through Bubble's translucent/transparent glass regions. The helper backdrop is tied to the floating root's attach lifecycle so it is removed when the floating window is destroyed/parked. No screenshots, PixelCopy, bitmap cache, or fake blur loop are used.
+**New hard invariant:** Bubble glass must not use `FLAG_BLUR_BEHIND` or `setBlurBehindRadius` anywhere in the glass implementation. CI has a source guard for this.
+
+**Corrected architecture:** a separate non-focusable/non-touchable floating `Dialog` window is inserted immediately below the interactive Bubble overlay. It uses `Window.setBackgroundBlurRadius()`, which Android defines as blur limited to the background window bounds and whose rounded corners follow the window background drawable. The expanded chooser/chat therefore gets only its rounded-panel blur region; the 64dp resting bubble gets a true circular background (corner radius = half the side) and therefore circular blur only. The real Gecko/native content window remains blur-free and sits above it. The glass backdrop tracks Bubble during every move/resize/animation update; the requested background-blur radius remains configured continuously rather than being enabled only when motion stops. If Android itself disables cross-window blur at runtime, Bubble can only provide its translucent fallback until the platform re-enables the compositor feature.
+
+No screenshots, PixelCopy, bitmap caching, RenderEffect imitation, screen-wide blur-behind, or polling loop is permitted for this effect.
 
 ## Consolidated run 8 evidence and current transfer fix
 
