@@ -41,7 +41,6 @@ internal enum class VoiceNoticeKind(val channel: String, val label: String, val 
     OTHER("google-voice-other-v1", "Other Google Voice alerts", 5205)
 }
 
-/** Pure classification keeps channel selection deterministic and independently testable. */
 internal object VoiceNoticeClassifier {
     fun classify(title: String?, text: String?, tag: String?): VoiceNoticeKind {
         val value = listOf(title, text, tag).joinToString(" ") { it.orEmpty() }.lowercase()
@@ -55,12 +54,7 @@ internal object VoiceNoticeClassifier {
     }
 }
 
-/**
- * First-class Google Voice Web Notifications. The exact voice.google.com origin gets isolated
- * Android channels for calls/messages/missed calls/voicemail/other alerts. Notification contents
- * are transient Android UI only: Bubble never writes them to workspace state, notes, logs or a
- * network service.
- */
+/** First-class exact-origin Google Voice Web Notifications with separate Android channels. */
 internal object VoiceNotifications {
     const val STATUS_CHANNEL = "google-voice-status-v1"
     private const val STATUS_ID = 5299
@@ -98,20 +92,14 @@ internal object VoiceNotifications {
         channel(STATUS_CHANNEL, "Google Voice · connection status", "Warn when a protected Google Voice renderer cannot stay live")
     }
 
-    /** Runtime callback may arrive off-main; all Gecko notification callbacks are returned on main. */
     fun install(context: Context, runtime: GeckoRuntime, workspace: Workspace) {
         prepare(context)
         runtime.setWebNotificationDelegate(object : WebNotificationDelegate {
-            override fun onShowNotification(notification: WebNotification) {
-                main.post { show(context, workspace, notification) }
-            }
-            override fun onCloseNotification(notification: WebNotification) {
-                main.post { closeFromWeb(context, notification) }
-            }
+            override fun onShowNotification(notification: WebNotification) { main.post { show(context, workspace, notification) } }
+            override fun onCloseNotification(notification: WebNotification) { main.post { closeFromWeb(context, notification) } }
         })
     }
 
-    /** Only the exact Google Voice origin receives automatic site-notification permission. */
     fun installSessionPermissions(context: Context, tab: ChatTab, session: GeckoSession) {
         session.permissionDelegate = object : GeckoSession.PermissionDelegate {
             override fun onContentPermissionRequest(s: GeckoSession,
@@ -124,13 +112,11 @@ internal object VoiceNotifications {
                 return GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW)
             }
 
-            override fun onAndroidPermissionsRequest(s: GeckoSession, permissions: Array<String>,
+            override fun onAndroidPermissionsRequest(s: GeckoSession, permissions: Array<out String>?,
                 callback: GeckoSession.PermissionDelegate.Callback) {
                 if (tab.session !== s) { callback.reject(); return }
-                // Never proxy unrelated Android permissions. The only app permission Voice web
-                // notifications can use here is POST_NOTIFICATIONS, and it must already be granted
-                // through Bubble's explicit Android permission UI.
-                val notificationOnly = permissions.isNotEmpty() && permissions.all { it == Manifest.permission.POST_NOTIFICATIONS }
+                val requested = permissions.orEmpty()
+                val notificationOnly = requested.isNotEmpty() && requested.all { it == Manifest.permission.POST_NOTIFICATIONS }
                 val granted = notificationOnly && (Build.VERSION.SDK_INT < 33 ||
                     context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
                 if (granted) callback.grant() else callback.reject()
@@ -140,12 +126,9 @@ internal object VoiceNotifications {
 
     private fun show(context: Context, workspace: Workspace, web: WebNotification) {
         val voice = Policy.isVoice(web.source.orEmpty()) || Policy.isVoice(web.origin)
-        if (!voice) {
-            // This delegate exists for Google Voice. Do not silently turn Bubble into a blanket
-            // notification broker for unrelated sites.
-            runCatching { web.dismiss() }
-            return
-        }
+        if (!voice) { runCatching { web.dismiss() }; return }
+        val voiceTabs = workspace.tabs.filter { Policy.isVoice(it.url) }
+        if (voiceTabs.isEmpty()) { runCatching { web.dismiss() }; return }
         val kind = VoiceNoticeClassifier.classify(web.title, web.text, web.tag)
         val manager = context.getSystemService(NotificationManager::class.java)
         if (!notificationsUsable(context, kind.channel)) {
@@ -154,16 +137,8 @@ internal object VoiceNotifications {
             workspace.changed()
             return
         }
-
-        // WebNotification does not expose the originating GeckoSession. Route directly only when
-        // there is one unambiguous Voice tab; with several profiles/accounts, open the chooser
-        // instead of risking the wrong account.
-        val voiceTabs = workspace.tabs.filter { Policy.isVoice(it.url) }
         val tab = voiceTabs.singleOrNull()
-        if (tab != null && tab.id != workspace.selectedId) {
-            tab.unread = true
-            workspace.changed(true)
-        }
+        if (tab != null && tab.id != workspace.selectedId) { tab.unread = true; workspace.changed(true) }
 
         val token = UUID.randomUUID().toString()
         val slot = if (web.tag.isNotBlank()) "${web.origin}|${web.tag}" else token
@@ -171,8 +146,7 @@ internal object VoiceNotifications {
         val androidTag = "bubble-voice:$token"
         val target = web.source?.takeIf(Policy::isVoice) ?: Policy.VOICE_HOME
         val item = Active(web, androidTag, kind.notificationId, tab?.id, target)
-        active[token] = item
-        tokenByObject[web] = token
+        active[token] = item; tokenByObject[web] = token
 
         val click = PendingIntent.getBroadcast(context, token.hashCode(), Intent(context, VoiceNotificationReceiver::class.java).apply {
             action = CLICK; data = Uri.parse("bubble://voice-notification/$token/click"); putExtra(TOKEN, token)
@@ -190,8 +164,7 @@ internal object VoiceNotifications {
         if (text.isNotBlank()) builder.setContentText(text.take(512)).setStyle(Notification.BigTextStyle().bigText(text))
         if (web.requireInteraction && kind == VoiceNoticeKind.INCOMING_CALL) builder.setOngoing(true)
         try {
-            manager.notify(androidTag, kind.notificationId, builder.build())
-            web.show()
+            manager.notify(androidTag, kind.notificationId, builder.build()); web.show()
         } catch (_: SecurityException) {
             active.remove(token); tokenByObject.remove(web); slotToToken.remove(slot, token); runCatching { web.dismiss() }
         }
@@ -199,45 +172,36 @@ internal object VoiceNotifications {
 
     private fun closeFromWeb(context: Context, web: WebNotification) {
         val token = tokenByObject.remove(web) ?: return
-        retire(context, token, false)
-        runCatching { web.dismiss() }
+        retire(context, token, false); runCatching { web.dismiss() }
     }
 
     internal fun handle(context: Context, action: String?, token: String?) {
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { handle(context, action, token) }; return }
         if (token.isNullOrBlank()) return
         val item = active.remove(token) ?: return
-        tokenByObject.remove(item.web)
-        slotToToken.entries.removeAll { it.value == token }
+        tokenByObject.remove(item.web); slotToToken.entries.removeAll { it.value == token }
         context.getSystemService(NotificationManager::class.java).cancel(item.androidTag, item.androidId)
         if (action == CLICK) {
-            runCatching { item.web.click() }
-            runCatching { item.web.dismiss() }
-            openTarget(context, item)
+            runCatching { item.web.click() }; runCatching { item.web.dismiss() }; openTarget(context, item)
         } else runCatching { item.web.dismiss() }
     }
 
     private fun retire(context: Context, token: String, dismissWeb: Boolean) {
         val item = active.remove(token) ?: return
-        tokenByObject.remove(item.web)
-        slotToToken.entries.removeAll { it.value == token }
+        tokenByObject.remove(item.web); slotToToken.entries.removeAll { it.value == token }
         context.getSystemService(NotificationManager::class.java).cancel(item.androidTag, item.androidId)
         if (dismissWeb) runCatching { item.web.dismiss() }
     }
 
     private fun openTarget(context: Context, item: Active) {
         if (item.tabId != null) {
-            try {
-                NotificationReturnActivity.pending(context, item.tabId, FloatingMode.CHAT).send()
-                return
-            } catch (_: PendingIntent.CanceledException) { }
+            try { NotificationReturnActivity.pending(context, item.tabId, FloatingMode.CHAT).send(); return }
+            catch (_: PendingIntent.CanceledException) { }
         }
         val workspace = Workspace.peek()
         if (workspace != null && workspace.tabs.count { Policy.isVoice(it.url) } > 1) {
-            try {
-                NotificationReturnActivity.pending(context, null, FloatingMode.CHOOSER).send()
-                return
-            } catch (_: PendingIntent.CanceledException) { }
+            try { NotificationReturnActivity.pending(context, null, FloatingMode.CHOOSER).send(); return }
+            catch (_: PendingIntent.CanceledException) { }
         }
         try {
             context.startActivity(Intent(context, BrowserActivity::class.java).apply {
@@ -285,8 +249,7 @@ internal object VoiceNotifications {
         row("Connection warning settings") { channelSettings(anchor.context, STATUS_CHANNEL) }
         row("All Bubble notification settings") { appSettings(anchor.context) }
         row("Open another Google Voice tab · same profile") {
-            workspace.create(Policy.VOICE_HOME, tab.profileId)
-            BubbleService.active?.window?.openChat(workspace.selectedId)
+            workspace.create(Policy.VOICE_HOME, tab.profileId); BubbleService.active?.window?.openChat(workspace.selectedId)
         }
     }
 
@@ -337,7 +300,6 @@ class VoiceNotificationReceiver : BroadcastReceiver() {
     }
 }
 
-/** Small transient host so permission can be requested from either fullscreen or overlay UI. */
 class VoicePermissionActivity : Activity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
