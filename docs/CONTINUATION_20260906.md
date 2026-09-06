@@ -23,7 +23,8 @@ Logical tabs remain durable and unlimited, but **idle ChatGPT renderer sessions 
 - When an exact-origin ChatGPT monitor reports `started`, that tab is protected from suspension and stays active/high priority even in the background.
 - When that response reports `finished`, Bubble first performs the durable checkpoint and reply-notification decision, then an idle background tab should hibernate immediately.
 - A background ChatGPT tab that is already idle auto-hibernates after a short grace period so a just-submitted response can still announce `started`.
-- Opening/selecting a suspended tab is the explicit resume action and recreates its GeckoSession from bounded saved state/canonical URL.
+- Opening/selecting a suspended tab is the explicit resume action and recreates its GeckoSession.
+- **Never show a stale ChatGPT page after suspension.** A reopened/cold ChatGPT renderer must not expose an old restored DOM/session snapshot. Bubble must recreate the renderer from the canonical URL using a fresh cache-bypassed navigation; if fresh content is unavailable, show loading/error UI rather than the old page. This applies to automatic hibernation, manual suspension, process restore and renderer recovery.
 - **Manual Suspend now** must exist per tab, but refuse to kill an in-flight response, page load, or active file-picker transfer.
 - **Force keep alive** must exist per tab, persist locally, and override automatic suspension. An explicit manual suspend remains stronger than Force keep alive.
 - Auto-hibernation releases the renderer; it does not close/delete the logical tab or server-side ChatGPT conversation.
@@ -44,6 +45,10 @@ Do not lose these newer requirements while fixing the 0.7.3 runtime gate:
 - A bottom-handle minimize in edge mode must visibly **slide toward the configured edge-handle position** before the handle takes ownership; in bubble mode the existing conceal must shrink back into the saved bubble position.
 - Floating-chat ↔ fullscreen transitions must use a matched grow/shrink motion rather than a discontinuous pop. Prefer GPU transforms/system scale-up transitions and avoid resizing/reflowing Gecko on every animation frame.
 - These swipe zones must be small/native, directional, cancellable and haptic at commitment; they must not install a fullscreen touch interceptor or interfere with ordinary webpage scrolling.
+- **Keep the current UI layout and interaction model.** The visual change requested is a real glassmorphic treatment, not a redesign.
+- Replace the current mostly opaque smoked gradients with **actual translucent neutral-black glass**. On Android versions/devices where system cross-window blur is available, use the platform blur path rather than fake screenshots/bitmap blur loops; combine it with translucent layers, subtle rim/highlight and a more opaque fallback when runtime blur is unavailable/disabled.
+- Add a persistent **bubble opacity/transparency control** with a useful bounded range so the user can make the resting bubble much more or less transparent without making its touch target disappear.
+- Tab order must be user-controlled and persisted. In the shared tab/conversation list, the **tab icon is the drag handle** for smooth drag-and-drop rearranging. Preserve stable tab IDs and existing pinned semantics; dragging must not close/recreate sessions or conversations.
 
 ## Consolidated run 8 evidence and current transfer fix
 
