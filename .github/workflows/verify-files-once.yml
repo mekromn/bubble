@@ -1,8 +1,9 @@
 name: Verify browser file transfers
 # Consolidated verification for unrestricted openable attachment selection, no-stale ChatGPT resume,
-# translucent/cross-window-blurred glass, adjustable resting-bubble opacity, drag-to-reorder tab order,
-# and the existing file/session/profile/floating/edge runtime gates. Runtime failure still publishes
-# a clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds so physical-device validation can continue.
+# localized translucent/cross-window-blurred glass that never blurs the Gecko content window,
+# adjustable resting-bubble opacity, drag-to-reorder tab order, and the existing file/session/profile/
+# floating/edge runtime gates. Runtime failure still publishes a clearly marked UNVERIFIED ARM64 APK
+# when compilation/signing succeeds so physical-device validation can continue.
 on:
   push:
     branches: [rebuild-v2]
