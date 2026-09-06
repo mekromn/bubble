@@ -10,6 +10,8 @@ A request belongs to its original tab/GeckoSession. Changing the selected tab do
 
 The Android picker is displayed above the floating browser: the exact floating window is temporarily invisible and non-focusable, then restored without reopening fullscreen. A process-owned request survives picker Activity recreation. Home handling recognizes file UI, so launching a picker does not create a competing bubble. The photo/document/cloud-provider choices are Android's normal file chooser, not a web fake picker. Live Google Drive or account-specific provider behavior still requires device verification.
 
+**Bubble deliberately exposes every Android-openable file type in the attachment picker (`*/*`).** Web `<input accept>` / Gecko MIME hints no longer hide APKs, ZIPs, archives, source files or other user-selected documents. This only controls chooser visibility: the file's real bytes/name/type are preserved, and ChatGPT/the destination site can still reject formats it does not support after selection.
+
 ## Downloads
 
 ContentDelegate.onExternalResponse consumes the ORIGINAL authenticated Gecko WebResponse/InputStream. Never send the link to Android DownloadManager or independently refetch it with a default cookie jar: that can lose a profile-specific login, POST payload, one-time signed URL or generated Blob. Existing profile and URL/TLS policy boundaries are unchanged. HTTP response downloads and native generated Blob downloads use the same streaming save path.
