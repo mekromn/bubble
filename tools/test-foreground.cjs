@@ -37,6 +37,15 @@ assert.equal(foreground.all_frames, true); assert.equal(foreground.world, 'MAIN'
 const monitor = manifest.content_scripts.find(item => item.js.includes('monitor.js'));
 assert.deepEqual(monitor.matches, ['https://chatgpt.com/*'], 'Reply lifecycle native monitor must not be broadened');
 assert.equal(monitor.all_frames, false); assert.notEqual(monitor.world, 'MAIN');
+
+// Android's blur-behind API is screen-wide by definition and produced visible blur outside the
+// Bubble window on the target Pixel. The glass implementation must use shape-clipped Window
+// background blur instead. Keep this source guard so the bad API cannot quietly return later.
+const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt', 'utf8');
+assert.equal(/\.setBlurBehindRadius\s*\(/.test(glass), false, 'Screen-wide blur-behind API is forbidden for Bubble glass');
+assert.equal(/WindowManager\.LayoutParams\.FLAG_BLUR_BEHIND/.test(glass), false, 'FLAG_BLUR_BEHIND is forbidden for Bubble glass');
+assert.equal(/\.setBackgroundBlurRadius\s*\(/.test(glass), true, 'Bubble glass must use shape-clipped Window background blur');
 console.log('All-web foreground compatibility, frame scope, real gesture boundaries and ChatGPT-only reply monitor passed.');
+console.log('Glass guard: shape-clipped Window background blur only; screen-wide blur-behind is forbidden.');
 require('./test-download-bridge.cjs');
 require('./test-monitor.cjs');
