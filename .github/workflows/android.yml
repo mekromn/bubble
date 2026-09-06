@@ -73,6 +73,7 @@ jobs:
         if: always() && !cancelled()
         env:
           VERIFIED: ${{ steps.scripts.outcome == 'success' && steps.signing.outcome == 'success' && steps.compile.outcome == 'success' && steps.emulator_compile.outcome == 'success' && steps.runtime.outcome == 'success' }}
+          APK_BUILT: ${{ steps.signing.outcome == 'success' && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -98,8 +99,16 @@ jobs:
               for path in sorted(files):
                   archive.write(path, str(path))
           verified = os.environ['VERIFIED'] == 'true'
+          apk_built = os.environ['APK_BUILT'] == 'true'
           version = os.environ.get('BUBBLE_VERSION', 'unbuilt')
-          status = 'Build and automated runtime checks passed.' if verified else 'NOT VERIFIED: one or more required build/test steps failed. No APK is published from this run.'
+          if verified:
+              status = 'Build and automated runtime checks passed.'
+          elif apk_built:
+              status = ('UNVERIFIED MANUAL-TEST BUILD: the ARM64 APK compiled and its signing identity verified, '
+                        'but one or more automated checks failed. The APK is included so the maintainer can test '
+                        'the real device behavior; do not treat this build as automated-runtime verified.')
+          else:
+              status = 'NOT INSTALLABLE: compilation or signing verification did not complete, so no APK asset is available.'
           notes = f'''Bubble {version} — development build
 
           {status}
@@ -121,19 +130,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERIFIED: ${{ steps.scripts.outcome == 'success' && steps.signing.outcome == 'success' && steps.compile.outcome == 'success' && steps.emulator_compile.outcome == 'success' && steps.runtime.outcome == 'success' }}
+          APK_BUILT: ${{ steps.signing.outcome == 'success' && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
           TAG="bubble-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           VERSION="${BUBBLE_VERSION:-unbuilt}"
           ASSETS=(dist/Bubble-Verification.zip dist/VERIFICATION-SHA256.txt)
-          if [ "$VERIFIED" = true ]; then
+          if [ "$APK_BUILT" = true ]; then
             ASSETS+=(dist/*.apk dist/SHA256SUMS dist/signature.txt dist/COMMIT.txt)
           fi
-          gh release create "$TAG" "${ASSETS[@]}" --target "$GITHUB_SHA" \
-            --title "Bubble ${VERSION} — build ${GITHUB_RUN_NUMBER}" \
-            --notes-file dist/RELEASE_NOTES.txt --draft --prerelease
           if [ "$VERIFIED" = true ]; then
+            TITLE="Bubble ${VERSION} — verified build ${GITHUB_RUN_NUMBER}"
+          elif [ "$APK_BUILT" = true ]; then
+            TITLE="Bubble ${VERSION} — UNVERIFIED manual-test build ${GITHUB_RUN_NUMBER}"
+          else
+            TITLE="Bubble ${VERSION} — failed build ${GITHUB_RUN_NUMBER}"
+          fi
+          gh release create "$TAG" "${ASSETS[@]}" --target "$GITHUB_SHA" \
+            --title "$TITLE" \
+            --notes-file dist/RELEASE_NOTES.txt --draft --prerelease
+          # A compiled + signature-verified APK is intentionally published even when emulator
+          # verification fails, so the maintainer can perform real-device validation. It remains
+          # prominently marked UNVERIFIED in the title/notes until the automated gate is green.
+          if [ "$APK_BUILT" = true ]; then
             gh release edit "$TAG" --draft=false
           fi
           echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Verified: ${VERIFIED}. No Actions artifact uploads were used." >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified: ${VERIFIED}. APK built: ${APK_BUILT}. No Actions artifact uploads were used." >> "$GITHUB_STEP_SUMMARY"
