@@ -4,12 +4,12 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 
-/** Explicit opt-in, bounded edge configuration. Nothing auto-launches when a preference is loaded. */
+/** Explicit opt-in, bounded edge/bubble configuration. Nothing auto-launches when a preference is loaded. */
 internal object AccessMenu {
     fun show(anchor: View, workspace: Workspace) {
         val preferences = AccessPreferences.get(anchor.context)
         if (!preferences.ready) { Toast.makeText(anchor.context, "Settings are loading. Try again.", Toast.LENGTH_SHORT).show(); return }
-        val panel = QuickPanel.open(anchor, workspace, "Bubble / edge access", 550) ?: return
+        val panel = QuickPanel.open(anchor, workspace, "Bubble / edge access", 610) ?: return
         val c = anchor.context
         val original = preferences.options
         fun d(n: Int) = Ui.dp(c, n.toFloat())
@@ -34,6 +34,8 @@ internal object AccessMenu {
             })
             form.addView(text); form.addView(seek, LinearLayout.LayoutParams(-1, d(48))); return seek
         }
+        val bubbleOpacity = slider("Bubble opacity (%)", 12, 100, (original.bubbleOpacity * 100f).toInt().coerceIn(12, 100))
+        form.addView(Ui.text(c, "Lower opacity makes only the resting bubble more transparent. Its touch target stays full-size.", 11f, Ui.MUTED).apply { setPadding(0, 0, 0, d(6)) })
         val position = slider("Vertical position (%)", 0, 100, (original.position * 100).toInt())
         val height = slider("Zone height (dp)", 64, 160, original.heightDp)
         val width = slider("Zone width (dp)", 12, 28, original.widthDp)
@@ -42,8 +44,14 @@ internal object AccessMenu {
         panel.body.addView(Ui.text(c, "Save access settings", 15f, Ui.TEXT, true).apply {
             gravity = Gravity.CENTER; background = Ui.ripple(c, Ui.SURFACE_HIGH, 18f)
             setOnClickListener {
-                preferences.update(EdgeOptions(enabled.isChecked, sides.checkedRadioButtonId == left.id,
-                    position.progress / 100f, 64 + height.progress, 12 + width.progress, indicator.isChecked)) { saved ->
+                preferences.update(EdgeOptions(
+                    enabled = enabled.isChecked,
+                    left = sides.checkedRadioButtonId == left.id,
+                    position = position.progress / 100f,
+                    heightDp = 64 + height.progress,
+                    widthDp = 12 + width.progress,
+                    indicator = indicator.isChecked,
+                    bubbleOpacity = (12 + bubbleOpacity.progress) / 100f)) { saved ->
                     Toast.makeText(c, if (saved) "Saved. Minimize to use ${if (enabled.isChecked) "the edge" else "the bubble"}." else preferences.error ?: "Settings could not be saved.", Toast.LENGTH_LONG).show()
                 }
                 panel.dismiss()
