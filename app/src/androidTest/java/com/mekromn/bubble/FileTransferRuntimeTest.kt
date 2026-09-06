@@ -160,12 +160,25 @@ class FileTransferRuntimeTest {
     }
     private fun downloadsRoot() {
         await("DocumentsUI visible") { node { it.packageName?.toString()?.endsWith("documentsui") == true } != null }
+        // OPEN_DOCUMENT often starts on Recent with our Downloads media already visible; CREATE_DOCUMENT
+        // often starts inside Downloads. In both cases no root-navigation click is needed.
+        val alreadyInUsableLocation = node { it.text?.toString() == "Files in Downloads" } != null ||
+            node { it.text?.toString()?.startsWith("bubble-") == true } != null ||
+            node { it.text?.toString()?.equals("Save", true) == true && it.isEnabled } != null
+        if (alreadyInUsableLocation) return
         node { it.contentDescription?.toString() == "Show roots" }?.let { button ->
             val rect = Rect(); button.getBoundsInScreen(rect); tap(rect.exactCenterX(), rect.exactCenterY(), false)
         }
-        await("Downloads root available") { node { it.text?.toString() == "Downloads" && it.isClickable } != null }
-        tapNode({ it.text?.toString() == "Downloads" && it.isClickable })
-        Thread.sleep(500)
+        // DocumentsUI exposes the title TextView but not necessarily that child as clickable; tapping
+        // its bounds still activates the containing root row. Do not require AccessibilityNodeInfo.isClickable.
+        await("Downloads root available") { node { it.text?.toString() == "Downloads" } != null }
+        tapNode({ it.text?.toString() == "Downloads" })
+        await("Downloads contents visible") {
+            node { it.text?.toString() == "Files in Downloads" } != null ||
+                node { it.text?.toString()?.startsWith("bubble-") == true } != null ||
+                node { it.text?.toString()?.equals("Save", true) == true && it.isEnabled } != null
+        }
+        Thread.sleep(300)
     }
     private fun savePicker() { tapNode({ it.text?.toString()?.equals("Save", true) == true && it.isEnabled }) }
     private fun pageTap(index: Int) {
