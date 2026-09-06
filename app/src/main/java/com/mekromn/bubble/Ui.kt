@@ -109,6 +109,11 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
                 canvas.drawArc(4f,4f,20f,20f,35f,290f,false,paint)
                 path.moveTo(19f,3f); path.lineTo(19f,8f); path.lineTo(14f,8f); canvas.drawPath(path,paint)
             }
+            "share" -> {
+                canvas.drawLine(8f,11f,15.5f,7f,paint); canvas.drawLine(8f,13f,15.5f,17f,paint)
+                paint.style = Paint.Style.FILL
+                canvas.drawCircle(6f,12f,2.4f,paint); canvas.drawCircle(18f,6f,2.4f,paint); canvas.drawCircle(18f,18f,2.4f,paint)
+            }
             "bubble" -> {
                 canvas.drawRoundRect(3f,3f,21f,17f,6f,6f,paint)
                 path.moveTo(7f,17f); path.lineTo(7f,21f); path.lineTo(12f,17f); canvas.drawPath(path,paint)
