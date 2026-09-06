@@ -36,7 +36,7 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
     var suspended = false
     var cancelledLoad = false
     var documentUrl = url
-    val displayName: String get() = localName.ifBlank { title.ifBlank { "New ChatGPT chat" } }
+    val displayName: String get() = localName.ifBlank { title.ifBlank { if (Policy.isVoice(url)) "Google Voice" else "New ChatGPT chat" } }
     val recovery = RecoveryBudget()
     fun snapshot() = StoredTab(id, url, title, desktop, savedState, unread, lastNotice, localName, pinned, note, muted,
         profileId, manualSuspended, forceKeepAlive)
@@ -55,7 +55,8 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
 /** Main-thread session owner. Only ChatGPT has automatic idle hibernation because the exact-origin
  * monitor tells us when a response is actually working. A working/loading tab is protected; a
  * reopened ChatGPT renderer always performs a fresh cache-bypassed navigation instead of restoring
- * an old DOM/session snapshot. */
+ * an old DOM/session snapshot. Google Voice is deliberately resident/high-priority while Bubble is
+ * running so its web notification and call/message signaling remains alive. */
 internal class Workspace private constructor(private val app: Context, initialUrl: String?) {
     val tabs = ArrayList<ChatTab>()
     val closedTabs = ArrayList<StoredTab>()
@@ -121,13 +122,12 @@ internal class Workspace private constructor(private val app: Context, initialUr
             if (tabs.isEmpty()) tabs += ChatTab(url = initialUrl ?: Policy.HOME)
             else if (initialUrl != null) tabs += ChatTab(url = initialUrl, profileId = selected?.profileId ?: ProfilePolicy.DEFAULT_ID).also { selectedId = it.id }
             if (selected == null) selectedId = tabs.first().id
-            // Opening Bubble is an explicit reopen of the selected tab. Background idle ChatGPT
-            // tabs stay cold; force-keep-alive and non-ChatGPT tabs retain live residency.
             selected?.let { resumeState(it) }
             ready = true; ensureSession(selected!!); changed(true)
             tabs.filter { it.id != selectedId }.forEachIndexed { index, tab -> main.postDelayed({
                 if (tab !in tabs) return@postDelayed
                 when {
+                    Policy.isVoice(tab.url) -> { tab.manualSuspended = false; tab.suspended = false; tab.error = null; ensureSession(tab) }
                     tab.manualSuspended -> { tab.suspended = true; changed() }
                     tab.forceKeepAlive || !Policy.isChat(tab.url) -> ensureSession(tab)
                     else -> { tab.suspended = true; changed() }
@@ -190,6 +190,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     fun suspend(id: String): Boolean {
         checkMain(); val tab = tabs.firstOrNull { it.id == id } ?: return false
+        if (Policy.isVoice(tab.url)) {
+            notice = "Google Voice tabs are protected live so calls, messages and voicemail alerts are not intentionally disconnected. Close the Voice tab if you no longer want it running."
+            changed(); return false
+        }
         val fileBusy = FileUi.busy && tab.id == selectedId
         if (!TabSuspendPolicy.canManualSuspend(tab.generating, tab.loading, fileBusy)) {
             notice = when {
@@ -211,10 +215,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     fun setForceKeepAlive(id: String, enabled: Boolean) {
         checkMain(); val tab = tabs.firstOrNull { it.id == id } ?: return
+        if (Policy.isVoice(tab.url)) { resumeState(tab); ensureSession(tab); applyPolicy(); changed(); return }
         tab.forceKeepAlive = enabled
-        if (enabled) {
-            resumeState(tab); ensureSession(tab)
-        }
+        if (enabled) { resumeState(tab); ensureSession(tab) }
         applyPolicy(); changed(true)
     }
     fun close(id: String) {
@@ -223,7 +226,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         while (closedTabs.size > 20) closedTabs.removeAt(closedTabs.lastIndex)
         cancelAutoSuspend(id); tab.session?.let(FloatingFileActivity::cancelForSession)
         pendingStarts.remove(id); tabs.remove(tab); detachTab(tab.session)
-        tab.session?.close(); tab.session = null; Replies.clear(app, id); UploadStaging.release(app, id)
+        tab.session?.close(); tab.session = null; Replies.clear(app, id); VoiceNotifications.clearStatus(app, id); UploadStaging.release(app, id)
         if (tabs.isEmpty()) tabs += ChatTab(profileId = tab.profileId)
         if (selected == null) selectedId = tabs.first().id
         selected?.let(::resumeState); ensureSession(selected!!); applyPolicy(); changed(true)
@@ -296,8 +299,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
         detachTab(session)
         runCatching { session.setFocused(false); session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT); session.setActive(false); session.flushSessionState() }
         tab.session = null; tab.loading = false; tab.painted = false; tab.suspended = true
-        // Defense in depth: ChatGPT snapshots are intentionally discarded. The canonical URL and
-        // profile survive, but no old DOM/session state can become the user's first frame later.
         if (FreshResumePolicy.requiresFreshNavigation(tab.url)) tab.savedState = null
         if (manual) { tab.manualSuspended = true; tab.forceKeepAlive = false; tab.error = TabSuspendPolicy.MANUAL_MESSAGE }
         runCatching { session.close() }; UploadStaging.release(app, tab.id); changed(true)
@@ -307,6 +308,11 @@ internal class Workspace private constructor(private val app: Context, initialUr
         tabs.forEach { tab -> tab.session?.let { session ->
             if (!session.isOpen) return@let
             when {
+                Policy.isVoice(tab.url) -> {
+                    cancelAutoSuspend(tab.id); tab.manualSuspended = false; tab.suspended = false
+                    session.setActive(true); session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+                    session.setFocused(!FileUi.busy && chatVisible && tab.id == selectedId && surface.get()?.hasWindowFocus() == true)
+                }
                 tab.manualSuspended -> {
                     cancelAutoSuspend(tab.id); session.setFocused(false); session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT); session.setActive(false)
                 }
@@ -315,8 +321,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
                     session.setFocused(!FileUi.busy && chatVisible && tab.id == selectedId && surface.get()?.hasWindowFocus() == true)
                 }
                 else -> {
-                    // Keep a short active grace period after deselection so a just-submitted
-                    // response can announce "started" before we decide this ChatGPT tab is idle.
                     tab.suspended = false; session.setActive(true); session.setPriorityHint(GeckoSession.PRIORITY_HIGH); session.setFocused(false)
                     scheduleAutoSuspend(tab, session)
                 }
@@ -327,6 +331,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         runtime?.let { return it }
         val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false).build())
         runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
+        VoiceNotifications.install(app, created, this)
         main.postDelayed(monitorTimeout, 10_000)
         created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local").accept({ addon -> finishMonitor(addon) }, { finishMonitor(null) })
         return created
@@ -343,9 +348,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
             if (tab !in tabs || tab.session !== session || !session.isOpen) return@start
             try {
                 if (FreshResumePolicy.requiresFreshNavigation(tab.url)) {
-                    // No stale-page path: do not restore ChatGPT SessionState and do not allow the
-                    // HTTP cache to supply the resumed document. If the network/site cannot refresh,
-                    // Gecko shows a load failure instead of Bubble exposing the old suspended DOM.
                     tab.savedState = null
                     session.load(GeckoSession.Loader().uri(tab.url).flags(GeckoSession.LOAD_FLAGS_BYPASS_CACHE))
                 } else {
@@ -360,8 +362,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
         pendingStarts.remove(tab.id); if (!monitorSettled) { tab.loading = true; pendingStarts[tab.id] = start } else start()
     }
     fun ensureSession(tab: ChatTab): GeckoSession? {
-        checkMain(); if (tab.manualSuspended) return null
+        checkMain(); if (tab.manualSuspended && !Policy.isVoice(tab.url)) return null
         tab.session?.let { return it }; if (tab.error != null) return null
+        if (Policy.isVoice(tab.url)) { tab.manualSuspended = false; tab.error = null }
         tab.suspended = false
         return try { val session = newSession(tab); session.open(engine()); loadWhenReady(tab, session, tab.savedState); applyPolicy(); session }
         catch (error: RuntimeException) {
@@ -375,6 +378,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
             .userAgentMode(if (tab.desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
             .viewportMode(if (tab.desktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE).build())
         tab.session = session
+        VoiceNotifications.installSessionPermissions(app, tab, session)
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(s: GeckoSession, url: String) {
                 if (tab.session !== s) return
@@ -387,13 +391,12 @@ internal class Workspace private constructor(private val app: Context, initialUr
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 if (tab.session !== s) return
                 tab.loading = false
+                if (success && Policy.isVoice(tab.url)) VoiceNotifications.clearStatus(app, tab.id)
                 if (!success && !tab.cancelledLoad && tab.error == null) tab.error = "The page did not finish loading. Check the connection or retry."
                 applyPolicy(); changed(true)
             }
             override fun onSessionStateChange(s: GeckoSession, state: GeckoSession.SessionState) {
                 if (tab.session !== s || pendingStarts.containsKey(tab.id)) return
-                // Never persist a ChatGPT DOM/session snapshot that could later be mistaken for
-                // current content. Other browser tabs keep their normal history/scroll state.
                 tab.savedState = if (FreshResumePolicy.requiresFreshNavigation(tab.url)) null
                     else state.toString().takeIf { it.length <= 524288 }
                 changed(true)
@@ -454,8 +457,11 @@ internal class Workspace private constructor(private val app: Context, initialUr
             if (tab.manualSuspended || tab.suspended) {
                 if (!tab.manualSuspended) tab.error = null
             } else if (tab.recovery.allow(SystemClock.elapsedRealtime())) {
-                tab.error = null; main.postDelayed({ if (tab in tabs && tab.session == null && !tab.manualSuspended) ensureSession(tab) }, 500)
-            } else tab.error = "This page's renderer failed repeatedly. Automatic recovery is paused; tap Retry. Your tab is retained."
+                tab.error = null; main.postDelayed({ if (tab in tabs && tab.session == null && (!tab.manualSuspended || Policy.isVoice(tab.url))) ensureSession(tab) }, 500)
+            } else {
+                tab.error = "This page's renderer failed repeatedly. Automatic recovery is paused; tap Retry. Your tab is retained."
+                if (Policy.isVoice(tab.url)) VoiceNotifications.tabOffline(app, tab.id)
+            }
             applyPolicy(); changed()
         }
     }
@@ -479,17 +485,13 @@ internal class Workspace private constructor(private val app: Context, initialUr
                     "started" -> {
                         cancelAutoSuspend(tab.id); tab.suspended = false; tab.generating = true; tab.run = run; applyPolicy(); changed()
                     }
-                    "aborted" -> if (tab.run == run) {
-                        tab.generating = false; applyPolicy(); changed()
-                    }
+                    "aborted" -> if (tab.run == run) { tab.generating = false; applyPolicy(); changed() }
                     "finished" -> {
                         if (!tab.generating || tab.run != run || tab.lastNotice == run) return null
                         tab.generating = false; tab.lastNotice = run; tab.unread = !(chatVisible && tab.id == selectedId); applyPolicy(); changed()
                         checkpoint { saved ->
                             if (saved && tab in tabs && tab.unread && !tab.muted && tab.lastNotice == run) Replies.finished(app, tab.id)
                             if (tab in tabs && tab.session === session && !selectedVisible(tab) && !tab.forceKeepAlive && !tab.manualSuspended) {
-                                // Finished background work has no reason to keep a renderer. Close it
-                                // immediately after the durable checkpoint/notification decision.
                                 scheduleAutoSuspend(tab, session, 0)
                             }
                         }
