@@ -66,7 +66,7 @@ class BrowserActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
     }
     override fun onStart() {
-        super.onStart(); started = true; handoff = false
+        super.onStart(); FullscreenHandoff.reset(root); started = true; handoff = false
         BubbleService.active?.releaseForActivity(); stopService(Intent(this, BubbleService::class.java))
         workspace.host = WeakReference(this); workspace.visible = true
         workspace.listen(changed); workspace.applyPolicy(); Refresh.request(this)
@@ -86,7 +86,7 @@ class BrowserActivity : Activity() {
     override fun onStop() {
         started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed)
         if (workspace.host.get() === this) { workspace.visible = false; workspace.covered = false; workspace.detachSurface(geckoView); workspace.flush() }
-        meter.stop(); super.onStop()
+        meter.stop(); FullscreenHandoff.reset(root); super.onStop()
     }
     override fun onDestroy() {
         QuickPanel.dismissFor(root)
@@ -224,6 +224,7 @@ class BrowserActivity : Activity() {
         tray?.let { if (show) it.refresh(workspace); Ui.show(it, show) }
     }
     private fun menu() {
+        val current = workspace.selected
         ControlsSheet.show(this, "Browser controls", listOf(
             "Downloads" to { BrowserDownloads.show(this) },
             "Profiles / accounts · ${workspace.profileName()}" to { ProfileMenus.show(tabs, workspace) },
@@ -233,6 +234,10 @@ class BrowserActivity : Activity() {
             "Find in conversation / page" to { QuickMenus.find(menuButton, workspace) },
             "Forward in webpage" to { selectedSession?.goForward(); Unit },
             (if (workspace.selected?.loading == true) "Stop loading" else "Reload page") to { if (workspace.selected?.loading == true) workspace.stopLoading() else refreshPage() },
+            (if (current?.forceKeepAlive == true) "Use automatic tab suspension" else "Force keep current tab alive") to {
+                current?.let { workspace.setForceKeepAlive(it.id, !it.forceKeepAlive) }
+            },
+            "Suspend current tab now" to { current?.let { workspace.suspend(it.id) } },
             "Floating chat · interactive" to { collapse(FloatingMode.CHAT) },
             "Hide to notification" to { hideToNotification() },
             "Bubble / edge access" to { AccessMenu.show(menuButton, workspace) },
@@ -268,7 +273,18 @@ class BrowserActivity : Activity() {
             override fun onReceiveResult(code: Int, data: Bundle?) {
                 collapsePending = false
                 if (code != 1) { handoff = false; if (started) { render(); toast("Floating window could not be attached. Your chats are retained.") }; return }
-                if (!alreadyLeaving && !isFinishing) { if (wasPip) finish() else moveTaskToBack(true) }
+                if (!alreadyLeaving && !isFinishing) {
+                    if (wasPip) finish()
+                    else if (mode == FloatingMode.CHAT) {
+                        val target = FullscreenHandoff.floatingTarget(this@BrowserActivity, workspace)
+                        FullscreenHandoff.shrinkFullscreen(this@BrowserActivity, root, target) {
+                            if (!isFinishing) {
+                                moveTaskToBack(true)
+                                @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+                            }
+                        }
+                    } else moveTaskToBack(true)
+                }
             }
         }
         try { startForegroundService(Intent(this, BubbleService::class.java).putExtra(BubbleService.READY, reply).putExtra(BubbleService.MODE, mode.name)) }
