@@ -16,6 +16,18 @@ P0: actual upload/download round trips in fullscreen and interactive floating mo
 
 Preserve: stable debug package and signing identity, existing account storage and UUID tabs; one live session owner; all-web visible/focus compatibility but exact-origin ChatGPT native bridge; real input focus; one bubble, chooser, floating chat, notification parking, drag-to-X, Home/Back, anchored cancellable motion, native hardware rendering, local tools and profiles.
 
+### ChatGPT renderer-residency policy — newer requirement overrides earlier always-live wording
+
+Logical tabs remain durable and unlimited, but **idle ChatGPT renderer sessions must not all remain resident**. Only tabs doing work, tabs being actively viewed, loading tabs, non-ChatGPT tabs under the existing compatibility policy, and tabs explicitly marked **Force keep alive** should stay live.
+
+- When an exact-origin ChatGPT monitor reports `started`, that tab is protected from suspension and stays active/high priority even in the background.
+- When that response reports `finished`, Bubble first performs the durable checkpoint and reply-notification decision, then an idle background tab should hibernate immediately.
+- A background ChatGPT tab that is already idle auto-hibernates after a short grace period so a just-submitted response can still announce `started`.
+- Opening/selecting a suspended tab is the explicit resume action and recreates its GeckoSession from bounded saved state/canonical URL.
+- **Manual Suspend now** must exist per tab, but refuse to kill an in-flight response, page load, or active file-picker transfer.
+- **Force keep alive** must exist per tab, persist locally, and override automatic suspension. An explicit manual suspend remains stronger than Force keep alive.
+- Auto-hibernation releases the renderer; it does not close/delete the logical tab or server-side ChatGPT conversation.
+
 Remaining explicit requests: real translucent blurred neutral black glass; text-only quick tabs; inward swipe-release chooser and inward swipe-hold last tab; physically remove native view-only PiP while retaining interactive floating chat; pop-out ChatGPT sidebar whose selected links open new same-profile tabs; local explicit draft recovery, prompt insertion, scratchpads, navigation/search, pins/names/recently-closed/unread navigation, reading controls, explicit copy/export. No automatic prompt send or private-data uploads.
 
 Build policy: consolidate before one explicit verification, preserve Release-only binary publishing and existing rollback builds. No repeat artifact cleanup or unrelated repository changes. A green compile is not a runtime pass, a refresh request is not measured 120 fps, and synthetic profile/DOM fixtures are not authenticated ChatGPT verification.
@@ -29,6 +41,8 @@ Do not lose these newer requirements while fixing the 0.7.3 runtime gate:
 - Interactive floating chat must expose **Refresh** and **Share** together in native chrome without depending on ChatGPT page DOM.
 - Interactive floating chat must have a broad **bottom swipe handle**: swipe down to minimize to the user's configured resting access mode (bubble by default, edge indicator when edge access is enabled).
 - When edge access is enabled with its visible indicator, the expanded floating chat must also expose a matching **side indicator** that can be swiped outward to minimize back to the edge handle.
+- A bottom-handle minimize in edge mode must visibly **slide toward the configured edge-handle position** before the handle takes ownership; in bubble mode the existing conceal must shrink back into the saved bubble position.
+- Floating-chat ↔ fullscreen transitions must use a matched grow/shrink motion rather than a discontinuous pop. Prefer GPU transforms/system scale-up transitions and avoid resizing/reflowing Gecko on every animation frame.
 - These swipe zones must be small/native, directional, cancellable and haptic at commitment; they must not install a fullscreen touch interceptor or interfere with ordinary webpage scrolling.
 
-Current source commits add those controls and an Android runtime regression fixture. They are not considered verified until the consolidated Android runtime workflow passes.
+Current source commits add those controls, adaptive ChatGPT renderer hibernation, manual residency controls, matched fullscreen/floating motion, and Android/unit regression fixtures. They are not considered verified until the consolidated Android runtime workflow passes.
