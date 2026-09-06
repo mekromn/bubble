@@ -49,6 +49,13 @@ Do not lose these newer requirements while fixing the 0.7.3 runtime gate:
 - Replace the current mostly opaque smoked gradients with **actual translucent neutral-black glass**. On Android versions/devices where system cross-window blur is available, use the platform blur path rather than fake screenshots/bitmap blur loops; combine it with translucent layers, subtle rim/highlight and a more opaque fallback when runtime blur is unavailable/disabled.
 - Add a persistent **bubble opacity/transparency control** with a useful bounded range so the user can make the resting bubble much more or less transparent without making its touch target disappear.
 - Tab order must be user-controlled and persisted. In the shared tab/conversation list, the **tab icon is the drag handle** for smooth drag-and-drop rearranging. Preserve stable tab IDs and existing pinned semantics; dragging must not close/recreate sessions or conversations.
+- Google Voice tabs need a separate first-class notification path and controls so messages/calls/voicemail are not lost among ChatGPT reply alerts. Preserve the Google Voice web app/account session; do not scrape/store message contents beyond transient Android notification presentation.
+
+### Glass blur correction after physical-device test
+
+The first real cross-window-blur build put `FLAG_BLUR_BEHIND` directly on the Gecko-containing `TYPE_APPLICATION_OVERLAY` window. On the Pixel 9 Pro XL this visibly blurred far more of floating mode than intended instead of limiting the effect to the glass/translucent chrome.
+
+**Corrected architecture:** the real floating Gecko/native-content window is now explicitly kept blur-free. A separate non-focusable/non-touchable transparent overlay backdrop is inserted immediately *below* the floating window and carries Android's compositor blur. The Gecko/native window is composited above that backdrop, so opaque webpage pixels remain sharp and the blur can only show through Bubble's translucent/transparent glass regions. The helper backdrop is tied to the floating root's attach lifecycle so it is removed when the floating window is destroyed/parked. No screenshots, PixelCopy, bitmap cache, or fake blur loop are used.
 
 ## Consolidated run 8 evidence and current transfer fix
 
