@@ -65,14 +65,46 @@ jobs:
           disable-animations: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
+            set -u
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             adb logcat -c
-            adb shell am instrument -w com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner | tee instrumentation.txt
+            : > instrumentation.txt
+            failures=0
+            run_group() {
+              label="$1"
+              classes="$2"
+              echo "===== Android runtime group: $label =====" | tee -a instrumentation.txt
+              # The API-36 Google image occasionally leaves Pixel Launcher in an ANR dialog
+              # after a prior ActivityScenario closes. Restarting only that unrelated system
+              # process between groups prevents one launcher failure from poisoning every later
+              # accessibility/UI test; Bubble itself is also force-stopped for process isolation.
+              adb shell am force-stop com.mekromn.bubble.debug >/dev/null 2>&1 || true
+              adb shell am force-stop com.google.android.apps.nexuslauncher >/dev/null 2>&1 || true
+              adb shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1 || true
+              adb shell cmd statusbar collapse >/dev/null 2>&1 || true
+              sleep 1
+              tmp="instrumentation-${label}.txt"
+              set +e
+              adb shell am instrument -w -e class "$classes" com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner | tee "$tmp"
+              rc=${PIPESTATUS[0]}
+              set -e
+              cat "$tmp" >> instrumentation.txt
+              if [ "$rc" -ne 0 ] || ! grep -q 'OK (' "$tmp"; then
+                failures=1
+              fi
+            }
+            # P0 transfer behavior runs first in a clean process so unrelated launcher/IME flakes
+            # cannot hide a genuine byte/account/session failure.
+            run_group files 'com.mekromn.bubble.FileTransferRuntimeTest'
+            run_group floating 'com.mekromn.bubble.FloatingChromeRuntimeTest,com.mekromn.bubble.FloatingWorkspaceTest'
+            run_group edge 'com.mekromn.bubble.EdgeAccessRuntimeTest,com.mekromn.bubble.ParkedWorkspaceTest'
+            run_group core 'com.mekromn.bubble.BlackGlassTest,com.mekromn.bubble.BrowserInputTest,com.mekromn.bubble.BrowserSmokeTest,com.mekromn.bubble.RebuildRegressionTest,com.mekromn.bubble.ToolkitStoreTest,com.mekromn.bubble.WorkspaceRuntimeTest'
+            run_group tools 'com.mekromn.bubble.LiveToolsRuntimeTest,com.mekromn.bubble.ProfileIsolationTest'
             adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence/ evidence/ || true
             adb logcat -d > emulator-logcat.txt
             python3 tools/ci-file-evidence.py
-            grep -q 'OK (' instrumentation.txt
+            exit "$failures"
       - name: Package verification evidence without Actions artifact storage
         if: always() && !cancelled()
         env:
@@ -89,6 +121,9 @@ jobs:
           files = set()
           for name in ('instrumentation.txt', 'emulator-logcat.txt', 'build-output.txt', 'emulator-build.txt'):
               path = root / name
+              if path.is_file():
+                  files.add(path)
+          for path in root.glob('instrumentation-*.txt'):
               if path.is_file():
                   files.add(path)
           for name in ('evidence', 'app/build/reports', 'app/build/test-results'):
