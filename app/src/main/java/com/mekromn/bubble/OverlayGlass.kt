@@ -18,6 +18,14 @@ import android.view.WindowManager
  * The real Bubble window is composited above it, so opaque Gecko pixels stay sharp and the blur is
  * visible only through Bubble's translucent/transparent glass regions.
  *
+ * The blur request is deliberately persistent while expanded. It is NOT toggled off while dragging,
+ * resizing, animating, scrolling, generating or otherwise moving. FloatingWindow synchronizes this
+ * backdrop's geometry before each WindowManager content-window move. If Android temporarily disables
+ * cross-window blur (for example system policy/power state), the FLAG/radius remain requested so the
+ * compositor can resume blur immediately when it becomes available; Bubble does not wait for the
+ * window to stop moving or for a later UI render to request it again. The translucent glass tint is
+ * always present as the native fallback during any platform-disabled interval.
+ *
  * No screenshots, PixelCopy, bitmap caching or RenderEffect approximation are used.
  */
 internal object OverlayGlass {
@@ -33,12 +41,13 @@ internal object OverlayGlass {
         }
     }
 
+    /** Capability hint for choosing the translucent tint; never used to drop an active blur request. */
     fun available(manager: WindowManager): Boolean =
         Build.VERSION.SDK_INT >= 31 && manager.isCrossWindowBlurEnabled
 
     /**
-     * Called before the real overlay is first attached and whenever its geometry/flags change.
-     * The supplied LayoutParams ALWAYS leave blur disabled on the real content window.
+     * Called before the real overlay is first attached and before every geometry update.
+     * The supplied LayoutParams ALWAYS leave blur disabled on the real Gecko/content window.
      */
     fun apply(context: Context, manager: WindowManager, params: WindowManager.LayoutParams, enabled: Boolean) {
         if (Build.VERSION.SDK_INT < 31) return
@@ -53,14 +62,15 @@ internal object OverlayGlass {
         val view = backdrop ?: return
         val lp = backdropParams ?: return
         if (backdropManager !== manager) return
-        val useBlur = enabled && manager.isCrossWindowBlurEnabled
-        if (useBlur) {
+        if (enabled) {
+            // Keep this request live even if isCrossWindowBlurEnabled is temporarily false. Android
+            // then resumes the same compositor effect immediately if/when the platform re-enables it.
             lp.x = params.x; lp.y = params.y
             lp.width = params.width.coerceAtLeast(1); lp.height = params.height.coerceAtLeast(1)
             lp.flags = baseFlags() or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-            // ~20 physical px on a Pixel-class density. Bounded to keep the always-on-top surface cheap.
             lp.setBlurBehindRadius(Ui.dp(context, 6f).coerceIn(12, 28))
         } else {
+            // Resting bubble has its own visual treatment and should not blur a rectangular region.
             lp.x = params.x; lp.y = params.y
             lp.width = 1; lp.height = 1
             lp.flags = baseFlags()
@@ -84,8 +94,8 @@ internal object OverlayGlass {
             setBlurBehindRadius(0)
         }
         try {
-            // FloatingWindow calls us before manager.addView(root,...), so this backdrop is below
-            // Gecko/native chrome in the compositor Z order from its first frame onward.
+            // FloatingWindow invokes us before manager.addView(root,...), so this stays below the
+            // Gecko/native content window in compositor Z order from the very first frame.
             manager.addView(view, lp)
             owner = currentOwner; backdrop = view; backdropParams = lp; backdropManager = manager
             currentOwner.addOnAttachStateChangeListener(detach)
