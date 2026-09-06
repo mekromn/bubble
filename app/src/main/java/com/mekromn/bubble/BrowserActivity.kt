@@ -24,7 +24,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 
-/** Fullscreen browsing retains one 56dp bar. File-selection Activities are not Home actions. */
+/** Fullscreen browsing retains one compact bottom bar. File-selection Activities are not Home actions. */
 class BrowserActivity : Activity() {
     lateinit var geckoView: GeckoView
         private set
@@ -177,14 +177,17 @@ class BrowserActivity : Activity() {
             }
         }
         bar.addView(address, LinearLayout.LayoutParams(0, d(44), 1f))
+        bar.addView(control("reload", "Refresh page") { refreshPage() }.apply { tooltipText = "Refresh page" }, LinearLayout.LayoutParams(d(44), d(48)))
+        bar.addView(control("share", "Share page") { shareCurrentPage() }.apply { tooltipText = "Share page" }, LinearLayout.LayoutParams(d(44), d(48)))
+        // Requested order: floating-window control before the tab counter.
+        bar.addView(control("float", "Open interactive floating chat", true) { collapse(FloatingMode.CHAT) }.apply {
+            tooltipText = "Floating chat · hold to hide in notification"; setOnLongClickListener { hideToNotification(); true }
+        }, LinearLayout.LayoutParams(d(48), d(48)))
         tabs = control("tabs", "Workspace tabs") { showTabs(true) }.apply {
             tooltipText = "Workspace · hold for quick tabs"
             setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.tabs(this, workspace); true }
         }
         bar.addView(tabs, LinearLayout.LayoutParams(d(48), d(48)))
-        bar.addView(control("float", "Open interactive floating chat", true) { collapse(FloatingMode.CHAT) }.apply {
-            tooltipText = "Floating chat · hold to hide in notification"; setOnLongClickListener { hideToNotification(); true }
-        }, LinearLayout.LayoutParams(d(48), d(48)))
         menuButton = control("menu", "Browser menu") { menu() }.apply {
             tooltipText = "Menu · hold for chat tools"
             setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.tools(this, workspace); true }
@@ -200,6 +203,18 @@ class BrowserActivity : Activity() {
         ViewCompat.requestApplyInsets(root)
     }
     private fun control(glyph: String, label: String, accent: Boolean = false, action: () -> Unit) = GlyphView(this, glyph, label, accent).apply { setOnClickListener { if (::workspace.isInitialized && workspace.ready) action() } }
+    private fun refreshPage() {
+        hideKeyboard(); address.clearFocus(); root.requestFocus()
+        val session = selectedSession
+        if (session != null && session.isOpen) session.reload() else workspace.retry()
+    }
+    private fun shareCurrentPage() {
+        if (currentUrl.isBlank()) return
+        externalFlow = true
+        val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, currentUrl) }
+        try { startActivity(Intent.createChooser(send, "Share page")) }
+        catch (_: RuntimeException) { externalFlow = false; toast("No app is available to share this page.") }
+    }
     internal fun showTabs(show: Boolean) {
         QuickPanel.dismissFor(root); hideKeyboard(); address.clearFocus(); root.requestFocus(); workspace.covered = show
         if (show && tray == null) {
@@ -217,7 +232,7 @@ class BrowserActivity : Activity() {
             "Reopen last closed tab" to { if (workspace.reopen() == null) toast("No recently closed tabs"); Unit },
             "Find in conversation / page" to { QuickMenus.find(menuButton, workspace) },
             "Forward in webpage" to { selectedSession?.goForward(); Unit },
-            (if (workspace.selected?.loading == true) "Stop loading" else "Reload page") to { if (workspace.selected?.loading == true) workspace.stopLoading() else workspace.retry() },
+            (if (workspace.selected?.loading == true) "Stop loading" else "Reload page") to { if (workspace.selected?.loading == true) workspace.stopLoading() else refreshPage() },
             "Floating chat · interactive" to { collapse(FloatingMode.CHAT) },
             "Hide to notification" to { hideToNotification() },
             "Bubble / edge access" to { AccessMenu.show(menuButton, workspace) },
@@ -225,7 +240,7 @@ class BrowserActivity : Activity() {
             "Android picture-in-picture · view only" to { enterNativePip(); Unit },
             (if (workspace.selected?.desktop == true) "Use mobile site" else "Use desktop site") to { workspace.desktop() },
             "Copy address" to { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Page address", currentUrl)) },
-            "Share page" to { externalFlow = true; runCatching { startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, currentUrl) }, "Share page")) }; Unit },
+            "Share page" to { shareCurrentPage() },
             "Local frame measurements" to { showMetrics() }
         ))
     }
