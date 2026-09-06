@@ -45,4 +45,20 @@ Do not lose these newer requirements while fixing the 0.7.3 runtime gate:
 - Floating-chat ↔ fullscreen transitions must use a matched grow/shrink motion rather than a discontinuous pop. Prefer GPU transforms/system scale-up transitions and avoid resizing/reflowing Gecko on every animation frame.
 - These swipe zones must be small/native, directional, cancellable and haptic at commitment; they must not install a fullscreen touch interceptor or interfere with ordinary webpage scrolling.
 
-Current source commits add those controls, adaptive ChatGPT renderer hibernation, manual residency controls, matched fullscreen/floating motion, and Android/unit regression fixtures. They are not considered verified until the consolidated Android runtime workflow passes.
+## Consolidated run 8 evidence and current transfer fix
+
+Run `34039675642` compiled/signed ARM64 and emulator APKs, passed 27/27 unit tests and lint with zero errors, but Android 16 instrumentation finished with 23 tests / 7 failures, so the workflow correctly left only a draft verification release and did **not** publish an APK.
+
+The evidence separates real defects from UI-automation races:
+
+- The authenticated redirected HTTP download succeeded with exact `WORK` response bytes and one server hit, proving the original Gecko response path works without refetching.
+- Generated `blob:` downloads did not reach `ContentDelegate.onExternalResponse`; this is a real missing path.
+- The real multi-file picker was visibly open with both requested files and `2 selected`; Android 16 labeled the confirmation action `Select`, while the test searched only for `Open`.
+- Floating upload evidence showed the webpage's `Attach files` accessibility node still present; the old hard-coded page coordinate no longer hit it after floating chrome geometry changed.
+- Floating Refresh, Share and swipe-down controls were present in captured accessibility evidence even though an immediate one-shot lookup raced the overlay accessibility tree.
+- The requested fullscreen order was also present in evidence; its immediate layout lookup similarly raced Activity layout.
+- Notification tests were tapping the text node's coordinates rather than the actionable SystemUI notification ancestor.
+
+The current fix keeps ordinary HTTP downloads untouched and adds a generated-file bridge with a stronger security boundary: an isolated top-frame WebExtension content script intercepts only `<a download href="blob:…">`, sends only the Blob URL + suggested filename/MIME metadata to native code, validates same-origin ownership, then `GeckoWebExecutor` fetches the Blob from the **same GeckoRuntime**. Blob bytes never cross WebExtension/native messaging and are streamed through the same `BrowserDownloads` response consumer. The Android tests now use semantic/accessibility activation for webpage/file controls, accept Android's `Select`/`Open` picker labels, wait for accessibility/layout publication, and click actionable SystemUI notification rows. Exact-byte, profile/account, same-session, no-refetch and cancellation assertions remain intact.
+
+Current source includes those controls, adaptive ChatGPT renderer hibernation, manual residency controls, matched fullscreen/floating motion, generated Blob download support, and hardened Android/unit regression fixtures. None of the new runtime behavior is considered verified until the next consolidated Android 16 workflow passes.
