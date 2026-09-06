@@ -55,7 +55,7 @@ class EdgeAccessRuntimeTest {
                 press("Open interactive floating chat", true)
                 await("Fullscreen long press parks without any control") { main { BubbleService.active?.isParked == true && BubbleService.active?.edge == null && BubbleService.active?.window == null } }
                 assertSame(session, currentSession())
-                restoreNotification()
+                restoreNotification(scenario)
                 await("Notification restores bubble") { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE } }
                 tapMatch { it.contentDescription?.startsWith("Choose a conversation,") == true }
                 tapMatch { it.contentDescription?.startsWith("EDGE-LIVE,") == true }
@@ -64,7 +64,7 @@ class EdgeAccessRuntimeTest {
                 await("Floating long press parks") { main { BubbleService.active?.isParked == true && BubbleService.active?.window == null } }
                 ins.runOnMainSync { AccessPreferences.get(context).update(EdgeOptions(enabled = true, left = false)) }
                 assertTrue("Preference change unexpectedly restored UI", main { BubbleService.active?.window == null && BubbleService.active?.edge == null })
-                restoreNotification()
+                restoreNotification(scenario)
                 await("Restoration installs only the edge") { main { BubbleService.active?.edge != null && BubbleService.active?.window == null } }
                 screenshot("v071-right-edge.png")
                 var box = WindowBox(0,0,1,1)
@@ -105,9 +105,31 @@ class EdgeAccessRuntimeTest {
         }
     }
     private fun currentSession(): GeckoSession? { var s: GeckoSession? = null; ins.runOnMainSync { s = Workspace.peek()?.selected?.session }; return s }
-    private fun restoreNotification() {
+    private fun restoreNotification(scenario: ActivityScenario<BrowserActivity>) {
+        // park() updates service state before its ResultReceiver has finished backgrounding
+        // BrowserActivity. Opening SystemUI in that interval races the task transition.
+        // Observe the real user-driven transition; do NOT force lifecycle state in the test.
+        await("Hide acknowledged and browser actually stopped") {
+            scenario.state == Lifecycle.State.CREATED && main {
+                BubbleService.active?.isParked == true && Workspace.peek()?.visible == false
+            }
+        }
+        val notifications = context.getSystemService(NotificationManager::class.java)
+        await("Restore notification actually posted") {
+            notifications.activeNotifications.any {
+                it.id == BubbleService.NOTICE_ID &&
+                    it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == "Bubble hidden · tap to restore"
+            }
+        }
+        ins.waitForIdleSync()
         shell("cmd statusbar expand-notifications")
-        tapMatch { it.text?.toString() == "Bubble hidden · tap to restore" }
+        await("SystemUI exposes restore notification") {
+            find { it.packageName?.toString() == "com.android.systemui" &&
+                it.text?.toString() == "Bubble hidden · tap to restore" } != null
+        }
+        screenshot("v072-before-notification-restore.png")
+        tapMatch { it.packageName?.toString() == "com.android.systemui" &&
+            it.text?.toString() == "Bubble hidden · tap to restore" }
     }
     private fun press(label: String, long: Boolean) = tapMatch(long) { it.contentDescription?.toString() == label }
     private fun tapMatch(long: Boolean = false, test: (AccessibilityNodeInfo) -> Boolean) {
@@ -141,7 +163,28 @@ class EdgeAccessRuntimeTest {
     private fun await(message: String, test: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + 45000
         while (SystemClock.elapsedRealtime() < end) { if (test()) return; Thread.sleep(100) }
-        screenshot("v071-failure.png"); fail(message)
+        screenshot("v071-failure.png")
+        val diagnostic = StringBuilder(message).append('\n')
+        main {
+            diagnostic.append("workspaceVisible=").append(Workspace.peek()?.visible)
+                .append(" parked=").append(BubbleService.active?.isParked).append('\n')
+            true
+        }
+        context.getSystemService(NotificationManager::class.java).activeNotifications.forEach {
+            diagnostic.append("notification=").append(it.id).append(" title=")
+                .append(it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)).append('\n')
+        }
+        fun describe(node: AccessibilityNodeInfo?, depth: Int = 0) {
+            if (node == null || depth > 30) return
+            diagnostic.append(" ".repeat(depth)).append(node.packageName).append(' ')
+                .append(node.className).append(" visible=").append(node.isVisibleToUser)
+                .append(" text=").append(node.text?.take(160)).append('\n')
+            for (i in 0 until node.childCount) describe(node.getChild(i), depth + 1)
+        }
+        automation.windows.forEach { describe(it.root) }
+        // Disposable emulator only; pages contain synthetic content, never a user's account.
+        File(folder(), "v072-edge-failure-state.txt").writeText(diagnostic.toString())
+        fail(message)
     }
     private fun shell(command: String) = ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command)).bufferedReader().use { it.readText() }
     private fun folder() = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
