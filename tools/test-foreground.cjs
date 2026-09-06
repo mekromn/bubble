@@ -35,7 +35,8 @@ const foreground = manifest.content_scripts.find(item => item.js.includes('foreg
 assert.deepEqual(foreground.matches, ['http://*/*', 'https://*/*']);
 assert.equal(foreground.all_frames, true); assert.equal(foreground.world, 'MAIN'); assert.equal(foreground.run_at, 'document_start');
 const monitor = manifest.content_scripts.find(item => item.js.includes('monitor.js'));
-assert.deepEqual(monitor.matches, ['https://chatgpt.com/*'], 'Native bridge must not be broadened');
+assert.deepEqual(monitor.matches, ['https://chatgpt.com/*'], 'Reply lifecycle native monitor must not be broadened');
 assert.equal(monitor.all_frames, false); assert.notEqual(monitor.world, 'MAIN');
-console.log('All-web foreground compatibility, frame scope, real gesture boundaries and ChatGPT-only native monitor passed.');
+console.log('All-web foreground compatibility, frame scope, real gesture boundaries and ChatGPT-only reply monitor passed.');
+require('./test-download-bridge.cjs');
 require('./test-monitor.cjs');
