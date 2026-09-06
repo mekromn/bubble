@@ -21,10 +21,13 @@ class EdgePolicyTest {
     }
     @Test fun preferencesAreBoundedAndOptIn() {
         assertFalse(EdgeOptions().enabled)
-        val fixed = EdgeOptions(position = Float.NaN, heightDp = 9000, widthDp = -1).sanitized()
+        val fixed = EdgeOptions(position = Float.NaN, heightDp = 9000, widthDp = -1, bubbleOpacity = Float.NaN).sanitized()
         assertEquals(.5f, fixed.position, .0001f)
         assertEquals(160, fixed.heightDp); assertEquals(12, fixed.widthDp)
+        assertEquals(.90f, fixed.bubbleOpacity, .0001f)
         assertEquals(0f, EdgeOptions(position = -100f).sanitized().position, 0f)
         assertEquals(1f, EdgeOptions(position = 100f).sanitized().position, 0f)
+        assertEquals(.12f, EdgeOptions(bubbleOpacity = -9f).sanitized().bubbleOpacity, 0f)
+        assertEquals(1f, EdgeOptions(bubbleOpacity = 9f).sanitized().bubbleOpacity, 0f)
     }
 }
