@@ -34,7 +34,8 @@ internal class AccessPreferences private constructor(context: Context) {
                     val json = JSONObject(text); require(json.getInt("version") == 1)
                     loaded = EdgeOptions(json.optBoolean("enabled"), json.optBoolean("left"),
                         json.optDouble("position", .5).toFloat(), json.optInt("height", 104),
-                        json.optInt("width", 18), json.optBoolean("indicator", true)).sanitized()
+                        json.optInt("width", 18), json.optBoolean("indicator", true),
+                        json.optDouble("bubbleOpacity", .90).toFloat()).sanitized()
                 }
             } catch (_: Exception) {
                 writable = false
@@ -57,11 +58,12 @@ internal class AccessPreferences private constructor(context: Context) {
                 check(writable)
                 val bytes = JSONObject().put("version", 1).put("enabled", clean.enabled).put("left", clean.left)
                     .put("position", clean.position.toDouble()).put("height", clean.heightDp)
-                    .put("width", clean.widthDp).put("indicator", clean.indicator).toString().toByteArray()
+                    .put("width", clean.widthDp).put("indicator", clean.indicator)
+                    .put("bubbleOpacity", clean.bubbleOpacity.toDouble()).toString().toByteArray()
                 stream = file.startWrite(); stream.write(bytes); file.finishWrite(stream); success = true
             } catch (_: Exception) { if (stream != null) file.failWrite(stream) }
             main.post {
-                if (!success) error = "Edge settings apply for this session but could not be saved."
+                if (!success) error = "Access appearance settings apply for this session but could not be saved."
                 done?.invoke(success)
             }
         }
