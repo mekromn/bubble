@@ -57,12 +57,12 @@ internal class WindowMotion {
             view.viewTreeObserver.addOnPreDrawListener(listener); view.postInvalidateOnAnimation()
         } else start()
     }
-    fun move(from: WindowBox, to: WindowBox, place: (WindowBox) -> Unit, done: () -> Unit) {
+    fun move(from: WindowBox, to: WindowBox, place: (WindowBox) -> Unit, done: () -> Unit, durationMs: Long = 150L) {
         cancel()
         if (!ValueAnimator.areAnimatorsEnabled() || from == to) { place(to); done(); return }
         busy = true; val mine = epoch
         val animation = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 150; interpolator = Ui.ease
+            duration = durationMs.coerceIn(80L, 420L); interpolator = Ui.ease
             addUpdateListener { val p = it.animatedValue as Float; place(from.copy(x = (from.x + (to.x - from.x) * p).toInt(), y = (from.y + (to.y - from.y) * p).toInt())) }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) { if (mine == epoch) { busy = false; running = null; place(to); done() } }
