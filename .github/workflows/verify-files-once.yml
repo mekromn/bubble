@@ -1,5 +1,5 @@
 name: Verify browser file transfers
-# Batch source changes locally; one explicit verification, reusing the release-only pipeline.
+# Full verification after narrowing persisted URI grants to explicit read/write modes.
 on:
   push:
     branches: [rebuild-v2]
