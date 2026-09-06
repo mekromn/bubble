@@ -55,6 +55,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     var mode=FloatingMode.BUBBLE
         private set
     val geckoView: GeckoView? get()=gecko
+    val transitionView: View get()=root
     val box: WindowBox get()=rectangle
     val isTransitioning: Boolean get()=motion.busy || hiding
     val dismissTargetAttached: Boolean get()=dismiss.attached
@@ -128,7 +129,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         val cy=(end.y+radius-rectangle.y).coerceIn(radius,(rectangle.height-radius).coerceAtLeast(radius))
         val startHead=WindowBox(rectangle.x+cx-radius,rectangle.y+cy-radius,d(64),d(64))
         motion.reveal(root,cx,cy,radius.toFloat(),false) {
-            if(!destroyed) { switchContents(FloatingMode.BUBBLE); place(startHead,true); motion.move(startHead,end,{ place(it,false) }) { render() } }
+            if(!destroyed) { switchContents(FloatingMode.BUBBLE); place(startHead,true); motion.move(startHead,end,{ place(it,false) },{ render() }) }
         }
     }
     /** Long press is the same notification-only state as a successful drop on the x target. */
@@ -149,16 +150,26 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         hiding=true; root.animate().cancel(); root.animate().withEndAction(null)
         if(!ValueAnimator.areAnimatorsEnabled()) { service.showMinimized(); return }
-        val direction=if(AccessPreferences.get(context).options.left)-1 else 1
-        // A short directional exit toward the selected edge, no squashing or page re-layout.
-        root.animate().alpha(0f).translationX(direction*d(18).toFloat()).setDuration(170).setInterpolator(Ui.ease)
-            .withEndAction { if(!destroyed)service.showMinimized() }.start()
+        val edge=AccessPreferences.get(context).options
+        val safe=safeArea()
+        val handleHeight=d(edge.heightDp).coerceAtMost(safe.height)
+        val handleCenterY=safe.y+((safe.height-handleHeight)*edge.position).toInt()+handleHeight/2
+        val destination=WindowGeometry.fit(rectangle.copy(
+            x=if(edge.left)safe.x else safe.x+safe.width-rectangle.width,
+            y=handleCenterY-rectangle.height/2),safe)
+        // Bottom-handle minimize now visibly travels to the configured edge-handle position.
+        // Dimensions stay fixed during the move, so Gecko is not reflowed on every frame.
+        root.pivotX=if(edge.left)0f else root.width.toFloat(); root.pivotY=root.height/2f
+        root.animate().alpha(.08f).scaleX(.93f).scaleY(.93f).setDuration(210).setInterpolator(Ui.ease).start()
+        motion.move(rectangle,destination,{ place(it,false) },{
+            if(!destroyed)service.showMinimized()
+        },210L)
     }
     private fun present(next: FloatingMode) {
         if(destroyed || hiding)return
         if(mode==next) { render(); return }
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
-        root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f
+        root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f
         val previous=mode; val from=rectangle
         if(next==FloatingMode.CHOOSER) { context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0); imeBottom=0 }
         switchContents(next)
@@ -350,7 +361,13 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         count?.count=workspace.tabs.size
         backControl?.let { val alpha=if(tab.back)1f else .55f; if(it.alpha!=alpha)it.alpha=alpha }
         if(heading?.text!=tab.displayName)heading?.text=tab.displayName
-        val state=when { tab.generating -> "Generating · kept live"; tab.loading -> "Loading ${tab.progress}%"; else -> "${Policy.host(tab.url)} · live" }
+        val state=when {
+            tab.generating -> "Generating · kept live"
+            tab.loading -> "Loading ${tab.progress}% · kept live"
+            tab.forceKeepAlive -> "Forced live · ${Policy.host(tab.url)}"
+            tab.suspended || tab.session==null -> "Suspended · tap/open to resume"
+            else -> "${Policy.host(tab.url)} · live"
+        }
         val profileState=if(tab.profileId==ProfilePolicy.DEFAULT_ID)state else "${workspace.profileName(tab.profileId)} · $state"
         if(subtitle?.text!=profileState)subtitle?.text=profileState
         gecko?.let { view -> val session=tab.session; if(session!=null && session.isOpen)workspace.attachSurface(view,session) else if(view.session!=null)workspace.detachSurface(view) }
