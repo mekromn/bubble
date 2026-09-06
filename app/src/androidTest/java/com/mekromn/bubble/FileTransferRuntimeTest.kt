@@ -188,11 +188,11 @@ class FileTransferRuntimeTest {
      * can mark perfectly visible overlay web nodes not-visible-to-user. This remains a real page
      * interaction; all transfer acceptance assertions still verify bytes, profile and session. */
     private fun pageControl(label: String) {
-        val index = when (label) {
+        val index: Int = when (label) {
             "Attach files" -> 0
             "Download protected file" -> 1
             "Download generated file" -> 2
-            else -> fail("Unknown synthetic page control: $label")
+            else -> error("Unknown synthetic page control: $label")
         }
         var x = 0f; var y = 0f
         ins.runOnMainSync {
