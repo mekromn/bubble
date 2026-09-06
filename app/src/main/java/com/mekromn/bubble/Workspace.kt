@@ -42,7 +42,8 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
         profileId, manualSuspended, forceKeepAlive)
     companion object {
         fun restore(t: StoredTab) = ChatTab(t.id, t.url, t.title, t.desktop, t.profileId).apply {
-            savedState = t.state; unread = t.unread; lastNotice = t.lastNotice
+            savedState = if (FreshResumePolicy.requiresFreshNavigation(t.url)) null else t.state
+            unread = t.unread; lastNotice = t.lastNotice
             localName = t.localName; pinned = t.pinned; note = t.note; muted = t.muted
             manualSuspended = t.manualSuspended; forceKeepAlive = t.forceKeepAlive && !t.manualSuspended
             suspended = manualSuspended
@@ -53,7 +54,8 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
 
 /** Main-thread session owner. Only ChatGPT has automatic idle hibernation because the exact-origin
  * monitor tells us when a response is actually working. A working/loading tab is protected; a
- * finished background chat is closed and restored from bounded session state/URL when reopened. */
+ * reopened ChatGPT renderer always performs a fresh cache-bypassed navigation instead of restoring
+ * an old DOM/session snapshot. */
 internal class Workspace private constructor(private val app: Context, initialUrl: String?) {
     val tabs = ArrayList<ChatTab>()
     val closedTabs = ArrayList<StoredTab>()
@@ -201,7 +203,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
         val session = tab.session
         if (session != null) hibernate(tab, session, true)
         else {
-            cancelAutoSuspend(id); tab.suspended = true; tab.error = TabSuspendPolicy.MANUAL_MESSAGE; changed(true)
+            cancelAutoSuspend(id); tab.suspended = true
+            if (FreshResumePolicy.requiresFreshNavigation(tab.url)) tab.savedState = null
+            tab.error = TabSuspendPolicy.MANUAL_MESSAGE; changed(true)
         }
         return true
     }
@@ -253,7 +257,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
     fun retry() {
         selected?.let { tab ->
             resumeState(tab); tab.error = null; tab.recovery.reset()
-            if (tab.session == null) ensureSession(tab) else if (!pendingStarts.containsKey(tab.id)) tab.session?.reload()
+            if (tab.session == null) ensureSession(tab) else if (!pendingStarts.containsKey(tab.id)) {
+                if (FreshResumePolicy.requiresFreshNavigation(tab.url)) tab.session?.reload(GeckoSession.LOAD_FLAGS_BYPASS_CACHE)
+                else tab.session?.reload()
+            }
         }
         applyPolicy(); changed(true)
     }
@@ -289,6 +296,9 @@ internal class Workspace private constructor(private val app: Context, initialUr
         detachTab(session)
         runCatching { session.setFocused(false); session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT); session.setActive(false); session.flushSessionState() }
         tab.session = null; tab.loading = false; tab.painted = false; tab.suspended = true
+        // Defense in depth: ChatGPT snapshots are intentionally discarded. The canonical URL and
+        // profile survive, but no old DOM/session state can become the user's first frame later.
+        if (FreshResumePolicy.requiresFreshNavigation(tab.url)) tab.savedState = null
         if (manual) { tab.manualSuspended = true; tab.forceKeepAlive = false; tab.error = TabSuspendPolicy.MANUAL_MESSAGE }
         runCatching { session.close() }; UploadStaging.release(app, tab.id); changed(true)
     }
@@ -332,9 +342,17 @@ internal class Workspace private constructor(private val app: Context, initialUr
         val start = start@{
             if (tab !in tabs || tab.session !== session || !session.isOpen) return@start
             try {
-                val restored = saved?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
-                val resumed = restored != null && runCatching { session.restoreState(restored) }.isSuccess
-                if (!resumed) { if (saved != null) tab.savedState = null; session.loadUri(tab.url) }
+                if (FreshResumePolicy.requiresFreshNavigation(tab.url)) {
+                    // No stale-page path: do not restore ChatGPT SessionState and do not allow the
+                    // HTTP cache to supply the resumed document. If the network/site cannot refresh,
+                    // Gecko shows a load failure instead of Bubble exposing the old suspended DOM.
+                    tab.savedState = null
+                    session.load(GeckoSession.Loader().uri(tab.url).flags(GeckoSession.LOAD_FLAGS_BYPASS_CACHE))
+                } else {
+                    val restored = saved?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
+                    val resumed = restored != null && runCatching { session.restoreState(restored) }.isSuccess
+                    if (!resumed) { if (saved != null) tab.savedState = null; session.loadUri(tab.url) }
+                }
             } catch (error: RuntimeException) {
                 tab.loading = false; tab.error = "This tab could not be restored (${error.javaClass.simpleName}). Its address is retained; tap Retry."; applyPolicy(); changed()
             }
@@ -374,7 +392,11 @@ internal class Workspace private constructor(private val app: Context, initialUr
             }
             override fun onSessionStateChange(s: GeckoSession, state: GeckoSession.SessionState) {
                 if (tab.session !== s || pendingStarts.containsKey(tab.id)) return
-                tab.savedState = state.toString().takeIf { it.length <= 524288 }; changed(true)
+                // Never persist a ChatGPT DOM/session snapshot that could later be mistaken for
+                // current content. Other browser tabs keep their normal history/scroll state.
+                tab.savedState = if (FreshResumePolicy.requiresFreshNavigation(tab.url)) null
+                    else state.toString().takeIf { it.length <= 524288 }
+                changed(true)
             }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
@@ -427,6 +449,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
             cancelAutoSuspend(tab.id); FloatingFileActivity.cancelForSession(session)
             detachTab(session); pendingStarts.remove(tab.id)
             tab.session = null; tab.loading = false; tab.painted = false; tab.generating = false; runCatching { session.close() }
+            if (FreshResumePolicy.requiresFreshNavigation(tab.url)) tab.savedState = null
             UploadStaging.release(app, tab.id)
             if (tab.manualSuspended || tab.suspended) {
                 if (!tab.manualSuspended) tab.error = null
