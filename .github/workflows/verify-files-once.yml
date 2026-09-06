@@ -1,6 +1,6 @@
 name: Verify browser file transfers
-# Consolidated verification: real SAF uploads/downloads including generated Blob files, parked restore,
-# compact refresh/share chrome, adaptive ChatGPT tab residency, and matched floating/fullscreen/minimize motion.
+# Consolidated verification after nullable-response compile fix: real SAF uploads/downloads including generated Blob files,
+# parked restore, compact refresh/share chrome, adaptive ChatGPT tab residency, and matched floating/fullscreen/minimize motion.
 on:
   push:
     branches: [rebuild-v2]
