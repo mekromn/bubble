@@ -69,38 +69,54 @@ internal object QuickMenus {
     }
     fun tools(anchor: View, ws: Workspace, choose: (String) -> Unit = ws::select) {
         val tab = ws.selected
-        actions(anchor, ws, "Chat tools", listOf(
+        val voice = tab?.takeIf { Policy.isVoice(it.url) }
+        val list = mutableListOf(
             Action("New ChatGPT chat") { choose(ws.create().id) },
             Action("Profiles / accounts · ${ws.profileName()}") { ProfileMenus.show(anchor, ws, choose) },
-            Action("Next unread reply", ws.tabs.any { it.unread }) { ws.nextUnread()?.let { choose(it.id) } },
+            Action("Next unread alert/reply", ws.tabs.any { it.unread }) { ws.nextUnread()?.let { choose(it.id) } }
+        )
+        if (voice != null) list += Action("Google Voice alerts · ${VoiceNotifications.readiness(anchor.context)}") {
+            VoiceNotifications.controls(anchor, ws, voice.id)
+        }
+        list += listOf(
             Action("Prompt library · local") { prompts(anchor, ws) },
             Action("Find in conversation / page", tab?.session != null) { find(anchor, ws) },
             Action("Local notes for this tab", tab != null) { tab?.let { notes(anchor, ws, it.id) } },
-            Action("Tab name, pin and reply alerts", tab != null) { tab?.let { tabOptions(anchor, ws, it.id, choose) } },
+            Action("Tab name, pin and alerts", tab != null) { tab?.let { tabOptions(anchor, ws, it.id, choose) } },
             Action("Duplicate current tab", tab != null) { tab?.let { ws.duplicate(it.id)?.let { copy -> choose(copy.id) } } },
             Action("Recently closed tabs", ws.closedTabs.isNotEmpty()) { recentlyClosed(anchor, ws, choose) },
             Action("Live-tab status") { status(anchor, ws) }
-        ))
+        )
+        actions(anchor, ws, "Chat tools", list)
     }
     fun tabOptions(anchor: View, ws: Workspace, id: String, choose: (String) -> Unit = ws::select) {
         val tab = ws.tabs.firstOrNull { it.id == id } ?: return
-        actions(anchor, ws, tab.displayName, listOf(
-            Action(if (tab.pinned) "Unpin tab" else "Pin tab") { ws.togglePin(id) },
-            Action("Rename locally") { edit(anchor, ws, "Local tab name", "Name (blank uses page title)", tab.localName, false, 120) { ws.rename(id, it) } },
-            Action("Local notes") { notes(anchor, ws, id) },
-            Action(if (tab.muted) "Enable reply alerts for this tab" else "Mute reply alerts for this tab") { ws.toggleMute(id) },
-            Action("Profile · ${ws.profileName(tab.profileId)}") { ProfileMenus.show(anchor, ws, choose, id) },
-            Action("Duplicate tab") { ws.duplicate(id)?.let { choose(it.id) } },
-            Action("Copy conversation address") { copy(anchor, "Conversation address", tab.url) },
-            Action("Close tab · not the conversation") { close(anchor, ws, id) }
-        ))
+        val alerts = if (Policy.isVoice(tab.url)) listOf(
+            Action("Google Voice notifications · ${VoiceNotifications.readiness(anchor.context)}") { VoiceNotifications.controls(anchor, ws, id) }
+        ) else listOf(
+            Action(if (tab.muted) "Enable reply alerts for this tab" else "Mute reply alerts for this tab") { ws.toggleMute(id) }
+        )
+        actions(anchor, ws, tab.displayName,
+            listOf(
+                Action(if (tab.pinned) "Unpin tab" else "Pin tab") { ws.togglePin(id) },
+                Action("Rename locally") { edit(anchor, ws, "Local tab name", "Name (blank uses page title)", tab.localName, false, 120) { ws.rename(id, it) } },
+                Action("Local notes") { notes(anchor, ws, id) }
+            ) + alerts + listOf(
+                Action("Profile · ${ws.profileName(tab.profileId)}") { ProfileMenus.show(anchor, ws, choose, id) },
+                Action("Duplicate tab") { ws.duplicate(id)?.let { choose(it.id) } },
+                Action("Copy page address") { copy(anchor, "Page address", tab.url) },
+                Action("Close tab · not site data") { close(anchor, ws, id) }
+            ))
     }
     fun close(anchor: View, ws: Workspace, id: String) {
         val tab = ws.tabs.firstOrNull { it.id == id } ?: return
         val finish = { ws.close(id); toast(anchor, "Tab closed. It is available in Recently closed tabs.") }
-        if (tab.pinned || tab.generating) confirm(anchor, ws, "Close ${tab.displayName}?",
-            if (tab.generating) "This tab is generating. Closing it stops its live browser session; it does not delete the ChatGPT conversation."
-            else "This tab is pinned. Closing it does not delete the ChatGPT conversation.", finish)
+        if (tab.pinned || tab.generating || Policy.isVoice(tab.url)) confirm(anchor, ws, "Close ${tab.displayName}?",
+            when {
+                Policy.isVoice(tab.url) -> "Closing this Google Voice tab ends its protected live browser session and Bubble can no longer deliver its web notifications until Voice is opened again. Your Google Voice account data is not deleted."
+                tab.generating -> "This tab is generating. Closing it stops its live browser session; it does not delete the ChatGPT conversation."
+                else -> "This tab is pinned. Closing it does not delete the ChatGPT conversation."
+            }, finish)
         else finish()
     }
     private fun recentlyClosed(anchor: View, ws: Workspace, choose: (String) -> Unit) {
@@ -115,7 +131,7 @@ internal object QuickMenus {
     }
     private fun notes(anchor: View, ws: Workspace, id: String) {
         val tab = ws.tabs.firstOrNull { it.id == id } ?: return
-        edit(anchor, ws, "Notes · only on this device", "Write your own notes. Nothing is sent to ChatGPT.", tab.note, true, 16384) {
+        edit(anchor, ws, "Notes · only on this device", "Write your own notes. Nothing is sent to the website.", tab.note, true, 16384) {
             if (ws.tabs.any { t -> t.id == id }) ws.setNote(id, it) else toast(anchor, "That tab has been closed; the note was not changed.")
         }
     }
@@ -164,7 +180,7 @@ internal object QuickMenus {
         val panel = QuickPanel.open(anchor, ws, "Find in conversation / page", 230) ?: return
         val query = input(anchor, "Find text", false, 512)
         query.imeOptions = EditorInfo.IME_ACTION_SEARCH
-        val result = Ui.text(anchor.context, "Searches this loaded page, not your whole ChatGPT account.", 12f, Ui.MUTED).apply {
+        val result = Ui.text(anchor.context, "Searches this loaded page, not your whole account.", 12f, Ui.MUTED).apply {
             setPadding(dp(anchor, 8), dp(anchor, 8), dp(anchor, 8), dp(anchor, 4))
         }
         var generation = 0
@@ -201,8 +217,9 @@ internal object QuickMenus {
         }
     }
     private fun status(anchor: View, ws: Workspace) {
-        val panel = QuickPanel.open(anchor, ws, "Live-tab behavior", 340) ?: return
-        val text = "${ws.tabs.count { it.session?.isOpen == true }} / ${ws.tabs.size} open sessions resident\nAll resident tabs: active + high priority\nPage foreground compatibility: ${if (ws.liveCompatibilityReady) "registered for web pages and frames" else "unavailable / starting"}\n\nPages report visible and focused. Real keyboard focus stays with the selected view. This does not create trusted user gestures, override Android sleep/force-stop, or guarantee a website cannot detect the compatibility script. Keeping many tabs live uses more memory and battery."
+        val panel = QuickPanel.open(anchor, ws, "Live-tab behavior", 360) ?: return
+        val voiceCount = ws.tabs.count { Policy.isVoice(it.url) }
+        val text = "${ws.tabs.count { it.session?.isOpen == true }} / ${ws.tabs.size} open sessions resident\n${if (voiceCount > 0) "$voiceCount Google Voice tab${if (voiceCount == 1) "" else "s"} protected live\n" else ""}All resident tabs: active + high priority\nPage foreground compatibility: ${if (ws.liveCompatibilityReady) "registered for web pages and frames" else "unavailable / starting"}\n\nGoogle Voice tabs are never intentionally auto/manual-suspended while open. This still cannot override Android force-stop, process death, network loss, Doze, or a Google Voice service outage; Bubble raises a connection warning if repeated renderer failure exhausts recovery."
         panel.body.addView(ScrollView(anchor.context).apply { addView(Ui.text(anchor.context, text, 13f, Ui.MUTED).apply { setPadding(dp(anchor, 12), dp(anchor, 8), dp(anchor, 12), dp(anchor, 12)) }) }, LinearLayout.LayoutParams(-1, -1))
     }
     private fun confirm(anchor: View, ws: Workspace, title: String, message: String, confirmed: () -> Unit) {
