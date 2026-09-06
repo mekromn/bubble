@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.webkit.MimeTypeMap
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
@@ -41,15 +40,14 @@ class FloatingFileActivity : Activity() {
         setContentView(panel)
         if (!request.pickerStarted) {
             request.pickerStarted = true
-            val types = request.prompt.mimeTypes.orEmpty().mapNotNull { raw ->
-                val type = raw.trim().lowercase()
-                if (type.startsWith('.')) MimeTypeMap.getSingleton().getMimeTypeFromExtension(type.drop(1))
-                else type.takeIf { it.contains('/') }
-            }.distinct().toTypedArray()
+            // Product policy: Bubble's picker must not hide arbitrary files merely because the
+            // webpage supplied an <input accept=...> / Gecko mimeTypes hint. The user may choose
+            // ANY openable document (APK/ZIP/text/archive/source/etc.); the site remains free to
+            // accept or reject that file after selection. This affects chooser visibility only and
+            // does not bypass any server-side ChatGPT/file-format validation.
             val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
-                type = if (types.size == 1) types[0] else "*/*"
-                if (types.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, types)
+                type = "*/*"
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, request.prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
