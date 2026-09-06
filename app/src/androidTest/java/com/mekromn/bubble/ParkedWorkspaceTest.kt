@@ -85,7 +85,7 @@ class ParkedWorkspaceTest {
                 await { main { BubbleService.active?.isParked == true && BubbleService.active?.window == null } }
                 assertTrue(main { Workspace.peek()?.selected?.session === original })
                 val notes = context.getSystemService(NotificationManager::class.java)
-                assertTrue(notes.activeNotifications.any { it.id == BubbleService.NOTICE_ID && it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.contains("hidden") == true })
+                await { notes.activeNotifications.any { it.id == BubbleService.NOTICE_ID } }
                 shell("cmd statusbar expand-notifications")
                 tapText("Bubble hidden · tap to restore", "v061-hidden-notification.png")
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE && BubbleService.active?.isParked == false } }
@@ -147,11 +147,14 @@ class ParkedWorkspaceTest {
         var found: AccessibilityNodeInfo? = null
         fun visit(node: AccessibilityNodeInfo?) {
             if (node == null || found != null) return
-            if (node.isVisibleToUser && node.text?.toString() == text) { found = node; return }
+            if (node.isVisibleToUser && (node.text?.toString() == text || node.contentDescription?.toString()?.contains(text) == true)) { found = node; return }
             for (i in 0 until node.childCount) visit(node.getChild(i))
         }
         await { found = null; automation.windows.forEach { visit(it.root) }; found != null }
         Thread.sleep(300); screenshot(evidence)
+        var target = found
+        while (target != null && target!!.actionList.none { it.id == AccessibilityNodeInfo.ACTION_CLICK }) target = target!!.parent
+        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return
         val r = Rect(); found!!.getBoundsInScreen(r)
         val down = SystemClock.uptimeMillis()
         event(down, MotionEvent.ACTION_DOWN, r.exactCenterX(), r.exactCenterY()); Thread.sleep(60)
