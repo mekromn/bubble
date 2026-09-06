@@ -1,5 +1,6 @@
 package com.mekromn.bubble
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -88,6 +89,8 @@ internal object OverlayGlass {
         sync()
     }
 
+    /** Private callers are reached only after apply()'s API-31 gate. */
+    @SuppressLint("NewApi")
     private fun configure(index: Int, x: Int, y: Int, width: Int, height: Int, radius: Int, blur: Boolean) {
         val lp = backdropParams[index]
         lp.x = x; lp.y = y; lp.width = width; lp.height = height
@@ -104,6 +107,8 @@ internal object OverlayGlass {
         }
     }
 
+    /** Private caller is reached only after apply()'s API-31 gate. */
+    @SuppressLint("NewApi")
     private fun ensureBackdrops(context: Context, manager: WindowManager, currentOwner: View) {
         if (owner === currentOwner && backdrops.size == POOL && backdropManager === manager) return
         release()
