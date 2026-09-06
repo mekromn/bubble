@@ -1,5 +1,5 @@
 name: Verify browser file transfers
-# Explicit verification of preserved Gecko callbacks and actual file round trips.
+# Explicit verification of preserved Gecko callbacks, real SAF files and original response streams.
 on:
   push:
     branches: [rebuild-v2]
