@@ -89,16 +89,17 @@ class FileTransferRuntimeTest {
         } }
         override fun close() { socket.close(); pool.shutdownNow() }
     }
+
     @Test fun realDocumentPickerUploadsExactMultipleFilesAndCancellationCanRetry() = fixture { scenario, server, docs ->
-        pageTap(0)
+        pageControl("Attach files")
         await("Real Android picker opens") { node { it.packageName?.toString()?.endsWith("documentsui") == true } != null }
         shell("input keyevent KEYCODE_BACK")
         await("Cancellation returns without sending data") { main { !FileUi.busy } }
         assertTrue(server.uploads.isEmpty())
-        pageTap(0); downloadsRoot()
+        pageControl("Attach files"); downloadsRoot()
         tapNode({ it.text?.toString() == docs.one }, hold = true)
         tapNode({ it.text?.toString() == docs.two })
-        tapNode({ it.text?.toString()?.equals("Open", true) == true })
+        tapNode({ n -> n.isEnabled && n.text?.toString()?.let { it.equals("Select", true) || it.equals("Open", true) } == true })
         await("Selected bytes arrive at server") { main { Workspace.peek()?.selected?.title?.startsWith("UPLOADED|2|") == true } }
         val received = server.uploads.last()
         assertTrue(received.cookies.contains("identity=DEFAULT"))
@@ -110,6 +111,7 @@ class FileTransferRuntimeTest {
         scenario.onActivity { assertTrue(it.selectedSession!!.isOpen) }
         File(folder(), "upload-fullscreen.txt").writeText("Real Downloads/SAF multi-selection, original names and exact text/binary multipart bytes verified. Cancellation sent no bytes and retry succeeded.\n")
     }
+
     @Test fun floatingUploadUsesOriginalTabAndItsAccountProfile() = fixture { scenario, server, docs ->
         var original: org.mozilla.geckoview.GeckoSession? = null
         scenario.onActivity {
@@ -120,7 +122,7 @@ class FileTransferRuntimeTest {
         await("Work profile page loaded") { main { Workspace.peek()?.selected?.title == "FILES-READY" && Workspace.peek()?.selected?.painted == true } }
         tapActivity(scenario, "Open interactive floating chat")
         await("Floating view attached") { main { BubbleService.active?.window?.geckoView?.session === original && BubbleService.active?.window?.isTransitioning == false } }
-        pageTap(0); downloadsRoot(); tapNode({ it.text?.toString() == docs.one })
+        pageControl("Attach files"); downloadsRoot(); tapNode({ it.text?.toString() == docs.one })
         await("Floating upload completed") { main { Workspace.peek()?.selected?.title?.startsWith("UPLOADED|1|") == true && !FileUi.busy } }
         val received = server.uploads.last()
         assertTrue(received.cookies.contains("identity=WORK")); assertTrue(contains(received.body, text))
@@ -129,13 +131,14 @@ class FileTransferRuntimeTest {
         screenshot("files-upload-floating.png")
         File(folder(), "upload-floating.txt").writeText("Real Downloads/SAF selection uploaded with WORK profile cookie, original GeckoSession retained, floating window visible again without promoting fullscreen.\n")
     }
+
     @Test fun authenticatedRedirectAndGeneratedBlobDownloadsSaveExactBytes() = fixture { scenario, server, _ ->
         scenario.onActivity {
             val profile = it.workspace.createProfile("Downloads ${UUID.randomUUID()}")
             it.workspace.create("http://127.0.0.1:${server.port}/page?account=WORK", profile.id)
         }
         await("Download source ready") { main { Workspace.peek()?.selected?.painted == true && Workspace.peek()?.selected?.title == "FILES-READY" } }
-        pageTap(1)
+        pageControl("Download protected file")
         await("Authenticated response reached native downloader") { main { BrowserDownloads.records.firstOrNull()?.name == "report WORK.bin" && FileUi.busy } }
         downloadsRoot(); savePicker()
         await("HTTP download fully saved") { main { BrowserDownloads.records.firstOrNull()?.state == "Saved" && !FileUi.busy } }
@@ -144,13 +147,13 @@ class FileTransferRuntimeTest {
         val expected = "ACCOUNT:WORK\n".toByteArray() + ByteArray(8192) { (it * 31).toByte() }
         assertArrayEquals(expected, context.contentResolver.openInputStream(Uri.parse(record!!.uri))!!.use { it.readBytes() })
         assertEquals("Downloader re-fetched a signed response", 1, server.downloads.get())
-        pageTap(2)
+        pageControl("Download generated file")
         await("Generated blob reached downloader") { main { BrowserDownloads.records.firstOrNull()?.name == "generated.txt" && FileUi.busy } }
         downloadsRoot(); savePicker()
         await("Generated download fully saved") { main { BrowserDownloads.records.firstOrNull()?.name == "generated.txt" && BrowserDownloads.records.firstOrNull()?.state == "Saved" && !FileUi.busy } }
         ins.runOnMainSync { record = BrowserDownloads.records.first().copy() }
         assertArrayEquals("Generated exact bytes ✓".toByteArray(), context.contentResolver.openInputStream(Uri.parse(record!!.uri))!!.use { it.readBytes() })
-        pageTap(2)
+        pageControl("Download generated file")
         await("Cancel Save As is available") { main { FileUi.busy && BrowserDownloads.records.firstOrNull()?.state == "Choose location" } }
         shell("input keyevent KEYCODE_BACK")
         await("Cancelled download closes its source") { main { !FileUi.busy && BrowserDownloads.records.firstOrNull()?.state == "Cancelled" } }
@@ -158,6 +161,7 @@ class FileTransferRuntimeTest {
         File(folder(), "download-byte-verification.txt").writeText("Saved original authenticated redirect response exactly once with WORK account. Exact HTTP binary payload and generated UTF-8 Blob bytes verified through granted SAF URIs. Save As cancellation reported Cancelled, not Saved.\n")
         screenshot("files-download-complete.png")
     }
+
     private fun downloadsRoot() {
         await("DocumentsUI visible") { node { it.packageName?.toString()?.endsWith("documentsui") == true } != null }
         val alreadyInUsableLocation = node { it.text?.toString() == "Files in Downloads" } != null ||
@@ -176,18 +180,15 @@ class FileTransferRuntimeTest {
         }
         Thread.sleep(300)
     }
+
     private fun savePicker() { tapNode({ it.text?.toString()?.equals("Save", true) == true && it.isEnabled }) }
-    private fun pageTap(index: Int) {
-        var x = 0f; var y = 0f
-        ins.runOnMainSync {
-            val view = BubbleService.active?.window?.geckoView ?: Workspace.peek()!!.host.get()!!.geckoView
-            val p = IntArray(2); view.getLocationOnScreen(p)
-            val d = view.resources.displayMetrics.density
-            x = p[0] + 90 * d; y = p[1] + (32 + 56 * index) * d
-        }
-        tap(x, y, false)
+
+    private fun pageControl(label: String) {
+        tapNode({ node -> node.packageName?.toString() == context.packageName && node.text?.toString() == label })
     }
-    private fun contains(haystack: ByteArray, needle: ByteArray): Boolean = (0..(haystack.size - needle.size).coerceAtLeast(-1)).any { i -> needle.indices.all { j -> haystack[i + j] == needle[j] } }
+
+    private fun contains(haystack: ByteArray, needle: ByteArray): Boolean =
+        (0..(haystack.size - needle.size).coerceAtLeast(-1)).any { i -> needle.indices.all { j -> haystack[i + j] == needle[j] } }
     private fun main(test: () -> Boolean): Boolean { var result = false; ins.runOnMainSync { result = test() }; return result }
     private fun await(message: String, test: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + 60000
@@ -206,8 +207,11 @@ class FileTransferRuntimeTest {
             out.append(" ".repeat(depth)).append(n.packageName).append(" text=").append(n.text).append(" desc=").append(n.contentDescription).append('\n')
             for (i in 0 until n.childCount) describe(n.getChild(i), depth + 1)
         }
-        ui.windows.forEach { describe(it.root) }; File(folder(), "files-failure-$failureId.txt").writeText(out.toString()); fail(message)
+        ui.windows.forEach { describe(it.root) }
+        File(folder(), "files-failure-$failureId.txt").writeText(out.toString())
+        fail(message)
     }
+
     private fun node(test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
         fun visit(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             if (n == null) return null
@@ -218,6 +222,7 @@ class FileTransferRuntimeTest {
         for (w in ui.windows.sortedByDescending { it.layer }) visit(w.root)?.let { return it }
         return null
     }
+
     private fun tapActivity(scenario: ActivityScenario<BrowserActivity>, label: String, hold: Boolean = false) {
         var rect = Rect()
         scenario.onActivity { activity ->
@@ -231,6 +236,7 @@ class FileTransferRuntimeTest {
         }
         tap(rect.exactCenterX(), rect.exactCenterY(), hold)
     }
+
     private fun tapNode(test: (AccessibilityNodeInfo) -> Boolean, hold: Boolean = false) {
         var found: AccessibilityNodeInfo? = null
         await("Required real file UI control available") { found = node(test); found != null }
@@ -240,6 +246,7 @@ class FileTransferRuntimeTest {
         if (target?.performAction(action) == true) { Thread.sleep(if (hold) 350 else 120); return }
         val rect = Rect(); found!!.getBoundsInScreen(rect); tap(rect.exactCenterX(), rect.exactCenterY(), hold)
     }
+
     private fun tap(x: Float, y: Float, hold: Boolean) {
         val time = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, x, y, 0)
@@ -248,6 +255,7 @@ class FileTransferRuntimeTest {
         val up = MotionEvent.obtain(time, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0)
         try { assertTrue(ui.injectInputEvent(up, true)) } finally { up.recycle() }
     }
+
     private fun shell(command: String) = ParcelFileDescriptor.AutoCloseInputStream(ui.executeShellCommand(command)).bufferedReader().use { it.readText() }
     private fun folder() = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
     private fun screenshot(name: String) { ui.takeScreenshot()?.let { image -> File(folder(), name).outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) } } }
@@ -268,6 +276,7 @@ class FileTransferRuntimeTest {
         }
         return TestFiles(names[0], names[1], uris)
     }
+
     private fun fixture(test: (ActivityScenario<BrowserActivity>, Server, TestFiles) -> Unit) {
         val flags = ui.serviceInfo.flags
         ui.serviceInfo = ui.serviceInfo.apply { this.flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
@@ -290,7 +299,8 @@ class FileTransferRuntimeTest {
                     Workspace.peek()?.tabs?.forEach { it.session?.let(FloatingFileActivity::cancelForSession) }
                     BrowserDownloads.tasks.keys.toList().forEach { BrowserDownloads.cancel(it); FileUi.end(it) }
                     for (stage in listOf(Stage.RESUMED, Stage.STARTED, Stage.CREATED, Stage.STOPPED)) {
-                        ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(stage).toList().filter { it is SaveDownloadActivity || it is FloatingFileActivity || it is DownloadsActivity }.forEach(Activity::finish)
+                        ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(stage).toList()
+                            .filter { it is SaveDownloadActivity || it is FloatingFileActivity || it is DownloadsActivity }.forEach(Activity::finish)
                     }
                 }
                 docs.uris.forEach { runCatching { context.contentResolver.delete(it, null, null) } }
