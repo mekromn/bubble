@@ -44,6 +44,14 @@ class BubbleService : Service() {
         workspace = Workspace.get(this); access = AccessPreferences.get(this)
         workspace.listen(changed); access.listen(accessChanged)
     }
+    override fun startActivity(intent: Intent) {
+        val source = window?.takeIf { it.mode == FloatingMode.CHAT }?.geckoView
+        if (source != null && intent.component?.className == BrowserActivity::class.java.name) {
+            try { FullscreenHandoff.launchFromFloating(this, source, intent); return }
+            catch (_: RuntimeException) { }
+        }
+        super.startActivity(intent)
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == STOP) { workspace.flush(); stopping = true; stopSelf(); return START_NOT_STICKY }
         @Suppress("DEPRECATION") val reply = intent?.getParcelableExtra<ResultReceiver>(READY)
