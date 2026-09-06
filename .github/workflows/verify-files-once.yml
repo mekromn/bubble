@@ -1,5 +1,5 @@
 name: Verify browser file transfers
-# Consolidated verification with isolated runtime groups: real SAF uploads/downloads including generated Blob files,
+# Consolidated verification with the grouped runtime runner executed in one Bash process: real SAF uploads/downloads including generated Blob files,
 # parked restore, compact refresh/share chrome, adaptive ChatGPT tab residency, and matched floating/fullscreen/minimize motion.
 on:
   push:
