@@ -13,7 +13,7 @@ import android.view.View
 import android.view.animation.PathInterpolator
 import android.widget.TextView
 
-/** Neutral black glass. Cached native gradients/highlights, no screen capture or blur loop. */
+/** Neutral black glass. Native translucent gradients/highlights, no screen capture or blur loop. */
 internal object Ui {
     const val BG = GlassPalette.BACKGROUND
     const val SURFACE = GlassPalette.SURFACE
@@ -35,13 +35,22 @@ internal object Ui {
             orientation = GradientDrawable.Orientation.TL_BR
             when (color) {
                 SURFACE -> colors = intArrayOf(GlassPalette.TOP, GlassPalette.MIDDLE, GlassPalette.BOTTOM)
-                SURFACE_HIGH -> colors = intArrayOf(0xf23c3c3c.toInt(), 0xf21c1c1c.toInt(), 0xf80a0a0a.toInt())
+                SURFACE_HIGH -> colors = intArrayOf(0xc8404040.toInt(), 0xca202020.toInt(), 0xd20a0a0a.toInt())
                 BG -> colors = intArrayOf(0xff151515.toInt(), BG, 0xff020202.toInt())
                 else -> setColor(color)
             }
             cornerRadius = dp(c, radius).toFloat()
             val rim = border ?: if (radius > 0 && (color == SURFACE || color == SURFACE_HIGH)) LINE else null
             if (rim != null) setStroke(dp(c, 1f).coerceAtLeast(1), rim)
+        }
+    /** Slightly denser fallback when system cross-window blur is unavailable at runtime. */
+    fun glassPanel(c: Context, radius: Float = 26f, blurAvailable: Boolean): GradientDrawable =
+        GradientDrawable().apply {
+            orientation = GradientDrawable.Orientation.TL_BR
+            colors = if (blurAvailable) intArrayOf(0x96383838.toInt(), 0xa2141414.toInt(), 0xb4080808.toInt())
+            else intArrayOf(0xe63a3a3a.toInt(), 0xec171717.toInt(), 0xf2090909.toInt())
+            cornerRadius = dp(c, radius).toFloat()
+            setStroke(dp(c, 1f).coerceAtLeast(1), if (blurAvailable) 0x72d0d0d0 else LINE)
         }
     fun ripple(c: Context, color: Int = SURFACE, radius: Float = 24f) =
         RippleDrawable(ColorStateList.valueOf(GlassPalette.RIPPLE), shape(c, color, radius), null)
