@@ -80,8 +80,12 @@ internal class ConversationList(context: Context, private val select: (String) -
             holder.row.contentDescription = "${row.title}, ${row.subtitle}${if (row.selected) ", selected" else ""}"
             holder.row.setOnClickListener { select(row.id) }
             holder.row.setOnLongClickListener {
-                if (options != null) options.invoke(holder.row, row.id)
-                else Workspace.peek()?.let { QuickMenus.tabOptions(QuickPanel.hostAnchor(holder.row), it, row.id) }
+                val ws = Workspace.peek() ?: return@setOnLongClickListener true
+                val anchor = QuickPanel.hostAnchor(holder.row)
+                TabResourceMenu.show(anchor, ws, row.id, select) {
+                    if (options != null) options.invoke(holder.row, row.id)
+                    else QuickMenus.tabOptions(anchor, ws, row.id, select)
+                }
                 true
             }
             holder.closeButton.contentDescription = "Close ${row.title}"
