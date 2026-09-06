@@ -1,7 +1,6 @@
 package com.mekromn.bubble
 
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.app.Notification
 import android.app.NotificationManager
 import android.content.Intent
 import android.graphics.Bitmap
@@ -107,29 +106,38 @@ class EdgeAccessRuntimeTest {
     private fun currentSession(): GeckoSession? { var s: GeckoSession? = null; ins.runOnMainSync { s = Workspace.peek()?.selected?.session }; return s }
     private fun restoreNotification(scenario: ActivityScenario<BrowserActivity>) {
         // park() updates service state before its ResultReceiver has finished backgrounding
-        // BrowserActivity. Opening SystemUI in that interval races the task transition.
-        // Observe the real user-driven transition; do NOT force lifecycle state in the test.
+        // BrowserActivity. Observe the real user-driven transition; never force lifecycle state.
         await("Hide acknowledged and browser actually stopped") {
             scenario.state == Lifecycle.State.CREATED && main {
                 BubbleService.active?.isParked == true && Workspace.peek()?.visible == false
             }
         }
         val notifications = context.getSystemService(NotificationManager::class.java)
+        // Notification extras are not a stable synchronization primitive across Android SystemUI
+        // builds. Presence of the foreground notification plus the parked service state is; the
+        // visible SystemUI title below still proves the correct recovery notification is shown.
         await("Restore notification actually posted") {
-            notifications.activeNotifications.any {
-                it.id == BubbleService.NOTICE_ID &&
-                    it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == "Bubble hidden · tap to restore"
-            }
+            notifications.activeNotifications.any { it.id == BubbleService.NOTICE_ID }
         }
         ins.waitForIdleSync()
         shell("cmd statusbar expand-notifications")
+        var visible: AccessibilityNodeInfo? = null
         await("SystemUI exposes restore notification") {
-            find { it.packageName?.toString() == "com.android.systemui" &&
-                it.text?.toString() == "Bubble hidden · tap to restore" } != null
+            visible = find { it.packageName?.toString() == "com.android.systemui" &&
+                (it.text?.toString() == "Bubble hidden · tap to restore" ||
+                    it.contentDescription?.toString()?.contains("Bubble hidden · tap to restore") == true) }
+            visible != null
         }
         screenshot("v072-before-notification-restore.png")
-        tapMatch { it.packageName?.toString() == "com.android.systemui" &&
-            it.text?.toString() == "Bubble hidden · tap to restore" }
+        performClick(visible!!)
+    }
+    private fun performClick(node: AccessibilityNodeInfo) {
+        var target: AccessibilityNodeInfo? = node
+        while (target != null && target!!.actionList.none { it.id == AccessibilityNodeInfo.ACTION_CLICK }) target = target!!.parent
+        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return
+        val rect = Rect(); node.getBoundsInScreen(rect)
+        val down = SystemClock.uptimeMillis(); event(down, MotionEvent.ACTION_DOWN, rect.exactCenterX(), rect.exactCenterY()); Thread.sleep(80)
+        event(down, MotionEvent.ACTION_UP, rect.exactCenterX(), rect.exactCenterY())
     }
     private fun press(label: String, long: Boolean) = tapMatch(long) { it.contentDescription?.toString() == label }
     private fun tapMatch(long: Boolean = false, test: (AccessibilityNodeInfo) -> Boolean) {
@@ -172,7 +180,7 @@ class EdgeAccessRuntimeTest {
         }
         context.getSystemService(NotificationManager::class.java).activeNotifications.forEach {
             diagnostic.append("notification=").append(it.id).append(" title=")
-                .append(it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)).append('\n')
+                .append(it.notification.extras.getCharSequence(android.app.Notification.EXTRA_TITLE)).append('\n')
         }
         fun describe(node: AccessibilityNodeInfo?, depth: Int = 0) {
             if (node == null || depth > 30) return
@@ -182,7 +190,6 @@ class EdgeAccessRuntimeTest {
             for (i in 0 until node.childCount) describe(node.getChild(i), depth + 1)
         }
         automation.windows.forEach { describe(it.root) }
-        // Disposable emulator only; pages contain synthetic content, never a user's account.
         File(folder(), "v072-edge-failure-state.txt").writeText(diagnostic.toString())
         fail(message)
     }
