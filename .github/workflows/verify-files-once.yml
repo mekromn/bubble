@@ -1,5 +1,5 @@
 name: Verify browser file transfers
-# Full verification after narrowing persisted URI grants to explicit read/write modes.
+# Explicit verification of preserved Gecko callbacks and actual file round trips.
 on:
   push:
     branches: [rebuild-v2]

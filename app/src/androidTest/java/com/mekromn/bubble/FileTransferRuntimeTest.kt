@@ -41,7 +41,7 @@ class FileTransferRuntimeTest {
         val downloads = AtomicInteger()
         val port get() = socket.localPort
         init { pool.execute {
-            while (!socket.isClosed) try { val client = socket.accept(); pool.execute { client.use { connection ->
+            while (!socket.isClosed) try { val client = socket.accept(); pool.execute { try { client.use { connection ->
                 connection.soTimeout = 15_000
                 val input = BufferedInputStream(connection.getInputStream())
                 fun line(): String {
@@ -49,11 +49,13 @@ class FileTransferRuntimeTest {
                     while (true) { val b = input.read(); if (b < 0 || b == 10) break; if (b != 13) out.write(b) }
                     return out.toString("ISO-8859-1")
                 }
-                val request = line(); val headers = LinkedHashMap<String, String>()
+                val request = line(); if (request.isEmpty()) return@use
+                val headers = LinkedHashMap<String, String>()
                 while (true) { val l = line(); if (l.isEmpty()) break; headers[l.substringBefore(':').lowercase()] = l.substringAfter(':').trim() }
                 val count = headers["content-length"]?.toIntOrNull() ?: 0
+                require(count in 0..(64 * 1024 * 1024))
                 val payload = ByteArray(count); var offset = 0
-                while (offset < count) { val n = input.read(payload, offset, count - offset); if (n < 0) break; offset += n }
+                while (offset < count) { val n = input.read(payload, offset, count - offset); if (n < 0) throw EOFException("Short request"); offset += n }
                 val cookie = headers["cookie"].orEmpty()
                 val account = if (cookie.contains("identity=WORK")) "WORK" else "DEFAULT"
                 var status = "200 OK"; var extra = ""; var mime = "text/html; charset=UTF-8"
@@ -78,7 +80,11 @@ class FileTransferRuntimeTest {
                 }
                 connection.getOutputStream().write(("HTTP/1.1 $status\r\nContent-Type: $mime\r\nContent-Length: ${bytes.size}\r\n$extra" + "Connection: close\r\nCache-Control: no-store\r\n\r\n").toByteArray())
                 connection.getOutputStream().write(bytes)
-            } } } catch (_: Exception) { if (socket.isClosed) break }
+            } } catch (_: IOException) {
+                // Navigation/cancellation can close a real browser socket. Catch inside the
+                // worker; the accept-loop catch cannot intercept a worker's Broken pipe.
+                // Transfer assertions below still require complete original byte payloads.
+            } } } catch (_: IOException) { if (socket.isClosed) break }
         } }
         override fun close() { socket.close(); pool.shutdownNow() }
     }
@@ -137,7 +143,6 @@ class FileTransferRuntimeTest {
         val expected = "ACCOUNT:WORK\n".toByteArray() + ByteArray(8192) { (it * 31).toByte() }
         assertArrayEquals(expected, context.contentResolver.openInputStream(Uri.parse(record!!.uri))!!.use { it.readBytes() })
         assertEquals("Downloader re-fetched a signed response", 1, server.downloads.get())
-        // The generating page stays alive. Blob bytes never go through an unauthenticated HTTP re-fetch.
         pageTap(2)
         await("Generated blob reached downloader") { main { BrowserDownloads.records.firstOrNull()?.name == "generated.txt" && FileUi.busy } }
         providerRoot(); savePicker()
