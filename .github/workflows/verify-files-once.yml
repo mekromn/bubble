@@ -1,5 +1,6 @@
 name: Verify browser file transfers
-# Final consolidated verification: real SAF uploads, original Gecko response downloads and parked notification restore.
+# Consolidated verification: real SAF uploads, original Gecko response downloads, parked notification restore,
+# compact refresh/share chrome, requested floating/tab order, and floating swipe-to-minimize behavior.
 on:
   push:
     branches: [rebuild-v2]
