@@ -80,7 +80,7 @@ class FileTransferRuntimeTest {
                     else -> {
                         val selected = if (request.contains("account=WORK")) "WORK" else "DEFAULT"
                         extra = "Set-Cookie: identity=$selected; Path=/; HttpOnly; SameSite=Lax\r\n"
-                        bytes = """<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>FILES-READY</title><style>body{margin:0;background:#151515;color:white}button{display:block;margin:8px;width:220px;height:48px;font-size:18px}</style><button onclick="document.querySelector('input').click()">Attach files</button><button onclick="location.href='/redirect'">Download protected file</button><button onclick="const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['Generated exact bytes ✓'],{type:'text/plain'}));a.download='generated.txt';a.click()">Download generated file</button><input type="file" multiple style="display:none"><script>document.querySelector('input').onchange=async(e)=>{try{const f=e.target.files;const body=new FormData();for(const file of f)body.append('files',file,file.name);const r=await fetch('/upload',{method:'POST',body});document.title=r.ok?'UPLOADED|'+f.length+'|'+Array.from(f).map(x=>x.name).join(','):'UPLOAD-FAILED';}catch(e){document.title='UPLOAD-ERROR-'+e.name}}</script>""".toByteArray()
+                        bytes = """<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>FILES-READY</title><style>body{margin:0;background:#151515;color:white}button{display:block;margin:8px;width:220px;height:48px;font-size:18px}</style><button onclick="document.querySelector('input').click()">Attach files</button><button onclick="location.href='/redirect'">Download protected file</button><button onclick="const u=URL.createObjectURL(new Blob(['Generated exact bytes ✓'],{type:'text/plain'}));const a=document.createElement('a');a.href=u;a.download='generated.txt';a.hidden=true;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(u)},1000)">Download generated file</button><input type="file" multiple style="display:none"><script>document.querySelector('input').onchange=async(e)=>{try{const f=e.target.files;const body=new FormData();for(const file of f)body.append('files',file,file.name);const r=await fetch('/upload',{method:'POST',body});document.title=r.ok?'UPLOADED|'+f.length+'|'+Array.from(f).map(x=>x.name).join(','):'UPLOAD-FAILED';}catch(e){document.title='UPLOAD-ERROR-'+e.name}}</script>""".toByteArray()
                     }
                 }
                 connection.getOutputStream().write(("HTTP/1.1 $status\r\nContent-Type: $mime\r\nContent-Length: ${bytes.size}\r\n$extra" + "Connection: close\r\nCache-Control: no-store\r\n\r\n").toByteArray())
@@ -160,8 +160,6 @@ class FileTransferRuntimeTest {
     }
     private fun downloadsRoot() {
         await("DocumentsUI visible") { node { it.packageName?.toString()?.endsWith("documentsui") == true } != null }
-        // OPEN_DOCUMENT often starts on Recent with our Downloads media already visible; CREATE_DOCUMENT
-        // often starts inside Downloads. In both cases no root-navigation click is needed.
         val alreadyInUsableLocation = node { it.text?.toString() == "Files in Downloads" } != null ||
             node { it.text?.toString()?.startsWith("bubble-") == true } != null ||
             node { it.text?.toString()?.equals("Save", true) == true && it.isEnabled } != null
@@ -169,8 +167,6 @@ class FileTransferRuntimeTest {
         node { it.contentDescription?.toString() == "Show roots" }?.let { button ->
             val rect = Rect(); button.getBoundsInScreen(rect); tap(rect.exactCenterX(), rect.exactCenterY(), false)
         }
-        // DocumentsUI exposes the title TextView but not necessarily that child as clickable; tapping
-        // its bounds still activates the containing root row. Do not require AccessibilityNodeInfo.isClickable.
         await("Downloads root available") { node { it.text?.toString() == "Downloads" } != null }
         tapNode({ it.text?.toString() == "Downloads" })
         await("Downloads contents visible") {
@@ -236,9 +232,13 @@ class FileTransferRuntimeTest {
         tap(rect.exactCenterX(), rect.exactCenterY(), hold)
     }
     private fun tapNode(test: (AccessibilityNodeInfo) -> Boolean, hold: Boolean = false) {
-        var n: AccessibilityNodeInfo? = null
-        await("Required real file UI control available") { n = node(test); n != null }
-        val rect = Rect(); n!!.getBoundsInScreen(rect); tap(rect.exactCenterX(), rect.exactCenterY(), hold)
+        var found: AccessibilityNodeInfo? = null
+        await("Required real file UI control available") { found = node(test); found != null }
+        val action = if (hold) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
+        var target = found
+        while (target != null && target!!.actionList.none { it.id == action }) target = target!!.parent
+        if (target?.performAction(action) == true) { Thread.sleep(if (hold) 350 else 120); return }
+        val rect = Rect(); found!!.getBoundsInScreen(rect); tap(rect.exactCenterX(), rect.exactCenterY(), hold)
     }
     private fun tap(x: Float, y: Float, hold: Boolean) {
         val time = SystemClock.uptimeMillis()
