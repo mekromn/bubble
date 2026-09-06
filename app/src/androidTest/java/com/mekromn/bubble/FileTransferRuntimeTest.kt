@@ -183,26 +183,32 @@ class FileTransferRuntimeTest {
 
     private fun savePicker() { tapNode({ it.text?.toString()?.equals("Save", true) == true && it.isEnabled }) }
 
-    /** The synthetic fixture has three fixed 48dp-high buttons. Use a real injected touch in the
-     * active GeckoView instead of depending on Gecko accessibility visibility bookkeeping, which
-     * can mark perfectly visible overlay web nodes not-visible-to-user. This remains a real page
-     * interaction; all transfer acceptance assertions still verify bytes, profile and session. */
+    /** Locate the exact synthetic Gecko control from its accessibility geometry, but activate it
+     * with a real injected Android touch. Gecko can mark a web node !isVisibleToUser while the
+     * compositor visibly presents it (especially in an overlay), so visibility is intentionally
+     * not used for discovery here. We never call ACTION_CLICK on the web node and never execute
+     * JavaScript; the page still receives the same pointer path a user would generate. */
     private fun pageControl(label: String) {
-        val index: Int = when (label) {
-            "Attach files" -> 0
-            "Download protected file" -> 1
-            "Download generated file" -> 2
-            else -> error("Unknown synthetic page control: $label")
+        var target: AccessibilityNodeInfo? = null
+        val bounds = Rect()
+        await("Synthetic Gecko page control available: $label") {
+            target = pageNode(label)
+            bounds.setEmpty()
+            target?.getBoundsInScreen(bounds)
+            target != null && !bounds.isEmpty && bounds.width() > 1 && bounds.height() > 1
         }
-        var x = 0f; var y = 0f
-        ins.runOnMainSync {
-            val view = BubbleService.active?.window?.geckoView ?: Workspace.peek()!!.host.get()!!.geckoView
-            val p = IntArray(2); view.getLocationOnScreen(p)
-            val d = view.resources.displayMetrics.density
-            x = p[0] + 90f * d
-            y = p[1] + (32f + 56f * index) * d
+        tap(bounds.exactCenterX(), bounds.exactCenterY(), false)
+    }
+
+    private fun pageNode(label: String): AccessibilityNodeInfo? {
+        fun visit(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (n == null) return null
+            if (n.packageName?.toString() == context.packageName && n.text?.toString() == label) return n
+            for (i in 0 until n.childCount) visit(n.getChild(i))?.let { return it }
+            return null
         }
-        tap(x, y, false)
+        for (window in ui.windows.sortedByDescending { it.layer }) visit(window.root)?.let { return it }
+        return null
     }
 
     private fun contains(haystack: ByteArray, needle: ByteArray): Boolean =
