@@ -1,13 +1,16 @@
 package com.mekromn.bubble
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.net.Uri
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.test.core.app.ActivityScenario
@@ -19,10 +22,12 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Real touch and keys. Wait for the cold emulator IME, not an arbitrary 600ms delay. */
+/** Real touch and keys. Web control geometry comes from Gecko accessibility rather than a
+ * density-dependent hard-coded CSS coordinate; the actual input is still injected touch/keys. */
 @RunWith(AndroidJUnit4::class)
 class BrowserInputTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val automation = instrumentation.uiAutomation
     @Test fun typingAndSystemBackWorkThroughTheNativeBrowser() {
         val server = ServerSocket(0)
         val worker = Thread {
@@ -36,19 +41,26 @@ class BrowserInputTest {
             }} catch (_: Exception) { if (server.isClosed) break }
         }.apply { isDaemon = true; start() }
         val context = instrumentation.targetContext
+        val oldFlags = automation.serviceInfo.flags
         try {
+            automation.serviceInfo = automation.serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
             ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java).setData(Uri.parse("http://127.0.0.1:${server.localPort}/"))).use { scenario ->
                 try {
                     waitFor(scenario) { it.painted && it.pageTitle == "INPUT-READY" }
-                    var x = 0f; var y = 0f
-                    scenario.onActivity {
-                        val p = IntArray(2); it.geckoView.getLocationOnScreen(p)
-                        x = p[0] + 80 * it.resources.displayMetrics.density; y = p[1] + 104 * it.resources.displayMetrics.density
+                    var input: AccessibilityNodeInfo? = null
+                    waitUntil {
+                        input = findNode { n ->
+                            n.packageName?.toString() == context.packageName &&
+                                (n.contentDescription?.toString() == "Test input" || n.hintText?.toString() == "Test input")
+                        }
+                        input != null
                     }
+                    val bounds = Rect(); input!!.getBoundsInScreen(bounds)
+                    assertTrue("Gecko input accessibility bounds are empty", !bounds.isEmpty)
                     val now = SystemClock.uptimeMillis()
-                    val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
-                    val up = MotionEvent.obtain(now, now + 70, MotionEvent.ACTION_UP, x, y, 0)
-                    try { assertTrue(instrumentation.uiAutomation.injectInputEvent(down, true)); assertTrue(instrumentation.uiAutomation.injectInputEvent(up, true)) }
+                    val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                    val up = MotionEvent.obtain(now, now + 70, MotionEvent.ACTION_UP, bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                    try { assertTrue(automation.injectInputEvent(down, true)); assertTrue(automation.injectInputEvent(up, true)) }
                     finally { down.recycle(); up.recycle() }
                     waitFor(scenario) { it.pageTitle == "INPUT-FOCUSED" && ViewCompat.getRootWindowInsets(it.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true }
                     instrumentation.waitForIdleSync()
@@ -71,7 +83,25 @@ class BrowserInputTest {
                     File(folder(), "native-emulator-frame-timing.txt").writeText(report)
                 } finally { capture("after-native-back.png") }
             }
-        } finally { server.close(); worker.join(1000) }
+        } finally {
+            automation.serviceInfo = automation.serviceInfo.apply { flags = oldFlags }
+            server.close(); worker.join(1000)
+        }
+    }
+    private fun findNode(match: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
+        fun walk(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (node == null) return null
+            if (node.isVisibleToUser && match(node)) return node
+            for (i in 0 until node.childCount) walk(node.getChild(i))?.let { return it }
+            return null
+        }
+        automation.windows.sortedByDescending { it.layer }.forEach { walk(it.root)?.let { result -> return result } }
+        return null
+    }
+    private fun waitUntil(predicate: () -> Boolean) {
+        val end = SystemClock.elapsedRealtime() + 40_000
+        while (SystemClock.elapsedRealtime() < end) { if (predicate()) return; Thread.sleep(100) }
+        fail("Native accessibility/input condition timed out")
     }
     private fun hasShownDescription(view: View, description: String): Boolean {
         if (!view.isShown) return false
@@ -86,5 +116,5 @@ class BrowserInputTest {
         assertTrue("Native input/navigation condition timed out", done)
     }
     private fun folder() = File(instrumentation.targetContext.getExternalFilesDir(null), "evidence").apply { mkdirs() }
-    private fun capture(name: String) { instrumentation.uiAutomation.takeScreenshot()?.let { image -> File(folder(),name).outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) } } }
+    private fun capture(name: String) { automation.takeScreenshot()?.let { image -> File(folder(),name).outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) } } }
 }
