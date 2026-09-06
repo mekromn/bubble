@@ -13,7 +13,8 @@ import java.util.concurrent.Executors
 internal data class StoredTab(val id: String, val url: String, val title: String,
     val desktop: Boolean = false, val state: String? = null, val unread: Boolean = false,
     val lastNotice: String = "", val localName: String = "", val pinned: Boolean = false,
-    val note: String = "", val muted: Boolean = false, val profileId: String = ProfilePolicy.DEFAULT_ID)
+    val note: String = "", val muted: Boolean = false, val profileId: String = ProfilePolicy.DEFAULT_ID,
+    val manualSuspended: Boolean = false, val forceKeepAlive: Boolean = false)
 internal data class StoredWorkspace(val selected: String, val tabs: List<StoredTab>,
     val bubbleX: Float = 0.88f, val bubbleY: Float = 0.3f,
     val windowX: Float = .5f, val windowY: Float = .25f,
@@ -33,10 +34,13 @@ internal class WorkspaceStore(context: Context) {
         if (!Policy.isWeb(url)) return null
         val profileId = if (item.has("profileId")) item.getString("profileId") else ProfilePolicy.DEFAULT_ID
         require(ProfilePolicy.validId(profileId)) // Never send a malformed-profile tab to the default account.
+        val manualSuspended = item.optBoolean("manualSuspended")
+        val forceKeepAlive = item.optBoolean("forceKeepAlive") && !manualSuspended
         return StoredTab(id, url, item.optString("title").take(512), item.optBoolean("desktop"),
             item.optString("state").takeIf { it.length in 1..524288 }, item.optBoolean("unread"),
             item.optString("lastNotice").take(128), QuickTabPolicy.localName(item.optString("localName")),
-            item.optBoolean("pinned"), item.optString("note").take(16384), item.optBoolean("muted"), profileId)
+            item.optBoolean("pinned"), item.optString("note").take(16384), item.optBoolean("muted"), profileId,
+            manualSuspended, forceKeepAlive)
     }
     fun load(done: (StoredWorkspace?, String?) -> Unit) {
         io.execute {
@@ -102,6 +106,7 @@ internal class WorkspaceStore(context: Context) {
                             val item = JSONObject().put("id", tab.id).put("url", tab.url).put("title", tab.title.take(512))
                                 .put("desktop", tab.desktop).put("unread", tab.unread).put("lastNotice", tab.lastNotice)
                                 .put("localName", tab.localName).put("pinned", tab.pinned).put("note", tab.note.take(16384)).put("muted", tab.muted).put("profileId", tab.profileId)
+                                .put("manualSuspended", tab.manualSuspended).put("forceKeepAlive", tab.forceKeepAlive && !tab.manualSuspended)
                             val state = tab.state
                             if (state != null && state.length <= 524288 && state.length <= remaining) {
                                 remaining -= state.length; item.put("state", state)
