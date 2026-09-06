@@ -1,0 +1,13 @@
+name: Verify browser file transfers
+# Batch source changes locally; one explicit verification, reusing the release-only pipeline.
+on:
+  push:
+    branches: [rebuild-v2]
+    paths: ['.github/workflows/verify-files-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    if: github.repository == 'mekromn/bubble' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify-files]'))
+    uses: ./.github/workflows/android.yml

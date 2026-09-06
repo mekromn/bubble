@@ -24,7 +24,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 
-/** Fullscreen browsing retains one 56dp bar. Long-press actions use bounded native panels. */
+/** Fullscreen browsing retains one 56dp bar. File-selection Activities are not Home actions. */
 class BrowserActivity : Activity() {
     lateinit var geckoView: GeckoView
         private set
@@ -56,17 +56,14 @@ class BrowserActivity : Activity() {
     private val meter = FrameMeter()
     private var measuring = false
     private val changed: () -> Unit = { render() }
-
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         buildUi()
         val url = if (state == null) incomingUrl(intent) else null
-        workspace = Workspace.get(this, url)
-        AccessPreferences.get(this)
+        workspace = Workspace.get(this, url); AccessPreferences.get(this)
         if (url != null && workspace.ready || intent.hasExtra(EXTRA_TAB) || intent.hasExtra(EXTRA_PIP)) pendingIntent = intent
-        if (Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.registerOnBackInvokedCallback(
-            android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
+        if (Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
     }
     override fun onStart() {
         super.onStart(); started = true; handoff = false
@@ -84,9 +81,7 @@ class BrowserActivity : Activity() {
     }
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (started && workspace.ready && !externalFlow && !handoff && !enteringPip && !isInPictureInPictureMode && Settings.canDrawOverlays(this)) {
-            collapse(FloatingMode.BUBBLE, alreadyLeaving = true)
-        }
+        if (started && workspace.ready && !FileUi.busy && !externalFlow && !handoff && !enteringPip && !isInPictureInPictureMode && Settings.canDrawOverlays(this)) collapse(FloatingMode.BUBBLE, alreadyLeaving = true)
     }
     override fun onStop() {
         started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed)
@@ -105,11 +100,8 @@ class BrowserActivity : Activity() {
             workspace.quickMenuVisible -> QuickPanel.dismissFor(root)
             tray?.visibility == View.VISIBLE -> showTabs(false)
             address.hasFocus() -> { address.clearFocus(); hideKeyboard() }
-            !Settings.canDrawOverlays(this) -> {
-                AlertDialog.Builder(this).setTitle("Minimize to a bubble?").setMessage("Enable floating mode to keep your chats available after Home or Back.")
-                    .setPositiveButton("Enable") { _, _ -> collapse(FloatingMode.BUBBLE) }
-                    .setNegativeButton("Leave without bubble") { _, _ -> externalFlow = true; moveTaskToBack(true) }.show()
-            }
+            !Settings.canDrawOverlays(this) -> AlertDialog.Builder(this).setTitle("Minimize to a bubble?").setMessage("Enable floating mode to keep your chats available after Home or Back.")
+                .setPositiveButton("Enable") { _, _ -> collapse(FloatingMode.BUBBLE) }.setNegativeButton("Leave without bubble") { _, _ -> externalFlow = true; moveTaskToBack(true) }.show()
             else -> collapse(FloatingMode.BUBBLE)
         }
     }
@@ -143,9 +135,7 @@ class BrowserActivity : Activity() {
             val display = if (tab.profileId == ProfilePolicy.DEFAULT_ID) label else "${workspace.profileName(tab.profileId)} · $label"
             if (address.text.toString() != display) address.setText(display)
         }
-        // Do not disable this View: long press must work even when history is empty.
-        val backAlpha = if (tab.back) 1f else .55f
-        if (back.alpha != backAlpha) back.alpha = backAlpha
+        val backAlpha = if (tab.back) 1f else .55f; if (back.alpha != backAlpha) back.alpha = backAlpha
         tabs.count = workspace.tabs.size; tabs.contentDescription = "Workspace tabs, ${workspace.tabs.size} open"
         progress.visibility = if (tab.loading && !isInPictureInPictureMode) View.VISIBLE else View.INVISIBLE; progress.progress = tab.progress
         error.visibility = if (tab.error != null && !isInPictureInPictureMode) View.VISIBLE else View.GONE
@@ -193,8 +183,7 @@ class BrowserActivity : Activity() {
         }
         bar.addView(tabs, LinearLayout.LayoutParams(d(48), d(48)))
         bar.addView(control("float", "Open interactive floating chat", true) { collapse(FloatingMode.CHAT) }.apply {
-            tooltipText = "Floating chat · hold to hide in notification"
-            setOnLongClickListener { hideToNotification(); true }
+            tooltipText = "Floating chat · hold to hide in notification"; setOnLongClickListener { hideToNotification(); true }
         }, LinearLayout.LayoutParams(d(48), d(48)))
         menuButton = control("menu", "Browser menu") { menu() }.apply {
             tooltipText = "Menu · hold for chat tools"
@@ -210,20 +199,18 @@ class BrowserActivity : Activity() {
         }
         ViewCompat.requestApplyInsets(root)
     }
-    private fun control(glyph: String, label: String, accent: Boolean = false, action: () -> Unit) = GlyphView(this, glyph, label, accent).apply {
-        setOnClickListener { if (::workspace.isInitialized && workspace.ready) action() }
-    }
+    private fun control(glyph: String, label: String, accent: Boolean = false, action: () -> Unit) = GlyphView(this, glyph, label, accent).apply { setOnClickListener { if (::workspace.isInitialized && workspace.ready) action() } }
     internal fun showTabs(show: Boolean) {
         QuickPanel.dismissFor(root); hideKeyboard(); address.clearFocus(); root.requestFocus(); workspace.covered = show
         if (show && tray == null) {
-            tray = TabTray(this, { workspace.select(it); showTabs(false) }, workspace::close,
-                { workspace.create(); showTabs(false) }, { showTabs(false) })
+            tray = TabTray(this, { workspace.select(it); showTabs(false) }, workspace::close, { workspace.create(); showTabs(false) }, { showTabs(false) })
             root.addView(tray, FrameLayout.LayoutParams(-1, -1))
         }
         tray?.let { if (show) it.refresh(workspace); Ui.show(it, show) }
     }
     private fun menu() {
         ControlsSheet.show(this, "Browser controls", listOf(
+            "Downloads" to { BrowserDownloads.show(this) },
             "Profiles / accounts · ${workspace.profileName()}" to { ProfileMenus.show(tabs, workspace) },
             "Chat tools · prompts, notes and tabs" to { QuickMenus.tools(menuButton, workspace) },
             "New ChatGPT chat" to { workspace.create(); Unit },
@@ -244,28 +231,24 @@ class BrowserActivity : Activity() {
     }
     private fun showMetrics() {
         if (!measuring) { measuring = true; meter.start(this); toast("Measuring native window frames locally. Open the tab chooser, then return here.") }
-        else AlertDialog.Builder(this).setTitle("Native frame timing").setMessage(meter.report(this)).setPositiveButton("Done", null)
-            .setNeutralButton("Stop") { _, _ -> measuring = false; meter.stop() }.show()
+        else AlertDialog.Builder(this).setTitle("Native frame timing").setMessage(meter.report(this)).setPositiveButton("Done", null).setNeutralButton("Stop") { _, _ -> measuring = false; meter.stop() }.show()
     }
     internal fun collapse(mode: FloatingMode = FloatingMode.BUBBLE, alreadyLeaving: Boolean = false) {
         if (collapsePending || !started || !workspace.ready) return
         QuickPanel.dismissFor(root); pendingMode = mode
         if (!Settings.canDrawOverlays(this)) {
             if (alreadyLeaving) return
-            AlertDialog.Builder(this).setTitle("Enable floating workspace")
-                .setMessage("A single bubble opens your tab chooser and an interactive, resizable chat window. Home and Back minimize here too.")
+            AlertDialog.Builder(this).setTitle("Enable floating workspace").setMessage("A single bubble opens your tab chooser and an interactive, resizable chat window. Home and Back minimize here too.")
                 .setNegativeButton("Not now", null).setPositiveButton("Enable") { _, _ ->
                     awaitingOverlay = true; externalFlow = true
                     try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
                     catch (_: RuntimeException) { awaitingOverlay = false; externalFlow = false; toast("Could not open overlay settings.") }
-                }.show()
-            return
+                }.show(); return
         }
         if (!alreadyLeaving && Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED && !notificationAsked) {
             notificationAsked = true; externalFlow = true; requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS); return
         }
-        collapsePending = true; handoff = true; workspace.flush()
-        val wasPip = isInPictureInPictureMode
+        collapsePending = true; handoff = true; workspace.flush(); val wasPip = isInPictureInPictureMode
         val reply = object : ResultReceiver(Handler(Looper.getMainLooper())) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
                 collapsePending = false
@@ -278,29 +261,21 @@ class BrowserActivity : Activity() {
     }
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, result: IntArray) {
         super.onRequestPermissionsResult(code, permissions, result)
-        if (code == NOTIFICATIONS) {
-            externalFlow = false
-            if (pendingHide) { pendingHide = false; hideToNotification() } else collapse(pendingMode)
-        }
+        if (code == NOTIFICATIONS) { externalFlow = false; if (pendingHide) { pendingHide = false; hideToNotification() } else collapse(pendingMode) }
     }
-    /** Park directly without briefly creating a bubble or an edge trigger. */
     internal fun hideToNotification() {
         if (!started || !workspace.ready || collapsePending) return
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            if (!notificationAsked) {
-                notificationAsked = true; pendingHide = true; externalFlow = true
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS)
-            } else toast("Enable Bubble notifications before hiding. Your workspace stays open.")
+            if (!notificationAsked) { notificationAsked = true; pendingHide = true; externalFlow = true; requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS) }
+            else toast("Enable Bubble notifications before hiding. Your workspace stays open.")
             return
         }
-        QuickPanel.dismissFor(root); hideKeyboard(); workspace.flush()
-        collapsePending = true; handoff = true
+        QuickPanel.dismissFor(root); hideKeyboard(); workspace.flush(); collapsePending = true; handoff = true
         val wasPip = isInPictureInPictureMode
         val reply = object : ResultReceiver(Handler(Looper.getMainLooper())) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
                 collapsePending = false
-                if (code == 1 && !isFinishing) { if (wasPip) finish() else moveTaskToBack(true) }
-                else { handoff = false; if (started) render() }
+                if (code == 1 && !isFinishing) { if (wasPip) finish() else moveTaskToBack(true) } else { handoff = false; if (started) render() }
             }
         }
         try { startForegroundService(Intent(this, BubbleService::class.java).setAction(BubbleService.HIDE).putExtra(BubbleService.READY, reply)) }
@@ -308,24 +283,19 @@ class BrowserActivity : Activity() {
     }
     internal fun enterNativePip(): Boolean {
         if (!started || isInPictureInPictureMode || !packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return false
-        showTabs(false); hideKeyboard()
-        val bounds = Rect(); geckoView.getGlobalVisibleRect(bounds)
-        val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(9, 16)).setSourceRectHint(bounds)
-            .setActions(listOf(pipAction("Previous tab", PipTabReceiver.PREVIOUS, R.drawable.ic_previous),
-                pipAction("Next tab", PipTabReceiver.NEXT, R.drawable.ic_next), pipAction("Minimize to bubble", PipTabReceiver.BUBBLE, R.drawable.ic_notification)))
+        showTabs(false); hideKeyboard(); val bounds = Rect(); geckoView.getGlobalVisibleRect(bounds)
+        val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(9, 16)).setSourceRectHint(bounds).setActions(listOf(
+            pipAction("Previous tab", PipTabReceiver.PREVIOUS, R.drawable.ic_previous), pipAction("Next tab", PipTabReceiver.NEXT, R.drawable.ic_next), pipAction("Minimize to bubble", PipTabReceiver.BUBBLE, R.drawable.ic_notification)))
         if (Build.VERSION.SDK_INT >= 31) builder.setAutoEnterEnabled(false).setSeamlessResizeEnabled(false)
         enteringPip = true
         val entered = runCatching { enterPictureInPictureMode(builder.build()) }.getOrDefault(false)
-        if (!entered) { enteringPip = false; bar.visibility = View.VISIBLE; toast("Android picture-in-picture is unavailable.") }
-        return entered
+        if (!entered) { enteringPip = false; bar.visibility = View.VISIBLE; toast("Android picture-in-picture is unavailable.") }; return entered
     }
     private fun pipAction(title: String, action: String, icon: Int): RemoteAction = RemoteAction(Icon.createWithResource(this, icon), title, title,
         PendingIntent.getBroadcast(this, 0, Intent(this, PipTabReceiver::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
     override fun onPictureInPictureModeChanged(pip: Boolean, config: Configuration) {
-        super.onPictureInPictureModeChanged(pip, config)
-        enteringPip = false; bar.visibility = if (pip) View.GONE else View.VISIBLE
-        if (pip) { error.visibility = View.GONE; progress.visibility = View.INVISIBLE }
-        ViewCompat.requestApplyInsets(root); workspace.applyPolicy()
+        super.onPictureInPictureModeChanged(pip, config); enteringPip = false; bar.visibility = if (pip) View.GONE else View.VISIBLE
+        if (pip) { error.visibility = View.GONE; progress.visibility = View.INVISIBLE }; ViewCompat.requestApplyInsets(root); workspace.applyPolicy()
     }
     override fun onPictureInPictureUiStateChanged(state: PictureInPictureUiState) {
         if (Build.VERSION.SDK_INT >= 35) { super.onPictureInPictureUiStateChanged(state); if (state.isTransitioningToPip) bar.visibility = View.GONE }
@@ -337,17 +307,12 @@ class BrowserActivity : Activity() {
     internal fun offerExternal(raw: String) {
         val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return
         if (uri.scheme !in setOf("mailto", "tel", "sms", "geo")) { toast("Unsupported external link type."); return }
-        AlertDialog.Builder(this).setTitle("Open another app?").setMessage("This page requested a ${uri.scheme} link.")
-            .setNegativeButton("Cancel", null).setPositiveButton("Open") { _, _ ->
-                externalFlow = true
-                try { startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)) }
-                catch (_: RuntimeException) { externalFlow = false; toast("No app could open that link.") }
-            }.show()
+        AlertDialog.Builder(this).setTitle("Open another app?").setMessage("This page requested a ${uri.scheme} link.").setNegativeButton("Cancel", null).setPositiveButton("Open") { _, _ ->
+            externalFlow = true
+            try { startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)) } catch (_: RuntimeException) { externalFlow = false; toast("No app could open that link.") }
+        }.show()
     }
-    private fun incomingUrl(incoming: Intent?): String? = when (incoming?.action) {
-        Intent.ACTION_SEND -> incoming.getStringExtra(Intent.EXTRA_TEXT)?.trim()?.takeIf(Policy::isWeb)
-        else -> incoming?.dataString?.takeIf(Policy::isWeb)
-    }
+    private fun incomingUrl(incoming: Intent?): String? = when (incoming?.action) { Intent.ACTION_SEND -> incoming.getStringExtra(Intent.EXTRA_TEXT)?.trim()?.takeIf(Policy::isWeb); else -> incoming?.dataString?.takeIf(Policy::isWeb) }
     private fun hideKeyboard() { getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0) }
     private fun toast(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
     private fun d(n: Int) = Ui.dp(this, n.toFloat())

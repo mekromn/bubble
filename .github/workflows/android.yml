@@ -1,5 +1,5 @@
 name: Bubble build and verification
-# Explicit builds only: editing source or documentation must not start another paid/storage run.
+# Explicit builds only; source edits do not trigger another build or artifact upload.
 on:
   workflow_dispatch:
   workflow_call:
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
-      contents: write # Only required to publish this build's uniquely named Release assets.
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - name: Foreground and reply-monitor tests
@@ -71,6 +71,7 @@ jobs:
             adb shell am instrument -w com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner | tee instrumentation.txt
             adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence/ evidence/ || true
             adb logcat -d > emulator-logcat.txt
+            python3 tools/ci-file-evidence.py
             grep -q 'OK (' instrumentation.txt
       - name: Package verification evidence without Actions artifact storage
         if: always() && !cancelled()
@@ -79,6 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          python3 tools/ci-file-evidence.py
           python3 - <<'PY'
           import os
           import pathlib
@@ -122,7 +124,6 @@ jobs:
           VERIFIED: ${{ steps.scripts.outcome == 'success' && steps.signing.outcome == 'success' && steps.compile.outcome == 'success' && steps.emulator_compile.outcome == 'success' && steps.runtime.outcome == 'success' }}
         run: |
           set -euo pipefail
-          # Unique tag per attempt: never overwrite or delete an existing working release.
           TAG="bubble-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           VERSION="${BUBBLE_VERSION:-unbuilt}"
           ASSETS=(dist/Bubble-Verification.zip dist/VERIFICATION-SHA256.txt)
