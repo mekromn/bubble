@@ -15,7 +15,9 @@
         <activity android:name=".SaveDownloadActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <activity android:name=".DownloadsActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_downloads" />
         <activity android:name=".NotificationReturnActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.notification_prompts" android:theme="@style/Theme.Bubble.Prompt" />
+        <activity android:name=".VoicePermissionActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.notification_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <receiver android:name=".PipTabReceiver" android:exported="false" />
+        <receiver android:name=".VoiceNotificationReceiver" android:exported="false" />
         <service android:name=".FileDownloadService" android:exported="false" android:foregroundServiceType="dataSync" tools:targetApi="34" />
         <service android:name=".BubbleService" android:exported="false" android:foregroundServiceType="specialUse" tools:targetApi="34">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated floating browser workspace, with a visible draggable bubble and explicit hide action." />
