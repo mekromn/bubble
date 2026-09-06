@@ -30,12 +30,16 @@ internal class ConversationList(context: Context, private val select: (String) -
         val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab -> Row(tab.id, tab.displayName,
             (if (workspace.profiles.size > 1) "${workspace.profileName(tab.profileId)} · " else "") +
             (if (tab.pinned) "Pinned · " else "") + when {
-                tab.error != null -> "Needs attention · tap to open"
-                tab.generating -> "Generating a reply"
+                tab.error != null && !tab.manualSuspended -> "Needs attention · tap to open"
+                tab.generating -> "Generating a reply · kept alive"
+                tab.loading -> "Loading · kept alive"
+                tab.unread && (tab.suspended || tab.session == null) -> "New reply · suspended until opened"
                 tab.unread -> "New reply · ready to read"
-                tab.loading -> "Loading · ${Policy.host(tab.url)}"
+                tab.manualSuspended -> "Manually suspended · tap to resume"
+                tab.forceKeepAlive -> "Forced live · ${Policy.host(tab.url)}"
+                tab.suspended || tab.session == null -> "Suspended · tap to resume"
                 else -> "Live · ${Policy.host(tab.url)}${if (tab.muted) " · alerts muted" else ""}"
-            }, tab.id == workspace.selectedId, tab.unread, tab.generating, tab.pinned) }
+            }, tab.id == workspace.selectedId, tab.unread, tab.generating || tab.loading, tab.pinned) }
         if (rows == next) return
         rows = next; submit()
     }
