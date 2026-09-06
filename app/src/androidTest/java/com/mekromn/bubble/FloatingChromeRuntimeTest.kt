@@ -51,6 +51,15 @@ class FloatingChromeRuntimeTest {
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
 
+                // WindowManager has completed the overlay transition before the accessibility
+                // service necessarily publishes its new tree. Wait for the real nodes instead
+                // of racing an immediate one-shot lookup.
+                await {
+                    automation.waitForIdle(50, 500)
+                    node("Refresh floating page") != null &&
+                        node("Share floating page") != null &&
+                        node("Swipe down to minimize floating window") != null
+                }
                 assertNotNull(node("Refresh floating page"))
                 assertNotNull(node("Share floating page"))
                 val handle = requireNotNull(node("Swipe down to minimize floating window"))
