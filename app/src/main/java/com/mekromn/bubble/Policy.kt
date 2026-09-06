@@ -7,11 +7,16 @@ import java.util.Locale
 /** Pure policy: no Android objects, testable without an emulator. */
 object Policy {
     const val HOME = "https://chatgpt.com/"
-    fun isChat(url: String): Boolean = runCatching {
-        val u = URI(url)
-        u.scheme.equals("https", true) && u.host.equals("chatgpt.com", true) &&
+    const val VOICE_HOME = "https://voice.google.com/"
+    private fun exactHttps(raw: String, host: String): Boolean = runCatching {
+        // Gecko notification principals may append origin attributes after '^'. They are not part
+        // of the network origin, so validate the URL portion while still requiring the exact host.
+        val u = URI(raw.substringBefore('^'))
+        u.scheme.equals("https", true) && u.host.equals(host, true) &&
             (u.port == -1 || u.port == 443) && u.rawUserInfo == null
     }.getOrDefault(false)
+    fun isChat(url: String): Boolean = exactHttps(url, "chatgpt.com")
+    fun isVoice(url: String): Boolean = exactHttps(url, "voice.google.com")
     fun isWeb(url: String): Boolean = runCatching {
         val u = URI(url)
         (u.scheme.equals("https", true) || u.scheme.equals("http", true)) &&
@@ -29,7 +34,7 @@ object Policy {
         }
         return "https://www.google.com/search?q=" + URLEncoder.encode(text, "UTF-8")
     }
-    fun host(url: String): String = runCatching { URI(url).host.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
+    fun host(url: String): String = runCatching { URI(url.substringBefore('^')).host.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
     fun coordinate(normalized: Float, min: Int, max: Int): Int {
         val n = if (normalized.isFinite()) normalized.coerceIn(0f, 1f) else 0.5f
         return min + ((max.coerceAtLeast(min) - min) * n).toInt()
