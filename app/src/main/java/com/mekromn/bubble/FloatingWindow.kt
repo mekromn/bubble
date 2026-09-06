@@ -15,6 +15,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.mozilla.geckoview.GeckoView
 import kotlin.math.abs
+import kotlin.math.min
 
 internal enum class FloatingMode { BUBBLE, CHOOSER, CHAT }
 
@@ -238,9 +239,26 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }
             content.addView(error,FrameLayout.LayoutParams(-1,-2,Gravity.CENTER).apply { setMargins(d(12),0,d(12),0) })
             column.addView(content,LinearLayout.LayoutParams(-1,0,1f))
+
+            // Requested floating utility strip: refresh/share stay together and the broad center
+            // handle can be swiped downward to collapse without stealing gestures from the page.
+            val utility=LinearLayout(context).apply {
+                gravity=Gravity.CENTER_VERTICAL; setPadding(d(2),0,d(2),0); background=Ui.shape(context,Ui.SURFACE,0f)
+            }
+            utility.addView(control("reload","Refresh floating page") { refreshPage() },LinearLayout.LayoutParams(d(48),d(48)))
+            utility.addView(control("share","Share floating page") { sharePage() },LinearLayout.LayoutParams(d(48),d(48)))
+            utility.addView(MinimizeStrip(false),LinearLayout.LayoutParams(0,d(48),1f))
             val resize=control("resize","Resize floating chat") { }
             resize.setOnTouchListener { _,event -> drag(event,true,false) }
-            root.addView(resize,FrameLayout.LayoutParams(d(48),d(32),Gravity.BOTTOM or Gravity.RIGHT)); content.setPadding(0,0,0,d(24))
+            utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
+            column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
+
+            // When edge-access is the selected minimized state, expose the same directional
+            // affordance on that side of the expanded panel: swipe outward to return to it.
+            val edge=AccessPreferences.get(context).options
+            if(edge.enabled && edge.indicator) {
+                root.addView(MinimizeStrip(true),FrameLayout.LayoutParams(d(24),d(112),Gravity.CENTER_VERTICAL or if(edge.left)Gravity.LEFT else Gravity.RIGHT))
+            }
         }
         RenderPolicy.vote(context,root,params)
     }
@@ -251,6 +269,77 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             "collapse" -> { tooltipText="Minimize · hold to hide in notification"; setOnLongClickListener { hideToNotification(); true } }
             "tabs" -> { tooltipText="Tabs · hold for quick tabs"; setOnLongClickListener { QuickMenus.tabs(this,workspace,::openChat); true } }
         }
+    }
+    private fun refreshPage() {
+        val session=workspace.selected?.session
+        if(session!=null && session.isOpen)session.reload() else workspace.retry()
+    }
+    private fun sharePage() {
+        val url=workspace.selected?.url.orEmpty()
+        if(url.isBlank())return
+        val send=Intent(Intent.ACTION_SEND).apply { type="text/plain"; putExtra(Intent.EXTRA_TEXT,url) }
+        try { service.startActivity(Intent.createChooser(send,"Share page").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        catch(_:RuntimeException) { Toast.makeText(context,"No app is available to share this page.",Toast.LENGTH_LONG).show() }
+    }
+    private inner class MinimizeStrip(private val vertical:Boolean): View(context) {
+        private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Ui.MUTED }
+        private var startX=0f
+        private var startY=0f
+        private var armed=false
+        private var active=false
+        init {
+            isClickable=true; isFocusable=true
+            contentDescription=if(vertical)"Swipe outward to minimize floating window" else "Swipe down to minimize floating window"
+            background=Ui.ripple(context,android.graphics.Color.TRANSPARENT,14f)
+            ViewCompat.addAccessibilityAction(this,"Minimize floating window") { _,_ -> collapse(); true }
+        }
+        override fun onDraw(canvas:Canvas) {
+            super.onDraw(canvas)
+            paint.color=if(armed)Ui.ACTIVE else Ui.MUTED
+            if(vertical) {
+                val w=d(4).toFloat(); val h=min(height-d(24),d(44)).coerceAtLeast(d(18)).toFloat(); val cx=width/2f; val cy=height/2f
+                canvas.drawRoundRect(cx-w/2,cy-h/2,cx+w/2,cy+h/2,w,w,paint)
+            } else {
+                val w=min(width-d(24),d(56)).coerceAtLeast(d(28)).toFloat(); val h=d(4).toFloat(); val cx=width/2f; val cy=height/2f
+                canvas.drawRoundRect(cx-w/2,cy-h/2,cx+w/2,cy+h/2,h,h,paint)
+            }
+        }
+        override fun onTouchEvent(event:MotionEvent):Boolean {
+            if(hiding)return true
+            when(event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    active=true; armed=false; startX=event.rawX; startY=event.rawY
+                    animate().cancel(); translationX=0f; translationY=0f; alpha=1f; invalidate(); return true
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> { active=false; armed=false; reset(); return true }
+                MotionEvent.ACTION_MOVE -> if(active) {
+                    val dx=event.rawX-startX; val dy=event.rawY-startY
+                    val threshold=d(32).toFloat()
+                    val next=if(vertical) {
+                        val left=AccessPreferences.get(context).options.left
+                        val outward=if(left)-dx else dx
+                        outward>threshold && outward>abs(dy)*1.15f
+                    } else dy>threshold && dy>abs(dx)*1.15f
+                    if(next && !armed)performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    armed=next
+                    if(vertical) translationX=(dx.coerceIn(-d(18).toFloat(),d(18).toFloat()))
+                    else translationY=(dy.coerceIn(0f,d(18).toFloat()))
+                    alpha=if(armed).62f else .82f; invalidate()
+                }
+                MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> {
+                    val accepted=event.actionMasked==MotionEvent.ACTION_UP && active && armed
+                    active=false; armed=false; reset()
+                    if(accepted)collapse()
+                }
+            }
+            return true
+        }
+        private fun reset() {
+            invalidate()
+            if(ValueAnimator.areAnimatorsEnabled())animate().translationX(0f).translationY(0f).alpha(1f).setDuration(150).setInterpolator(Ui.ease).start()
+            else { translationX=0f; translationY=0f; alpha=1f }
+        }
+        override fun performClick():Boolean { collapse(); return super.performClick() }
     }
     private fun render() {
         if(destroyed)return
