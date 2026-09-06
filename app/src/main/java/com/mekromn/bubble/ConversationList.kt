@@ -25,7 +25,7 @@ internal class ConversationList(context: Context, private val select: (String) -
     var onResultCount: ((Int) -> Unit)? = null
     private val cards = Rows()
     private val drag = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
-        override fun isLongPressDragEnabled() = false // only the tab icon is a drag handle
+        override fun isLongPressDragEnabled() = false
         override fun isItemViewSwipeEnabled() = false
         override fun onSwiped(viewHolder: ViewHolder, direction: Int) = Unit
         override fun onMove(recyclerView: RecyclerView, source: ViewHolder, target: ViewHolder): Boolean {
@@ -35,8 +35,6 @@ internal class ConversationList(context: Context, private val select: (String) -
             val visible = cards.currentList
             val fromRow = visible.getOrNull(fromPosition) ?: return false
             val toRow = visible.getOrNull(toPosition) ?: return false
-            // Preserve existing pinned semantics: pinned tabs remain the first group. Users can
-            // freely order tabs within pinned or unpinned groups without silently changing pin state.
             if (fromRow.pinned != toRow.pinned) return false
             val workspace = Workspace.peek() ?: return false
             val from = workspace.tabs.indexOfFirst { it.id == fromRow.id }
@@ -55,10 +53,12 @@ internal class ConversationList(context: Context, private val select: (String) -
         clipToPadding = false; setPadding(d(8), d(4), d(8), d(8)); contentDescription = "Conversation list"
     }
     fun refresh(workspace: Workspace) {
-        // Kotlin's stable sort keeps the user's persisted order within each pin group.
         val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab -> Row(tab.id, tab.displayName,
             (if (workspace.profiles.size > 1) "${workspace.profileName(tab.profileId)} · " else "") +
             (if (tab.pinned) "Pinned · " else "") + when {
+                Policy.isVoice(tab.url) && tab.error != null -> "Google Voice · connection needs attention"
+                Policy.isVoice(tab.url) && tab.unread -> "Google Voice · new alert · protected live"
+                Policy.isVoice(tab.url) -> "Google Voice · protected live"
                 tab.error != null && !tab.manualSuspended -> "Needs attention · tap to open"
                 tab.generating -> "Generating a reply · kept alive"
                 tab.loading -> "Loading · kept alive"
@@ -130,7 +130,7 @@ internal class ConversationList(context: Context, private val select: (String) -
             holder.closeButton.contentDescription = "Close ${row.title}"
             holder.closeButton.setOnClickListener {
                 val ws = Workspace.peek()
-                if (ws?.tabs?.any { it.id == row.id && (it.pinned || it.generating) } == true) {
+                if (ws?.tabs?.any { it.id == row.id && (it.pinned || it.generating || Policy.isVoice(it.url)) } == true) {
                     QuickMenus.close(QuickPanel.hostAnchor(holder.row), ws, row.id)
                 } else close(row.id)
             }
