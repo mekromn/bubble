@@ -26,7 +26,9 @@ internal object BlobDownloads {
         val request = runCatching { WebRequest.Builder(blob).build() }.getOrNull() ?: return false
 
         GeckoWebExecutor(runtime).fetch(request).accept({ response ->
-            main.post {
+            if (response == null) {
+                main.post { failed(workspace, tab, session) }
+            } else main.post {
                 if (tab !in workspace.tabs || tab.session !== session || !session.isOpen) {
                     Thread({ runCatching { response.body?.close() } }, "bubble-discard-blob").start()
                     return@post
@@ -35,14 +37,16 @@ internal object BlobDownloads {
                     workspace.chatVisible && tab.id == workspace.selectedId, name, mime)
             }
         }, {
-            main.post {
-                if (tab in workspace.tabs && tab.session === session) {
-                    workspace.notice = "That generated file could not be opened. Try the download again."
-                    workspace.changed()
-                }
-            }
+            main.post { failed(workspace, tab, session) }
         })
         return true
+    }
+
+    private fun failed(workspace: Workspace, tab: ChatTab, session: GeckoSession) {
+        if (tab in workspace.tabs && tab.session === session) {
+            workspace.notice = "That generated file could not be opened. Try the download again."
+            workspace.changed()
+        }
     }
 
     private fun sameOrigin(blob: String, page: String): Boolean = runCatching {
