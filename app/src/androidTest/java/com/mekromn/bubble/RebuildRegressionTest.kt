@@ -82,6 +82,27 @@ class RebuildRegressionTest {
         waitFor(scenario) { tray!!.visibility == View.GONE && tray!!.layerType == View.LAYER_TYPE_NONE }
     }
 
+    @Test fun compactBrowserBarHasRefreshShareAndFloatingBeforeTabs() = withPage { scenario ->
+        scenario.onActivity { activity ->
+            val root = activity.window.decorView
+            val refresh = requireNotNull(findControl(root, "Refresh page"))
+            val share = requireNotNull(findControl(root, "Share page"))
+            val floating = requireNotNull(findControl(root, "Open interactive floating chat"))
+            val tabs = requireNotNull(findControl(root, "Workspace tabs"))
+            val menu = requireNotNull(findControl(root, "Browser menu"))
+            fun x(view: View): Int { val p = IntArray(2); view.getLocationOnScreen(p); return p[0] }
+            assertTrue("Refresh should be before Share", x(refresh) < x(share))
+            assertTrue("Share should stay near the floating control", x(share) < x(floating))
+            assertTrue("Requested control swap regressed: floating must be before tab counter", x(floating) < x(tabs))
+            assertTrue("Menu remains the final compact action", x(tabs) < x(menu))
+        }
+    }
+
+    private fun findControl(view: View, description: String): View? {
+        if (view.visibility == View.VISIBLE && view.contentDescription?.toString() == description) return view
+        if (view is ViewGroup) for (i in 0 until view.childCount) findControl(view.getChildAt(i), description)?.let { return it }
+        return null
+    }
     private fun findTray(view: View): TabTray? {
         if (view is TabTray) return view
         if (view is ViewGroup) for (i in 0 until view.childCount) findTray(view.getChildAt(i))?.let { return it }
