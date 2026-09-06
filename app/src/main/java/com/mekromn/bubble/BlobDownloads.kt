@@ -8,6 +8,7 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoWebExecutor
 import org.mozilla.geckoview.WebRequest
+import org.mozilla.geckoview.WebRequestError
 
 /** Page-created Blob URLs are process/runtime objects, not network URLs. GeckoView does not
  * reliably route an <a download=... href=blob:...> response through ContentDelegate, so the
@@ -17,26 +18,51 @@ import org.mozilla.geckoview.WebRequest
 internal object BlobDownloads {
     private val main = Handler(Looper.getMainLooper())
 
+    /** Ephemeral in-process diagnostic only. No file/network telemetry and no URL/content data. */
+    @Volatile internal var diagnosticStage = "idle"
+        private set
+
+    internal fun resetDiagnostic() { diagnosticStage = "idle" }
+
     fun receive(app: android.content.Context, workspace: Workspace, tab: ChatTab,
         session: GeckoSession, runtime: GeckoRuntime, senderUrl: String, message: JSONObject): Boolean {
-        val blob = message.optString("uri").takeIf { it.length in 6..16384 && it.startsWith("blob:") } ?: return false
-        if (!sameOrigin(blob, senderUrl) || !Policy.isWeb(senderUrl)) return false
+        diagnosticStage = "message"
+        val blob = message.optString("uri").takeIf { it.length in 6..16384 && it.startsWith("blob:") }
+            ?: run { diagnosticStage = "rejected-uri"; return false }
+        if (!sameOrigin(blob, senderUrl) || !Policy.isWeb(senderUrl)) {
+            diagnosticStage = "rejected-origin"; return false
+        }
         val name = FileNames.safe(message.optString("filename").take(512), "download")
         val mime = message.optString("mime").take(128).takeIf { it.contains('/') }
-        val request = runCatching { WebRequest.Builder(blob).build() }.getOrNull() ?: return false
+        // GeckoWebExecutor explicitly supports blob: URLs. Preserve the creating document as
+        // referrer so Gecko can retain the source context instead of treating this as an unrelated
+        // system fetch. The Blob bytes still never pass through WebExtension/native messaging.
+        val request = runCatching { WebRequest.Builder(blob).referrer(senderUrl).build() }.getOrNull()
+            ?: run { diagnosticStage = "request-error"; return false }
+        diagnosticStage = "fetch-started"
 
         GeckoWebExecutor(runtime).fetch(request).accept({ response ->
             if (response == null) {
+                diagnosticStage = "fetch-null"
                 main.post { failed(workspace, tab, session) }
-            } else main.post {
-                if (tab !in workspace.tabs || tab.session !== session || !session.isOpen) {
-                    Thread({ runCatching { response.body?.close() } }, "bubble-discard-blob").start()
-                    return@post
+            } else {
+                diagnosticStage = "fetch-response"
+                main.post {
+                    if (tab !in workspace.tabs || tab.session !== session || !session.isOpen) {
+                        diagnosticStage = "discarded"
+                        Thread({ runCatching { response.body?.close() } }, "bubble-discard-blob").start()
+                        return@post
+                    }
+                    BrowserDownloads.receive(app, tab.profileId, response,
+                        workspace.chatVisible && tab.id == workspace.selectedId, name, mime)
+                    diagnosticStage = "downloader"
                 }
-                BrowserDownloads.receive(app, tab.profileId, response,
-                    workspace.chatVisible && tab.id == workspace.selectedId, name, mime)
             }
-        }, {
+        }, { error ->
+            diagnosticStage = when (error) {
+                is WebRequestError -> "fetch-error-${error.category}-${error.code}"
+                else -> "fetch-error-${error.javaClass.simpleName.take(48)}"
+            }
             main.post { failed(workspace, tab, session) }
         })
         return true
