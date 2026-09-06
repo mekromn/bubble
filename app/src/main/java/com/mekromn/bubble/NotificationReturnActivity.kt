@@ -9,13 +9,16 @@ import android.os.*
 import android.provider.Settings
 
 /** Direct notification Activity PendingIntent: no service/broadcast notification trampoline.
- * This transparent task hands off to the overlay, or the browser when overlays are unavailable. */
+ * This transparent task hands off to the requested overlay mode, or the browser when overlays are unavailable.
+ * A freshly parked workspace may still report its Activity as visible for a few frames; parked state wins so
+ * an immediate notification tap cannot accidentally reopen fullscreen instead of the bubble/edge workspace. */
 class NotificationReturnActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         val id = intent.getStringExtra(BrowserActivity.EXTRA_TAB)
-        if (!Settings.canDrawOverlays(this) || Workspace.peek()?.visible == true) {
+        val serviceParked = BubbleService.active?.isParked == true
+        if (!Settings.canDrawOverlays(this) || (Workspace.peek()?.visible == true && !serviceParked)) {
             startActivity(Intent(this, BrowserActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 if (id != null) putExtra(BrowserActivity.EXTRA_TAB, id)
