@@ -183,8 +183,26 @@ class FileTransferRuntimeTest {
 
     private fun savePicker() { tapNode({ it.text?.toString()?.equals("Save", true) == true && it.isEnabled }) }
 
+    /** The synthetic fixture has three fixed 48dp-high buttons. Use a real injected touch in the
+     * active GeckoView instead of depending on Gecko accessibility visibility bookkeeping, which
+     * can mark perfectly visible overlay web nodes not-visible-to-user. This remains a real page
+     * interaction; all transfer acceptance assertions still verify bytes, profile and session. */
     private fun pageControl(label: String) {
-        tapNode({ node -> node.packageName?.toString() == context.packageName && node.text?.toString() == label })
+        val index = when (label) {
+            "Attach files" -> 0
+            "Download protected file" -> 1
+            "Download generated file" -> 2
+            else -> fail("Unknown synthetic page control: $label")
+        }
+        var x = 0f; var y = 0f
+        ins.runOnMainSync {
+            val view = BubbleService.active?.window?.geckoView ?: Workspace.peek()!!.host.get()!!.geckoView
+            val p = IntArray(2); view.getLocationOnScreen(p)
+            val d = view.resources.displayMetrics.density
+            x = p[0] + 90f * d
+            y = p[1] + (32f + 56f * index) * d
+        }
+        tap(x, y, false)
     }
 
     private fun contains(haystack: ByteArray, needle: ByteArray): Boolean =
@@ -199,7 +217,7 @@ class FileTransferRuntimeTest {
         ins.runOnMainSync {
             out.append("nativeVisible=").append(Workspace.peek()?.visible).append(" floating=").append(Workspace.peek()?.floatingVisible).append(" selected=").append(Workspace.peek()?.selectedId).append(' ')
             out.append("FileUi=").append(FileUi.busy).append(" title=").append(Workspace.peek()?.selected?.title).append(" url=").append(Workspace.peek()?.selected?.url).append(" error=").append(Workspace.peek()?.selected?.error).append('\n')
-            out.append("downloadsAtServer=").append(BrowserDownloads.records.size).append('\n')
+            out.append("downloadsAtServer=").append(BrowserDownloads.records.size).append(" blobStage=").append(BlobDownloads.diagnosticStage).append('\n')
             BrowserDownloads.records.forEach { out.append(it).append('\n') }
         }
         fun describe(n: AccessibilityNodeInfo?, depth: Int = 0) {
@@ -278,6 +296,7 @@ class FileTransferRuntimeTest {
     }
 
     private fun fixture(test: (ActivityScenario<BrowserActivity>, Server, TestFiles) -> Unit) {
+        BlobDownloads.resetDiagnostic()
         val flags = ui.serviceInfo.flags
         ui.serviceInfo = ui.serviceInfo.apply { this.flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
         shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
