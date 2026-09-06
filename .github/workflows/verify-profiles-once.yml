@@ -1,5 +1,6 @@
 name: Verify profile-isolation update
-# One consolidated verification of the user-requested update. Routine source edits do not run CI.
+# Consolidated retry after explicit lifecycle synchronization in the notification UI test.
+# Routine source edits do not run CI. This does not add any Actions artifact uploads.
 on:
   push:
     branches: [rebuild-v2]
