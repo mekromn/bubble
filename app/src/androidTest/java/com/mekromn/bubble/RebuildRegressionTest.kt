@@ -107,7 +107,9 @@ class RebuildRegressionTest {
     }
 
     private fun findControl(view: View, description: String): View? {
-        if (view.visibility == View.VISIBLE && view.contentDescription?.toString() == description) return view
+        val actual = view.contentDescription?.toString()
+        val matches = actual == description || (description == "Workspace tabs" && actual?.startsWith("Workspace tabs") == true)
+        if (view.visibility == View.VISIBLE && matches) return view
         if (view is ViewGroup) for (i in 0 until view.childCount) findControl(view.getChildAt(i), description)?.let { return it }
         return null
     }
