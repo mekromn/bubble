@@ -77,7 +77,8 @@ internal object BrowserDownloads {
             }
         }
     }
-    fun receive(context: Context, profileId: String, response: WebResponse, present: Boolean) {
+    fun receive(context: Context, profileId: String, response: WebResponse, present: Boolean,
+        suggestedName: String? = null, suggestedMime: String? = null) {
         initialize(context)
         if (response.body == null || (response.statusCode != 0 && response.statusCode !in 200..299) || tasks.size >= 12) {
             closers.execute { runCatching { response.body?.close() } }
@@ -85,8 +86,11 @@ internal object BrowserDownloads {
             return
         }
         fun header(name: String) = response.headers.entries.firstOrNull { it.key.equals(name, true) }?.value
-        val record = DownloadRecord(UUID.randomUUID().toString(), FileNames.download(response.uri, header("Content-Disposition")),
-            FileNames.mime(header("Content-Type")), profileId)
+        val responseMime = header("Content-Type")
+        val record = DownloadRecord(UUID.randomUUID().toString(),
+            suggestedName?.takeIf { it.isNotBlank() }?.let { FileNames.safe(it) }
+                ?: FileNames.download(response.uri, header("Content-Disposition")),
+            FileNames.mime(suggestedMime?.takeIf { it.isNotBlank() } ?: responseMime), profileId)
         val task = DownloadTask(record, response)
         records.add(0, record); tasks[record.id] = task
         response.setReadTimeoutMillis(60_000)
