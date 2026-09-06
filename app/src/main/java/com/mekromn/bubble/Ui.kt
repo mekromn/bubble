@@ -77,7 +77,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
     var count: Int = 0
         set(value) { if (field != value) { field = value; countLabel = if (value > 99) "99+" else value.toString(); invalidate() } }
     init {
-        contentDescription = label; isFocusable = true; isClickable = true
+        contentDescription = label; isFocusable = true; isClickable = true; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         background = Ui.ripple(c, if (accented) Ui.SURFACE_HIGH else android.graphics.Color.TRANSPARENT, 16f)
         minimumWidth = Ui.dp(c, 48f); minimumHeight = Ui.dp(c, 48f); tooltipText = label
     }
