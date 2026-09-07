@@ -90,6 +90,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     fun attach(initial: FloatingMode=FloatingMode.BUBBLE, origin: WindowBox?=null) {
         root.isFocusableInTouchMode=true; root.elevation=d(12).toFloat()
         val directPanel=origin==null && initial!=FloatingMode.BUBBLE
+        val matchedEntrance=directPanel && FullscreenHandoff.shouldSuppressDirectFloatingEntrance()
         if(directPanel) {
             mode=initial; workspace.floatingVisible=initial==FloatingMode.CHAT
             rectangle=expandedBox(); target=rectangle; rememberPanelBox(initial,rectangle)
@@ -106,7 +107,13 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         OverlayGlass.apply(context,manager,params,directPanel)
         build(initialMode)
         if(directPanel) {
-            root.alpha=0f; root.scaleX=.94f; root.scaleY=.94f; root.translationY=d(14).toFloat()
+            if(matchedEntrance) {
+                // A captured fullscreen frame will be the only visible object during the handoff.
+                // Keep this real destination perfectly still and fully hidden until the morph lands.
+                root.alpha=0f; root.scaleX=1f; root.scaleY=1f; root.translationX=0f; root.translationY=0f
+            } else {
+                root.alpha=0f; root.scaleX=.94f; root.scaleY=.94f; root.translationY=d(14).toFloat()
+            }
             ignoreOutsideUntil=SystemClock.uptimeMillis()+450L
         }
         RenderPolicy.vote(context,root,params)
@@ -128,6 +135,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             insets
         }
         when {
+            matchedEntrance -> render()
             directPanel -> revealDirectPanel()
             initial==FloatingMode.CHOOSER -> showChooser()
             initial==FloatingMode.CHAT -> openChat(workspace.selectedId)
