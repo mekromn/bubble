@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Bubble live workspace and local reply lifecycle",
-  "version": "1.9",
+  "version": "2.0",
   "browser_specific_settings": {"gecko": {"id": "chat-monitor@bubble.local"}},
   "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons"],
   "content_scripts": [
