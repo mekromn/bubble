@@ -4,7 +4,8 @@ name: Verify browser file transfers
 # screen-wide blur-behind), continuous glass during drag/resize/animation, circular resting-bubble
 # glass, adjustable bubble opacity, drag-to-reorder tab order, shared Android notification health,
 # high-visibility ChatGPT reply alerts, protected Google Voice channels with real Voice
-# visibility/focus semantics, and the existing file/session/profile/floating/edge runtime gates.
+# visibility/focus semantics, plus the native Google Voice unread-title fallback for cases where
+# voice.google.com updates its tab title but emits zero Gecko Web Notification events.
 # API-31 blur calls remain runtime-gated on the min-26 app. Runtime failure still publishes a
 # clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds.
 on:
