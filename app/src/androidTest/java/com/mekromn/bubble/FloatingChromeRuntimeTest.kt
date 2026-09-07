@@ -55,22 +55,17 @@ class FloatingChromeRuntimeTest {
                     node("Refresh floating page") != null && node("Share floating page") != null && node(chatPill) != null
                 }
 
-                // Page pill: UP opens Your chats.
                 swipe(node(chatPill)!!, -44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
                 await { node(chooserPill) != null && node("Resize conversation chooser") != null }
-                // The ACTION_UP that completed the page gesture must not be interpreted as an
-                // outside touch by the newly built chooser and immediately collapse it.
                 Thread.sleep(650)
                 assertTrue(main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER })
 
-                // Your-chats pill: UP returns to the same/last selected tab.
-                val before = mainValue { Workspace.peek()?.selectedId.orEmpty() }
+                val before = selectedId()
                 swipe(node(chooserPill)!!, -44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
-                assertEquals(before, mainValue { Workspace.peek()?.selectedId.orEmpty() })
+                assertEquals(before, selectedId())
 
-                // Page pill: DOWN retains the existing minimize behavior.
                 swipe(node(chatPill)!!, 44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE && BubbleService.active?.window?.isTransitioning == false } }
             }
@@ -154,7 +149,7 @@ class FloatingChromeRuntimeTest {
         try { assertTrue(automation.injectInputEvent(e, true)) } finally { e.recycle() }
     }
     private fun main(test: () -> Boolean): Boolean { var result = false; instrumentation.runOnMainSync { result = test() }; return result }
-    private fun <T> mainValue(value: () -> T): T { lateinit var result: Any; instrumentation.runOnMainSync { result = value() as Any }; @Suppress("UNCHECKED_CAST") return result as T }
+    private fun selectedId(): String { var result = ""; instrumentation.runOnMainSync { result = Workspace.peek()?.selectedId.orEmpty() }; return result }
     private fun await(test: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + 45_000
         while (SystemClock.elapsedRealtime() < end) { if (test()) return; Thread.sleep(100) }
