@@ -295,11 +295,19 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         private var startY=0f
         private var armed=false
         private var active=false
+        private var gesture=ToolbarSwipe.NONE
         init {
             isClickable=true; isFocusable=true
-            contentDescription=if(vertical)"Swipe outward to minimize floating window" else "Swipe down to minimize floating window"
+            contentDescription=when {
+                vertical -> "Swipe outward to minimize floating window"
+                mode==FloatingMode.CHAT -> "Swipe up for chats or down to minimize floating window"
+                else -> "Swipe down to minimize floating window"
+            }
             background=Ui.ripple(context,android.graphics.Color.TRANSPARENT,14f)
             ViewCompat.addAccessibilityAction(this,"Minimize floating window") { _,_ -> collapse(); true }
+            if(!vertical && mode==FloatingMode.CHAT) {
+                ViewCompat.addAccessibilityAction(this,"Open conversation chooser") { _,_ -> showChooser(); true }
+            }
         }
         override fun onDraw(canvas:Canvas) {
             super.onDraw(canvas)
@@ -316,28 +324,33 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             if(hiding)return true
             when(event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    active=true; armed=false; startX=event.rawX; startY=event.rawY
+                    active=true; armed=false; gesture=ToolbarSwipe.NONE; startX=event.rawX; startY=event.rawY
                     animate().cancel(); translationX=0f; translationY=0f; alpha=1f; invalidate(); return true
                 }
-                MotionEvent.ACTION_POINTER_DOWN -> { active=false; armed=false; reset(); return true }
+                MotionEvent.ACTION_POINTER_DOWN -> { active=false; armed=false; gesture=ToolbarSwipe.NONE; reset(); return true }
                 MotionEvent.ACTION_MOVE -> if(active) {
                     val dx=event.rawX-startX; val dy=event.rawY-startY
                     val threshold=d(32).toFloat()
                     val next=if(vertical) {
                         val left=AccessPreferences.get(context).options.left
                         val outward=if(left)-dx else dx
-                        outward>threshold && outward>abs(dy)*1.15f
-                    } else dy>threshold && dy>abs(dx)*1.15f
-                    if(next && !armed)performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    armed=next
-                    if(vertical) translationX=(dx.coerceIn(-d(18).toFloat(),d(18).toFloat()))
-                    else translationY=(dy.coerceIn(0f,d(18).toFloat()))
+                        if(outward>threshold && outward>abs(dy)*1.15f)ToolbarSwipe.MINIMIZE else ToolbarSwipe.NONE
+                    } else ToolbarSwipePolicy.classify(dx,dy,threshold,
+                        swipeUpChooser=mode==FloatingMode.CHAT,swipeDownMinimize=true)
+                    if(next!=ToolbarSwipe.NONE && next!=gesture)performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    gesture=next; armed=next!=ToolbarSwipe.NONE
+                    if(vertical) translationX=dx.coerceIn(-d(18).toFloat(),d(18).toFloat())
+                    else translationY=dy.coerceIn(-d(18).toFloat(),d(18).toFloat())
                     alpha=if(armed).62f else .82f; invalidate()
                 }
                 MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> {
-                    val accepted=event.actionMasked==MotionEvent.ACTION_UP && active && armed
-                    active=false; armed=false; reset()
-                    if(accepted)collapse()
+                    val accepted=if(event.actionMasked==MotionEvent.ACTION_UP && active)gesture else ToolbarSwipe.NONE
+                    active=false; armed=false; gesture=ToolbarSwipe.NONE; reset()
+                    when(accepted) {
+                        ToolbarSwipe.OPEN_CHOOSER -> showChooser()
+                        ToolbarSwipe.MINIMIZE -> collapse()
+                        else -> Unit
+                    }
                 }
             }
             return true
