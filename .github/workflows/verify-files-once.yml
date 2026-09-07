@@ -6,6 +6,9 @@ name: Verify browser file transfers
 # high-visibility ChatGPT reply alerts, protected Google Voice channels with real Voice
 # visibility/focus semantics, plus the native Google Voice unread-title fallback for cases where
 # voice.google.com updates its tab title but emits zero Gecko Web Notification events.
+# Also verifies per-tab Site/System/Dark/Light webpage appearance without shared runtime theme
+# mutation, the chooser's compact top workspace menu replacing the legacy three-button footer,
+# and the chooser's persistent bottom-right resize handle.
 # The exact observed title form "Voice - (1) Messages" is covered by a unit regression test.
 # API-31 blur calls remain runtime-gated on the min-26 app. Runtime failure still publishes a
 # clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds.
