@@ -44,8 +44,12 @@ internal object PageAppearance {
     fun bind(context: Context, tabId: String, session: GeckoSession, addon: WebExtension) {
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
+                // At document_start Gecko may report an empty/about:blank sender URL for a few
+                // milliseconds even though this content script was matched from an HTTP(S) page.
+                // The session + top-level + isolated-content-script checks are the authority here;
+                // rejecting on sender.url caused the real-device dark/light toggle to silently miss.
                 if (nativeApp != NATIVE_APP || sender.session !== session || !sender.isTopLevel ||
-                    sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT || !Policy.isWeb(sender.url)) return null
+                    sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT) return null
                 val request = message as? JSONObject ?: return null
                 if (request.optString("event") != "appearance") return null
                 return GeckoResult.fromValue(JSONObject().put("mode", mode(context, tabId).wire))
