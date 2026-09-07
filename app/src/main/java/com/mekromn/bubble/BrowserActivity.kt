@@ -1,6 +1,7 @@
 package com.mekromn.bubble
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
@@ -35,7 +36,7 @@ class BrowserActivity : Activity() {
     private lateinit var root: FrameLayout
     private lateinit var bar: LinearLayout
     private lateinit var progress: ProgressBar
-    private lateinit var address: EditText
+    private lateinit var address: SwipeAddressEditText
     private lateinit var error: TextView
     private lateinit var tabs: GlyphView
     private lateinit var back: GlyphView
@@ -51,6 +52,7 @@ class BrowserActivity : Activity() {
     private var pendingHide = false
     private var externalFlow = false
     private var enteringPip = false
+    private var tabSwipeAnimating = false
     private var currentUrl = ""
     private var notice: String? = null
     private val meter = FrameMeter()
@@ -166,11 +168,12 @@ class BrowserActivity : Activity() {
             setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.navigation(this, workspace); true }
         }
         bar.addView(back, LinearLayout.LayoutParams(d(48), d(48)))
-        address = EditText(this).apply {
+        address = SwipeAddressEditText(this).apply {
             setSingleLine(true); textSize = 13f; setTextColor(Ui.TEXT); setHintTextColor(Ui.MUTED)
             hint = "Search or address"; contentDescription = "Address and search"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI; imeOptions = EditorInfo.IME_ACTION_GO
             background = Ui.shape(this@BrowserActivity, Ui.BG, 16f); setPadding(d(12), 0, d(8), 0); setSelectAllOnFocus(true)
+            onToolbarSwipe = { switchTabFromToolbarSwipe(it) }
             setOnFocusChangeListener { _, focused -> if (focused) { setText(currentUrl); selectAll() } else if (::workspace.isInitialized) render() }
             setOnEditorActionListener { _, action, _ ->
                 if (action == EditorInfo.IME_ACTION_GO) { val url = text.toString(); clearFocus(); root.requestFocus(); hideKeyboard(); workspace.navigate(url); true } else false
@@ -203,6 +206,25 @@ class BrowserActivity : Activity() {
         ViewCompat.requestApplyInsets(root)
     }
     private fun control(glyph: String, label: String, accent: Boolean = false, action: () -> Unit) = GlyphView(this, glyph, label, accent).apply { setOnClickListener { if (::workspace.isInitialized && workspace.ready) action() } }
+    private fun switchTabFromToolbarSwipe(action: ToolbarSwipe) {
+        if (action != ToolbarSwipe.NEXT_TAB && action != ToolbarSwipe.PREVIOUS_TAB) return
+        if (!started || handoff || tabSwipeAnimating || workspace.tabs.size < 2 || tray?.visibility == View.VISIBLE || workspace.quickMenuVisible) return
+        hideKeyboard(); address.clearFocus(); root.requestFocus()
+        val backwards = action == ToolbarSwipe.PREVIOUS_TAB
+        if (!ValueAnimator.areAnimatorsEnabled()) { workspace.cycle(backwards); return }
+        tabSwipeAnimating = true
+        val direction = if (action == ToolbarSwipe.NEXT_TAB) -1f else 1f
+        val travel = d(56).toFloat()
+        geckoView.animate().cancel()
+        geckoView.animate().translationX(direction * travel).alpha(.76f).setDuration(80).setInterpolator(Ui.ease).withEndAction {
+            if (!started || handoff || isFinishing) { tabSwipeAnimating = false; geckoView.translationX = 0f; geckoView.alpha = 1f; return@withEndAction }
+            workspace.cycle(backwards)
+            geckoView.translationX = -direction * travel; geckoView.alpha = .76f
+            geckoView.animate().translationX(0f).alpha(1f).setDuration(125).setInterpolator(Ui.ease).withEndAction {
+                tabSwipeAnimating = false
+            }.start()
+        }.start()
+    }
     private fun refreshPage() {
         hideKeyboard(); address.clearFocus(); root.requestFocus()
         val session = selectedSession
