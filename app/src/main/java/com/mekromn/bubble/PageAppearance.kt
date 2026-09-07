@@ -41,18 +41,32 @@ internal object PageAppearance {
         edit.apply()
     }
 
+    private fun response(context: Context, tabId: String) =
+        JSONObject().put("mode", mode(context, tabId).wire)
+
     fun bind(context: Context, tabId: String, session: GeckoSession, addon: WebExtension) {
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
-                // At document_start Gecko may report an empty/about:blank sender URL for a few
-                // milliseconds even though this content script was matched from an HTTP(S) page.
-                // The session + top-level + isolated-content-script checks are the authority here;
-                // rejecting on sender.url caused the real-device dark/light toggle to silently miss.
-                if (nativeApp != NATIVE_APP || sender.session !== session || !sender.isTopLevel ||
-                    sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT) return null
+                // This delegate is already scoped to this exact GeckoSession + built-in extension.
+                // During document_start Gecko can transiently report sender metadata such as
+                // isTopLevel/environmentType before it settles. Rejecting on those fields caused a
+                // missed request to look like a successful DEFAULT response in the content script.
+                // The content script itself is top-frame-only, so session identity is the durable
+                // boundary here.
+                if (nativeApp != NATIVE_APP || sender.session !== session) return null
                 val request = message as? JSONObject ?: return null
                 if (request.optString("event") != "appearance") return null
-                return GeckoResult.fromValue(JSONObject().put("mode", mode(context, tabId).wire))
+                return GeckoResult.fromValue(response(context, tabId))
+            }
+
+            override fun onConnect(port: WebExtension.Port) {
+                // Connection-based fallback for devices/pages where a one-shot message races the
+                // session delegate. The port is session-scoped by the same built-in extension.
+                if (port.name != NATIVE_APP || port.sender.session !== session) {
+                    port.disconnect(); return
+                }
+                runCatching { port.postMessage(response(context, tabId)) }
+                port.disconnect()
             }
         }, NATIVE_APP)
     }
