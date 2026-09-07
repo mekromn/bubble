@@ -330,7 +330,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun engine(): GeckoRuntime {
         runtime?.let { return it }
         val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false).build())
-        runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
+        runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
         VoiceNotifications.install(app, created, this)
         main.postDelayed(monitorTimeout, 10_000)
         created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local").accept({ addon -> finishMonitor(addon) }, { finishMonitor(null) })
@@ -467,6 +467,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun installMonitor(tab: ChatTab, session: GeckoSession, addon: WebExtension) {
         val blobRuntime = engine()
+        PageAppearance.bind(app, tab.id, session, addon)
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
                 if (nativeApp != "bubble" || sender.session !== session ||
