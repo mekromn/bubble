@@ -30,6 +30,7 @@ internal object FullscreenHandoff {
     private const val SHRINK_WATCHDOG_MS = 1800L
     private const val EXPANSION_WATCHDOG_MS = 1800L
     private const val RECENT_FULLSCREEN_SEED_MS = 30_000L
+    private const val FLOATING_FOCUS_SETTLE_MS = 32L
     private val main = Handler(Looper.getMainLooper())
     private val capturePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
     private var pendingFullscreenFrame: MorphFrame? = null
@@ -80,9 +81,13 @@ internal object FullscreenHandoff {
         }
 
         holdFloating(floating)
-        root.postOnAnimation {
+        // A newly-added CHAT overlay is focusable. Let WindowManager deliver its initial focus/input
+        // transaction before doing any snapshot work on the main thread. This matters on slow GPUs
+        // and eliminates the pathological case where a perfectly valid visual capture could delay a
+        // FocusEvent long enough for InputDispatcher to declare the destination window hung.
+        main.postDelayed({
             if (activity.isFinishing) {
-                source.bitmap.safeRecycle(); showFloating(floating); done(); return@postOnAnimation
+                source.bitmap.safeRecycle(); showFloating(floating); done(); return@postDelayed
             }
             // The floating Gecko surface has only just received the existing session. capturePixels
             // is deliberately bounded: a compositor capture is a fidelity enhancement, never a
@@ -127,7 +132,7 @@ internal object FullscreenHandoff {
                     done()
                 }
             }
-        }
+        }, FLOATING_FOCUS_SETTLE_MS)
     }
 
     /** Floating -> fullscreen: grow the exact card to the display, then hand it to BrowserActivity. */
@@ -313,31 +318,41 @@ internal object FullscreenHandoff {
         card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f; card.alpha = 1f
     }
 
-    /** Capture native floating chrome, then replace the Gecko rectangle with compositor pixels. */
+    /**
+     * Capture floating native chrome without redundantly rasterizing GeckoView's TextureView. Gecko
+     * compositor pixels are captured separately below and composited into the exact screen rectangle.
+     * Suppressing only alpha (not visibility) keeps Gecko's lifecycle/surface ownership unchanged.
+     */
     private fun captureFloatingFrame(floating: FloatingWindow, result: (MorphFrame?) -> Unit) {
         val card = floating.transitionView
         if (!card.isLaidOut || !card.isAttachedToWindow || card.width <= 0 || card.height <= 0) {
             result(null); return
         }
+        val gecko = floating.geckoView
         val oldAlpha = card.alpha
         val oldSx = card.scaleX; val oldSy = card.scaleY
         val oldTx = card.translationX; val oldTy = card.translationY
-        card.alpha = 1f; card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f
+        val oldGeckoAlpha = gecko?.alpha ?: 1f
+        fun restore() {
+            card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy
+            card.translationX = oldTx; card.translationY = oldTy
+            if (gecko != null) gecko.alpha = oldGeckoAlpha
+        }
+        card.alpha = 1f; card.scaleX = 1f; card.scaleY = 1f
+        card.translationX = 0f; card.translationY = 0f
+        if (gecko != null) gecko.alpha = 0f
         val bitmap = try { Bitmap.createBitmap(card.width, card.height, Bitmap.Config.ARGB_8888) } catch (_: Throwable) { null }
         if (bitmap == null) {
-            card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy; card.translationX = oldTx; card.translationY = oldTy
-            result(null); return
+            restore(); result(null); return
         }
         try {
             card.draw(Canvas(bitmap))
         } catch (_: Throwable) {
-            bitmap.safeRecycle()
-            card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy; card.translationX = oldTx; card.translationY = oldTy
-            result(null); return
+            bitmap.safeRecycle(); restore(); result(null); return
         }
-        card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy; card.translationX = oldTx; card.translationY = oldTy
+        restore()
         val frame = MorphFrame(bitmap, floating.box)
-        compositeGeckoPixels(floating.geckoView, card, bitmap) { _ -> result(frame) }
+        compositeGeckoPixels(gecko, card, bitmap) { _ -> result(frame) }
     }
 
     /** PixelCopy native Activity chrome, then guarantee whether SurfaceView webpage pixels arrived. */
