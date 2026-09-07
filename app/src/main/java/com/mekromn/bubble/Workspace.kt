@@ -330,7 +330,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun engine(): GeckoRuntime {
         runtime?.let { return it }
         val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false).build())
-        runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
+        runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
         VoiceNotifications.install(app, created, this)
         main.postDelayed(monitorTimeout, 10_000)
         created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local").accept({ addon -> finishMonitor(addon) }, { finishMonitor(null) })
@@ -491,7 +491,6 @@ internal class Workspace private constructor(private val app: Context, initialUr
                         if (!tab.generating || tab.run != run || tab.lastNotice == run) return null
                         tab.generating = false; tab.lastNotice = run; tab.unread = !(chatVisible && tab.id == selectedId); applyPolicy(); changed()
                         checkpoint { _ ->
-                            // A local persistence failure must never suppress a user-visible reply alert.
                             if (tab in tabs && tab.unread && !tab.muted && tab.lastNotice == run) Replies.finished(app, tab.id)
                             if (tab in tabs && tab.session === session && !selectedVisible(tab) && !tab.forceKeepAlive && !tab.manualSuspended) {
                                 scheduleAutoSuspend(tab, session)
