@@ -27,6 +27,7 @@ internal class ConversationList(context: Context, private val select: (String) -
         val readiness: TabReadiness)
     private var rows = emptyList<Row>(); private var query = ""; private var filter = TabFilter.ALL
     private var pendingReveal: String? = null
+    private var lastSelectedForReveal = ""
     var onResultCount: ((Int) -> Unit)? = null
     private val cards = Rows()
     private val drag = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
@@ -58,6 +59,10 @@ internal class ConversationList(context: Context, private val select: (String) -
         clipToPadding = false; setPadding(d(8), d(4), d(8), d(8)); contentDescription = "Conversation list"
     }
     fun refresh(workspace: Workspace) {
+        if (lastSelectedForReveal != workspace.selectedId) {
+            lastSelectedForReveal = workspace.selectedId
+            pendingReveal = workspace.selectedId
+        }
         val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab -> Row(tab.id, tab.displayName,
             (if (workspace.profiles.size > 1) "${workspace.profileName(tab.profileId)} · " else "") +
             (if (tab.pinned) "Pinned · " else "") + when {
