@@ -17,7 +17,10 @@ class BubbleApp : Application(), Application.ActivityLifecycleCallbacks {
     }
 
     override fun onActivityResumed(activity: Activity) {
-        if (activity is BrowserActivity) main.post { NotificationHealth.maybePrompt(activity) }
+        if (activity is BrowserActivity) main.post {
+            NotificationHealth.maybePrompt(activity)
+            Workspace.peek()?.let { VoiceTitleFallback.attach(this, it) }
+        }
     }
     override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
     override fun onActivityStarted(activity: Activity) = Unit
