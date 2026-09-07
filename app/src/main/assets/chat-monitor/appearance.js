@@ -132,7 +132,17 @@
     candidates.forEach(node => {
       if (!(node instanceof Element) || node.matches('img,picture,video,canvas,iframe,svg')) return;
       const rect = node.getBoundingClientRect();
-      if (rect.bottom <= 0 || rect.top >= topLimit || rect.width < w * .46 || rect.height < 34 || rect.height > topLimit * 1.35) return;
+      const geometryEligible = rect.bottom > 0 && rect.top < topLimit && rect.width >= w * .46 && rect.height >= 34 && rect.height <= topLimit * 1.35;
+      if (!geometryEligible) return;
+
+      // Once Bubble has identified a light top-chrome surface, its own dark CSS changes the
+      // computed background. Re-sampling that transformed color made the class oscillate on/off on
+      // every observer pass. Keep an already-retinted surface while it is still geometrically the
+      // same top bar; remove it only when the DOM/layout moves it out of that role or dark mode ends.
+      if (node.classList.contains(SURFACE_CLASS)) {
+        keep.add(node);
+        return;
+      }
       const value = nodeLuma(node);
       if (value !== null && value > .78) keep.add(node);
     });
