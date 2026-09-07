@@ -12,7 +12,7 @@ internal object TabResourceMenu {
     fun show(anchor: View, workspace: Workspace, id: String, select: (String) -> Unit, more: () -> Unit) {
         val tab = workspace.tabs.firstOrNull { it.id == id } ?: return
         val voice = Policy.isVoice(tab.url)
-        val panel = QuickPanel.open(anchor, workspace, "Resources · ${tab.displayName}", if (voice) 270 else 310) ?: return
+        val panel = QuickPanel.open(anchor, workspace, "Resources · ${tab.displayName}", if (voice) 330 else 370) ?: return
         val body = LinearLayout(anchor.context).apply { orientation = LinearLayout.VERTICAL }
         val state = when {
             voice -> "Google Voice · protected live for calls/messages/voicemail"
@@ -21,7 +21,7 @@ internal object TabResourceMenu {
             tab.forceKeepAlive -> "Forced live · automatic suspension disabled"
             tab.manualSuspended -> "Manually suspended"
             tab.suspended || tab.session == null -> "Suspended · resumes when opened"
-            Policy.isChat(tab.url) -> "Live now · idle background state auto-suspends"
+            Policy.isChat(tab.url) -> "Live now · idle background state auto-suspends after 5 min"
             else -> "Live · automatic idle suspension is ChatGPT-only"
         }
         body.addView(Ui.text(anchor.context, state, 12f, Ui.MUTED).apply {
@@ -33,6 +33,9 @@ internal object TabResourceMenu {
             background = Ui.ripple(anchor.context, Color.TRANSPARENT, 14f)
             setOnClickListener { if (enabled) panel.finish(action) }
         }
+        body.addView(row("Page appearance · ${PageAppearance.label(anchor.context, id)}") {
+            PageAppearance.controls(anchor, workspace, id)
+        }, LinearLayout.LayoutParams(-1, dp(anchor, 50)))
         if (voice) {
             body.addView(row("Google Voice notification controls") { VoiceNotifications.controls(anchor, workspace, id) }, LinearLayout.LayoutParams(-1, dp(anchor, 50)))
             body.addView(row("Protected live · suspension disabled", false) {}, LinearLayout.LayoutParams(-1, dp(anchor, 50)))
