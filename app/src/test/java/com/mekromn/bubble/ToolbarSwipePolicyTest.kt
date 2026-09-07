@@ -11,9 +11,10 @@ class ToolbarSwipePolicyTest {
         assertEquals(ToolbarSwipe.NONE, ToolbarSwipePolicy.classify(80f, 76f, 32f, horizontalTabs = true))
     }
 
-    @Test fun floatingPillSeparatesUpChooserFromDownMinimize() {
-        assertEquals(ToolbarSwipe.OPEN_CHOOSER, ToolbarSwipePolicy.classify(5f, -70f, 32f, swipeUpChooser = true, swipeDownMinimize = true))
-        assertEquals(ToolbarSwipe.MINIMIZE, ToolbarSwipePolicy.classify(-6f, 70f, 32f, swipeUpChooser = true, swipeDownMinimize = true))
-        assertEquals(ToolbarSwipe.NONE, ToolbarSwipePolicy.classify(50f, -50f, 32f, swipeUpChooser = true, swipeDownMinimize = true))
+    @Test fun floatingPillSeparatesUpSwitcherReturnAndDownMinimize() {
+        assertEquals(ToolbarSwipe.OPEN_CHOOSER, ToolbarSwipePolicy.classify(5f, -70f, 24f, swipeUpChooser = true, swipeDownMinimize = true))
+        assertEquals(ToolbarSwipe.RETURN_TO_TAB, ToolbarSwipePolicy.classify(-8f, -64f, 24f, swipeUpReturn = true, swipeDownMinimize = true))
+        assertEquals(ToolbarSwipe.MINIMIZE, ToolbarSwipePolicy.classify(-6f, 70f, 24f, swipeUpChooser = true, swipeDownMinimize = true))
+        assertEquals(ToolbarSwipe.NONE, ToolbarSwipePolicy.classify(80f, -40f, 24f, swipeUpChooser = true, swipeDownMinimize = true))
     }
 }
