@@ -23,10 +23,11 @@ internal data class MorphFrame(val bitmap: Bitmap, val box: WindowBox)
  * TYPE_APPLICATION_OVERLAY boundary. It absorbs touch during the few transition frames so input
  * can never hit an invisible source/destination window while the shared card is in flight.
  *
- * Unlike a normal View scale animation, the bitmap is never stretched independently on X/Y.
- * Container bounds morph continuously while each source/destination frame is center-cropped with
- * a uniform scale, matching the perceptual behavior of a high-quality container transform: text
- * and icons never become rubbery as the fullscreen and floating aspect ratios diverge.
+ * The shared container owns geometry, clipping and surface opacity. Source/destination pixels are
+ * uniformly center-cropped rather than independently X/Y-scaled, so text and icons never become
+ * rubbery when the fullscreen and floating aspect ratios diverge. A matching backing surface also
+ * morphs between opaque fullscreen chrome and translucent floating glass, preventing the launcher
+ * from bleeding through during a fade-through while preserving the floating card's glass at rest.
  */
 internal class WindowMorphOverlay(
     context: Context,
@@ -38,6 +39,7 @@ internal class WindowMorphOverlay(
     private val app = context.applicationContext
     private val manager = app.getSystemService(WindowManager::class.java)
     private val display = displayBox(app)
+    private val expanding = destinationBox.width > source.box.width || destinationBox.height > source.box.height
     private val root = FrameLayout(app).apply {
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
         clipChildren = false
@@ -47,6 +49,7 @@ internal class WindowMorphOverlay(
         setOnTouchListener { _, _ -> true }
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
     }
+    private val backdropView = MorphBackdropView(app, Ui.BG)
     private val sourceView = MorphBitmapView(app, source.bitmap)
     private var destinationView: MorphBitmapView? = null
     private var attached = false
@@ -72,14 +75,17 @@ internal class WindowMorphOverlay(
 
     init {
         sourceView.alpha = 1f
+        root.addView(backdropView, FrameLayout.LayoutParams(-1, -1))
         root.addView(sourceView, FrameLayout.LayoutParams(-1, -1))
+        applyBox(backdropView, source.box, sourceRadiusPx)
         applyBox(sourceView, source.box, sourceRadiusPx)
+        applySurfaceOpacity(0f)
     }
 
     fun attach(onReady: () -> Unit = {}) {
         if (attached) { onReady(); return }
         // The transition surface itself gets the fastest real display mode. On the Pixel this is
-        // essential: voting only the source/destination windows would let the temporary shared
+        // essential: voting only the source/destination windows could let the temporary shared
         // element fall back to 60 Hz exactly while it is the only thing the user is watching.
         RenderPolicy.vote(app, root, params)
         manager.addView(root, params)
@@ -140,7 +146,7 @@ internal class WindowMorphOverlay(
         }
     }
 
-    /** At full size, dissolve the held morph frame into a real PixelCopy of BrowserActivity. */
+    /** At full size, cover the held frame with a real PixelCopy of BrowserActivity at same bounds. */
     fun finishWith(frame: MorphFrame?, durationMs: Long = 105L, onEnd: () -> Unit) {
         if (!attached || frame == null || !ValueAnimator.areAnimatorsEnabled()) {
             onEnd(); return
@@ -150,8 +156,9 @@ internal class WindowMorphOverlay(
         dest.alpha = 0f
         sourceView.alpha = 1f
         dest.animate().cancel(); sourceView.animate().cancel()
-        dest.animate().withLayer().alpha(1f).setDuration(durationMs).setInterpolator(Ui.ease).start()
-        sourceView.animate().withLayer().alpha(0f).setDuration(durationMs).setInterpolator(Ui.ease)
+        // Source deliberately remains fully opaque underneath. Fading both layers at once creates
+        // an avoidable opacity trough where the underlying Activity/launcher can leak through.
+        dest.animate().withLayer().alpha(1f).setDuration(durationMs).setInterpolator(Ui.ease)
             .withEndAction { if (attached) onEnd() }.start()
     }
 
@@ -173,26 +180,37 @@ internal class WindowMorphOverlay(
 
     private fun applyCurrent(t: Float) {
         val radius = lerp(sourceRadiusPx, destinationRadiusPx, t)
+        applyBox(backdropView, current, radius)
         applyBox(sourceView, current, radius)
         destinationView?.let { applyBox(it, current, radius) }
+        applySurfaceOpacity(t)
 
-        // Fade-through happens *inside the same moving container*. With a prepared floating
-        // destination, its reflowed chrome/page starts contributing only near the landing zone.
-        // During floating -> fullscreen there is no destination Activity yet, so the held card is
-        // intentionally opaque until it covers the display and BrowserActivity is ready behind it.
+        // Fade-through happens *inside the same moving container*. The source stays opaque below
+        // the destination for the entire transform, so combined opacity never falls below one.
         val destination = destinationView
         if (destination != null) {
-            destination.alpha = smoothstep(.52f, .90f, t)
-            sourceView.alpha = 1f - smoothstep(.62f, .97f, t)
+            destination.alpha = smoothstep(.52f, .92f, t)
+            sourceView.alpha = 1f
         } else sourceView.alpha = 1f
 
-        // Tiny mid-flight emphasis gives mass without overshooting the actual container bounds.
+        // Tiny mid-flight content emphasis gives mass without overshooting the container bounds.
         val lift = 1f + .006f * (1f - abs(t * 2f - 1f))
         sourceView.contentScale = lift
         destination?.contentScale = lift
     }
 
-    private fun applyBox(view: MorphBitmapView, box: WindowBox, radiusPx: Float) {
+    private fun applySurfaceOpacity(t: Float) {
+        // Fullscreen's root is opaque while the floating card intentionally uses translucent glass.
+        // Grow the opaque backing during expansion; remove it during contraction. This makes the
+        // surface itself appear to materialize/dematerialize rather than exposing a foreign window.
+        backdropView.surfaceAlpha = if (expanding) {
+            smoothstep(.08f, .92f, t)
+        } else {
+            1f - smoothstep(.18f, .96f, t)
+        }
+    }
+
+    private fun applyBox(view: MorphContainerView, box: WindowBox, radiusPx: Float) {
         view.container = RectF(
             (box.x - display.x).toFloat(),
             (box.y - display.y).toFloat(),
@@ -213,18 +231,34 @@ internal class WindowMorphOverlay(
 
     private fun lerpRadius(t: Float) = lerp(sourceRadiusPx, destinationRadiusPx, t)
 
-    /** Full-overlay custom draw: container moves, content scales uniformly and is clipped/cropped. */
-    private class MorphBitmapView(context: Context, bitmap: Bitmap) : View(context) {
-        private var image: Bitmap? = bitmap
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
-        private val clipPath = Path()
-        private val drawRect = RectF()
+    private abstract class MorphContainerView(context: Context) : View(context) {
         private var _container = RectF()
         var container: RectF
             get() = RectF(_container)
             set(value) { _container.set(value); invalidate() }
         var cornerRadius: Float = 0f
             set(value) { if (field != value) { field = value; invalidate() } }
+        protected val box: RectF get() = _container
+    }
+
+    private class MorphBackdropView(context: Context, color: Int) : MorphContainerView(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+        var surfaceAlpha: Float = 0f
+            set(value) { if (field != value) { field = value.coerceIn(0f, 1f); invalidate() } }
+        override fun onDraw(canvas: Canvas) {
+            val rect = box
+            if (rect.width() <= 0f || rect.height() <= 0f || surfaceAlpha <= 0f) return
+            paint.alpha = (surfaceAlpha * 255f).toInt().coerceIn(0, 255)
+            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
+        }
+    }
+
+    /** Full-overlay custom draw: container moves, content scales uniformly and is clipped/cropped. */
+    private class MorphBitmapView(context: Context, bitmap: Bitmap) : MorphContainerView(context) {
+        private var image: Bitmap? = bitmap
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
+        private val clipPath = Path()
+        private val drawRect = RectF()
         var contentScale: Float = 1f
             set(value) { if (field != value) { field = value; invalidate() } }
 
@@ -232,24 +266,24 @@ internal class WindowMorphOverlay(
 
         override fun onDraw(canvas: Canvas) {
             val bitmap = image ?: return
-            val box = _container
-            if (box.width() <= 0f || box.height() <= 0f || bitmap.width <= 0 || bitmap.height <= 0) return
+            val rect = box
+            if (rect.width() <= 0f || rect.height() <= 0f || bitmap.width <= 0 || bitmap.height <= 0) return
 
             val save = canvas.save()
             clipPath.reset()
-            clipPath.addRoundRect(box, cornerRadius, cornerRadius, Path.Direction.CW)
+            clipPath.addRoundRect(rect, cornerRadius, cornerRadius, Path.Direction.CW)
             canvas.clipPath(clipPath)
 
             // Center-crop with one scalar so glyphs, text and faces retain their exact aspect ratio.
-            var scale = max(box.width() / bitmap.width.toFloat(), box.height() / bitmap.height.toFloat())
+            var scale = max(rect.width() / bitmap.width.toFloat(), rect.height() / bitmap.height.toFloat())
             scale *= contentScale
             val dw = bitmap.width * scale
             val dh = bitmap.height * scale
             drawRect.set(
-                box.centerX() - dw / 2f,
-                box.centerY() - dh / 2f,
-                box.centerX() + dw / 2f,
-                box.centerY() + dh / 2f
+                rect.centerX() - dw / 2f,
+                rect.centerY() - dh / 2f,
+                rect.centerX() + dw / 2f,
+                rect.centerY() + dh / 2f
             )
             canvas.drawBitmap(bitmap, null, drawRect, paint)
             canvas.restoreToCount(save)
