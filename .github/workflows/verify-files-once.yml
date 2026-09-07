@@ -1,15 +1,14 @@
 name: Verify current Bubble changes
 # Emulator time is deliberately scoped to the features being changed now, not an ever-growing
-# historical regression queue. Previously-proven file-transfer runtime tests remain in source but
-# are no longer part of every build's emulator gate.
+# historical regression queue. Previously-proven file-transfer and older appearance regressions
+# remain in source but are no longer part of every build's emulator gate.
 #
-# Current gate: floating-window chrome/gesture behavior plus webpage appearance. This includes the
-# four-way floating page pill, chooser return/minimize pill, independent chooser geometry, status
-# colors, stable mixed-theme Force dark behavior that keeps Google Voice-style white top chrome
-# dark without oscillating or destroying an already-dark conversation body, and the coordinated
-# fullscreen <-> floating card transition. The handoff never shrinks the opaque fullscreen Activity
-# root; motion is compositor transforms on the already-positioned glass card, with staged
-# header/body/footer arrival and a whole-card system clip reveal in the reverse direction.
+# Current gate: floating-window chrome/gesture behavior plus the Google Voice mixed-theme Force
+# Dark fix. This includes the four-way floating page pill, chooser return/minimize pill, independent
+# chooser geometry, status colors, stable dark top chrome over an already-dark Voice conversation
+# body, and the coordinated fullscreen <-> floating card transition. The handoff never shrinks the
+# opaque fullscreen Activity root; motion is compositor transforms on the already-positioned glass
+# card, with staged header/body/footer arrival and whole-card clip reveal in the reverse direction.
 on:
   push:
     branches: [rebuild-v2]
