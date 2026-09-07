@@ -9,7 +9,10 @@ name: Verify current Bubble changes
 # transparent system overlay, and morphs a single visible card continuously through position, size,
 # corner radius and destination-frame fade-through. Content uses uniform center-crop scaling rather
 # than X/Y stretching, the temporary overlay spans Pixel cutout bounds exactly, and the real source
-# or destination stays hidden until the held card occupies the same geometry. Floating runtime now
+# or destination stays hidden until the held card occupies the same geometry. The held frame waits
+# for source/destination task visibility rather than racing Android task transitions, suppresses the
+# destination Activity's unrelated system animation, absorbs touch while in flight, and explicitly
+# requests the fastest supported display mode on the temporary shared surface. Floating runtime
 # exercises a complete fullscreen -> floating -> fullscreen -> floating round trip before minimize.
 on:
   push:
