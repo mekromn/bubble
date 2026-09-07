@@ -4,11 +4,13 @@ name: Verify current Bubble changes
 # remain in source but are no longer part of every build's emulator gate.
 #
 # Current gate: floating-window chrome/gesture behavior plus the Google Voice mixed-theme Force
-# Dark fix. This includes the four-way floating page pill, chooser return/minimize pill, independent
-# chooser geometry, status colors, stable dark top chrome over an already-dark Voice conversation
-# body, and the coordinated fullscreen <-> floating card transition. The handoff never shrinks the
-# opaque fullscreen Activity root; motion is compositor transforms on the already-positioned glass
-# card, with staged header/body/footer arrival and whole-card clip reveal in the reverse direction.
+# Dark fix and the new true matched fullscreen <-> floating morph. The handoff now captures the
+# exact source pixels before Gecko changes surface ownership, places that frame in one transparent
+# system overlay, and animates that single visible card continuously through position, size, corner
+# radius and destination-frame dissolve. The real destination is hidden underneath until its bounds
+# exactly match, preventing black backing flashes, double-card reads and independent-window timing.
+# Floating -> fullscreen grows that same held card to the display before BrowserActivity is launched
+# behind it, then PixelCopies the real destination and dissolves only at identical full-screen bounds.
 on:
   push:
     branches: [rebuild-v2]
