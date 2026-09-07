@@ -45,8 +45,8 @@ class RebuildRegressionTest {
         assertTrue("Continuous page updates postponed every disk checkpoint", savedDuringChurn)
     }
 
-    @Test fun systemWebPreferenceAndBadSessionSnapshotFallBackToRealNavigation() = withPage { scenario ->
-        waitFor(scenario) { it.painted && it.pageTitle in setOf("DARK-PREFERENCE", "LIGHT-PREFERENCE") }
+    @Test fun darkWebPreferenceAndBadSessionSnapshotFallBackToRealNavigation() = withPage { scenario ->
+        waitFor(scenario) { it.painted && it.pageTitle == "DARK-PREFERENCE" }
         var id = ""
         scenario.onActivity { activity ->
             val tab = ChatTab(url = activity.workspace.selected!!.url).apply {
@@ -56,10 +56,7 @@ class RebuildRegressionTest {
             activity.workspace.tabs += tab
             activity.workspace.select(id)
         }
-        waitFor(scenario) {
-            it.workspace.selectedId == id && it.painted &&
-                it.pageTitle in setOf("DARK-PREFERENCE", "LIGHT-PREFERENCE")
-        }
+        waitFor(scenario) { it.workspace.selectedId == id && it.painted && it.pageTitle == "DARK-PREFERENCE" }
         scenario.onActivity { assertFalse(it.isFinishing); assertNull(it.workspace.selected!!.error) }
     }
 
