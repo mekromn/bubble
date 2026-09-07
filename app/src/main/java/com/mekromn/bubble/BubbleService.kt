@@ -145,7 +145,24 @@ class BubbleService : Service() {
         removeSurfaces(); workspace.flush(); return true
     }
     private fun removeSurfaces() { edge?.destroy(); edge = null; window?.destroy(); window = null }
-    internal fun releaseForActivity() { stopping = true; pendingMode = null; removeSurfaces(); stopSelf() }
+
+    /**
+     * Fullscreen has taken ownership of the workspace. Drop the process-level floating-owner
+     * reference synchronously before tearing down the overlay views; Service.onDestroy() is an
+     * asynchronous lifecycle callback and leaving `active` non-null until then creates a false
+     * second owner during the final matched-morph handoff.
+     */
+    internal fun releaseForActivity() {
+        if (stopping) {
+            if (active === this) active = null
+            return
+        }
+        stopping = true
+        pendingMode = null
+        if (active === this) active = null
+        removeSurfaces()
+        stopSelf()
+    }
     private fun createChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Floating workspace", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Restore hidden workspace, switch back to bubble, or stop the service"; setShowBadge(false)
