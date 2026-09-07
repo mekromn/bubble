@@ -1,23 +1,15 @@
-name: Verify browser file transfers
-# Consolidated verification for unrestricted attachment selection, no-stale ChatGPT resume,
-# five-minute idle ChatGPT suspension grace, shape-clipped Window background blur only (never
-# screen-wide blur-behind), continuous glass during drag/resize/animation, circular resting-bubble
-# glass, adjustable bubble opacity, drag-to-reorder tab order, shared Android notification health,
-# high-visibility ChatGPT reply alerts, protected Google Voice channels with real Voice
-# visibility/focus semantics, plus the native Google Voice unread-title fallback for cases where
-# voice.google.com updates its tab title but emits zero Gecko Web Notification events.
-# Also verifies persistent per-tab Bubble-default/Force-dark/Force-light webpage presentation,
-# including late-rendering light SPAs such as Google Voice without observer feedback loops and with
-# a resilient content-script/native appearance handshake that retries invalid one-shot responses
-# and falls back to connectNative instead of silently treating a missed delegate as DEFAULT.
-# Independently persisted floating-chat and chooser geometry, symmetric chooser list insets,
-# readiness-colored tab cards, current/last-tab reveal in both switchers, and the shared bottom pill
-# are also covered. Floating webpage pill: left=Back, right=Forward, up=Your chats, down=minimize.
-# Your-chats pill: up=return to last tab, down=minimize. Fullscreen-to-floating no longer scales an
-# opaque Activity root (which exposed a black backing surface); the overlay uses fixed-bounds
-# translucent settle motion instead. The exact observed title form "Voice - (1) Messages" remains
-# regression-tested. API-31 blur calls remain runtime-gated on the min-26 app. Runtime failure still
-# publishes a clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds.
+name: Verify current Bubble changes
+# Emulator time is deliberately scoped to the features being changed now, not an ever-growing
+# historical regression queue. Previously-proven file-transfer runtime tests remain in source but
+# are no longer part of every build's emulator gate.
+#
+# Current gate: floating-window chrome/gesture behavior plus webpage appearance. This includes the
+# four-way floating page pill, chooser return/minimize pill, independent chooser geometry, status
+# colors, mixed-theme Force dark behavior that retints Google Voice-style white top chrome without
+# destroying an already-dark conversation body, and the coordinated fullscreen <-> floating card
+# transition. The handoff never shrinks the opaque fullscreen Activity root; motion is compositor
+# transforms on the already-positioned glass card, with staged header/body/footer arrival and a
+# whole-card system clip reveal in the reverse direction.
 on:
   push:
     branches: [rebuild-v2]
