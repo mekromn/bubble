@@ -12,6 +12,10 @@ class TabSuspendPolicyTest {
         assertFalse(TabSuspendPolicy.automatic(false, false, false, false, false))
     }
 
+    @Test fun idleGraceIsFiveMinutes() {
+        assertEquals(300_000L, TabSuspendPolicy.AUTO_SUSPEND_DELAY_MS)
+    }
+
     @Test fun forceKeepAliveOverridesAutomaticButManualSuspendWins() {
         assertFalse(TabSuspendPolicy.shouldSuspend(false, true, true, false, false, false))
         assertTrue(TabSuspendPolicy.shouldSuspend(true, true, true, false, false, false))
