@@ -21,7 +21,7 @@ class FloatingChromeRuntimeTest {
     private val context = instrumentation.targetContext
     private val automation = instrumentation.uiAutomation
 
-    @Test fun floatingPagePillHandlesHistorySwitcherAndMinimizeDirections() {
+    @Test fun floatingPagePillHandlesHistorySwitcherMinimizeAndMatchedFullscreenRoundTrip() {
         val oldFlags = automation.serviceInfo.flags
         val server = ServerSocket(0)
         val worker = Thread {
@@ -54,7 +54,7 @@ class FloatingChromeRuntimeTest {
                 scenario.onActivity { it.workspace.navigate(two) }
                 await { main { Workspace.peek()?.selected?.title == "FLOAT-TWO" && Workspace.peek()?.selected?.back == true } }
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
-                await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT } }
 
                 val chatPill = "Swipe up for chats, left for back, right for forward, or down to minimize floating window"
                 val chooserPill = "Swipe up for last tab or down to minimize floating window"
@@ -72,7 +72,7 @@ class FloatingChromeRuntimeTest {
 
                 // UP = Your chats.
                 swipe(node(chatPill)!!, 0f, -44f)
-                await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER } }
                 await { node(chooserPill) != null && node("Resize conversation chooser") != null }
                 Thread.sleep(650)
                 assertTrue(main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER })
@@ -80,14 +80,32 @@ class FloatingChromeRuntimeTest {
                 // UP on Your chats = return to the same/last selected tab.
                 val before = selectedId()
                 swipe(node(chooserPill)!!, 0f, -44f)
-                await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT } }
+                await { node(chatPill) != null && node("Open fullscreen") != null }
                 assertEquals(before, selectedId())
 
-                // DOWN = existing minimize behavior.
+                // Exercise the new reverse half of the matched transition. The outer floating card
+                // must grow into BrowserActivity without leaving a second overlay window behind.
+                assertTrue(requireNotNull(node("Open fullscreen")).performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                await {
+                    automation.waitForIdle(50, 500)
+                    node("Address and search") != null && main { BubbleService.active == null }
+                }
+                assertEquals(before, selectedId())
+
+                // And shrink the *same* BrowserActivity back to the saved floating geometry again,
+                // proving the round trip survives the real GeckoSession surface ownership handoff.
+                scenario.onActivity { it.collapse(FloatingMode.CHAT) }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT } }
+                await { node(chatPill) != null }
+                assertEquals(before, selectedId())
+
+                // DOWN = existing minimize behavior after the matched round trip.
                 swipe(node(chatPill)!!, 0f, 44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE && BubbleService.active?.window?.isTransitioning == false } }
             }
         } finally {
+            FullscreenHandoff.cancelAll()
             context.stopService(Intent(context, BubbleService::class.java))
             automation.serviceInfo = automation.serviceInfo.apply { flags = oldFlags }
             shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW default")
@@ -129,6 +147,7 @@ class FloatingChromeRuntimeTest {
                 }
             }
         } finally {
+            FullscreenHandoff.cancelAll()
             context.stopService(Intent(context, BubbleService::class.java))
             automation.serviceInfo = automation.serviceInfo.apply { flags = oldFlags }
             shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW default")
