@@ -17,14 +17,15 @@ class PageAppearanceRuntimeTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
 
-    @Test fun forceDarkActuallyTransformsLightSpaAndRemainsIndependentFromForceLight() {
+    @Test fun forceDarkHandlesLateMixedLightTopChromeAndRemainsIndependentFromForceLight() {
         val server = ServerSocket(0)
-        // Delayed nested white surface approximates SPAs such as Google Voice: the first paint may
-        // contain transparent containers and the meaningful light surface arrives after startup.
-        val html = """<!doctype html><meta name="viewport" content="width=device-width"><style>html,body{margin:0;min-height:100%;color:#111}#app{min-height:100vh}</style><title>WAIT</title><div id="app"></div><script>
-          setTimeout(()=>{const s=document.createElement('section');s.style.cssText='position:fixed;inset:0;background:rgb(255,255,255);color:rgb(20,20,20)';s.textContent='late light SPA surface';document.querySelector('#app').appendChild(s);},700);
-          function bubbleMode(){const h=document.documentElement,c=h.classList,f=h.style.getPropertyValue('filter');if(c.contains('bubble-force-dark'))return f.includes('invert')?'FORCE-DARK-INVERT':'FORCE-DARK-NATIVE';if(c.contains('bubble-force-light'))return f.includes('invert')?'FORCE-LIGHT-INVERT':'FORCE-LIGHT-NATIVE';return 'DEFAULT';}
-          const update=()=>document.title=bubbleMode();new MutationObserver(update).observe(document.documentElement,{attributes:true,attributeFilter:['class','style']});setInterval(update,200);update();
+        // Starts as a simple light page, then turns into the mixed state Google Voice actually
+        // exhibits: dark conversation body + bright app bar. Force-dark should transition from
+        // whole-page inversion to local top-chrome retinting without touching the dark body.
+        val html = """<!doctype html><meta name="viewport" content="width=device-width"><style>html,body{margin:0;min-height:100%;background:#fff;color:#111}#app{min-height:100vh}</style><title>WAIT</title><header id="voicebar" style="height:88px;background:rgb(255,255,255);color:rgb(20,20,20);display:flex;align-items:center">Messages</header><div id="app"></div><script>
+          setTimeout(()=>{document.body.style.background='rgb(20,20,20)';document.body.style.color='rgb(235,235,235)';const s=document.createElement('section');s.style.cssText='min-height:calc(100vh - 88px);background:rgb(20,20,20);color:rgb(235,235,235)';s.textContent='late dark SPA body';document.querySelector('#app').appendChild(s);},700);
+          function bubbleMode(){const h=document.documentElement,c=h.classList,f=h.style.getPropertyValue('filter'),bar=document.querySelector('#voicebar');if(c.contains('bubble-force-dark')){if(bar.classList.contains('bubble-force-dark-surface'))return 'FORCE-DARK-MIXED';return f.includes('invert')?'FORCE-DARK-INVERT':'FORCE-DARK-NATIVE';}if(c.contains('bubble-force-light'))return f.includes('invert')?'FORCE-LIGHT-INVERT':'FORCE-LIGHT-NATIVE';return 'DEFAULT';}
+          const update=()=>document.title=bubbleMode();new MutationObserver(update).observe(document.documentElement,{attributes:true,subtree:true,attributeFilter:['class','style']});setInterval(update,150);update();
         </script>""".toByteArray()
         val worker = Thread {
             while (!server.isClosed) try {
@@ -47,11 +48,9 @@ class PageAppearanceRuntimeTest {
                     context.getSharedPreferences("bubble-page-appearance-v1", 0).edit().putString(darkId, "dark").commit()
                     activity.workspace.selected!!.session!!.reload()
                 }
-                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-INVERT" } }
-                // Regression guard for the old bug where Bubble painted <html> black, sampled that
-                // self-painted backing color on the next pass, then removed inversion again.
-                Thread.sleep(2200)
-                assertTrue(main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-INVERT" })
+                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-MIXED" } }
+                Thread.sleep(1800)
+                assertTrue(main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-MIXED" })
 
                 var lightId = ""
                 scenario.onActivity { activity ->
@@ -67,7 +66,7 @@ class PageAppearanceRuntimeTest {
                 } }
 
                 scenario.onActivity { it.workspace.select(darkId) }
-                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-INVERT" } }
+                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-MIXED" } }
                 scenario.onActivity {
                     assertEquals(PageAppearanceMode.DARK, PageAppearance.mode(it, darkId))
                     assertEquals(PageAppearanceMode.LIGHT, PageAppearance.mode(it, lightId))
