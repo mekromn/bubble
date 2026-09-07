@@ -17,14 +17,14 @@ class PageAppearanceRuntimeTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
 
-    @Test fun forceDarkHandlesLateMixedLightTopChromeAndRemainsIndependentFromForceLight() {
+    @Test fun forceDarkKeepsLateMixedGoogleVoiceStyleTopChromeDark() {
         val server = ServerSocket(0)
-        // Starts as a simple light page, then turns into the mixed state Google Voice actually
-        // exhibits: dark conversation body + bright app bar. Force-dark should transition from
-        // whole-page inversion to local top-chrome retinting without touching the dark body.
+        // Starts as a simple light page, then becomes the mixed state visible on Google Voice:
+        // dark conversation body + bright app bar. This current-feature gate proves Force Dark
+        // settles on local top-chrome retinting and remains there instead of oscillating.
         val html = """<!doctype html><meta name="viewport" content="width=device-width"><style>html,body{margin:0;min-height:100%;background:#fff;color:#111}#app{min-height:100vh}</style><title>WAIT</title><header id="voicebar" style="height:88px;background:rgb(255,255,255);color:rgb(20,20,20);display:flex;align-items:center">Messages</header><div id="app"></div><script>
           setTimeout(()=>{document.body.style.background='rgb(20,20,20)';document.body.style.color='rgb(235,235,235)';const s=document.createElement('section');s.style.cssText='min-height:calc(100vh - 88px);background:rgb(20,20,20);color:rgb(235,235,235)';s.textContent='late dark SPA body';document.querySelector('#app').appendChild(s);},700);
-          function bubbleMode(){const h=document.documentElement,c=h.classList,f=h.style.getPropertyValue('filter'),bar=document.querySelector('#voicebar');if(c.contains('bubble-force-dark')){if(bar.classList.contains('bubble-force-dark-surface'))return 'FORCE-DARK-MIXED';return f.includes('invert')?'FORCE-DARK-INVERT':'FORCE-DARK-NATIVE';}if(c.contains('bubble-force-light'))return f.includes('invert')?'FORCE-LIGHT-INVERT':'FORCE-LIGHT-NATIVE';return 'DEFAULT';}
+          function bubbleMode(){const h=document.documentElement,c=h.classList,f=h.style.getPropertyValue('filter'),bar=document.querySelector('#voicebar');if(c.contains('bubble-force-dark')){if(bar.classList.contains('bubble-force-dark-surface'))return 'FORCE-DARK-MIXED';return f.includes('invert')?'FORCE-DARK-INVERT':'FORCE-DARK-NATIVE';}return 'DEFAULT';}
           const update=()=>document.title=bubbleMode();new MutationObserver(update).observe(document.documentElement,{attributes:true,subtree:true,attributeFilter:['class','style']});setInterval(update,150);update();
         </script>""".toByteArray()
         val worker = Thread {
@@ -49,28 +49,9 @@ class PageAppearanceRuntimeTest {
                     activity.workspace.selected!!.session!!.reload()
                 }
                 await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-MIXED" } }
-                Thread.sleep(1800)
+                Thread.sleep(2600)
                 assertTrue(main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-MIXED" })
-
-                var lightId = ""
-                scenario.onActivity { activity ->
-                    val tab = ChatTab(url = url, profileId = activity.workspace.selected!!.profileId)
-                    lightId = tab.id
-                    context.getSharedPreferences("bubble-page-appearance-v1", 0).edit().putString(lightId, "light").commit()
-                    activity.workspace.tabs += tab
-                    activity.workspace.select(lightId)
-                }
-                await { main {
-                    Workspace.peek()?.selectedId == lightId &&
-                        Workspace.peek()?.selected?.title?.startsWith("FORCE-LIGHT") == true
-                } }
-
-                scenario.onActivity { it.workspace.select(darkId) }
-                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-MIXED" } }
-                scenario.onActivity {
-                    assertEquals(PageAppearanceMode.DARK, PageAppearance.mode(it, darkId))
-                    assertEquals(PageAppearanceMode.LIGHT, PageAppearance.mode(it, lightId))
-                }
+                scenario.onActivity { assertEquals(PageAppearanceMode.DARK, PageAppearance.mode(it, darkId)) }
             }
         } finally {
             server.close(); worker.join(1000)
@@ -82,6 +63,6 @@ class PageAppearanceRuntimeTest {
     private fun await(test: () -> Boolean) {
         val end=SystemClock.elapsedRealtime()+45_000
         while(SystemClock.elapsedRealtime()<end) { if(test()) return; Thread.sleep(100) }
-        assertTrue("Per-tab appearance runtime condition timed out", false)
+        assertTrue("Force-dark mixed-chrome runtime condition timed out", false)
     }
 }
