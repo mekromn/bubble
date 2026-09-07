@@ -74,7 +74,10 @@ internal object FullscreenHandoff {
                 // launcher underneath cannot create a hole or a black frame.
                 destination?.let(overlay::setDestination)
                 done()
-                main.postOnAnimation {
+                // Queue the first morph transaction after moveTaskToBack() has been requested. This
+                // preserves a clean compositor boundary without relying on a View that may stop
+                // scheduling frames as soon as its Activity is backgrounded.
+                main.post {
                     overlay.morph(365L) {
                         showFloating(floating)
                         if (morphOverlay === overlay) morphOverlay = null
