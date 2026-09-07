@@ -34,7 +34,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var params=WindowManager.LayoutParams()
     private var rectangle=WindowBox(0,0,68,68)
     private var target=rectangle
-    private var panelBox: WindowBox?=null
+    private var chatBox: WindowBox?=null
+    private var chooserBox: WindowBox?=null
     private var gestureInitial=rectangle
     private var gestureX=0f
     private var gestureY=0f
@@ -102,7 +103,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         ViewCompat.setOnApplyWindowInsetsListener(root) { _,insets ->
             val bottom=if(insets.isVisible(WindowInsetsCompat.Type.ime()))insets.getInsets(WindowInsetsCompat.Type.ime()).bottom else 0
             if(bottom!=imeBottom) {
-                if(imeBottom==0 && mode!=FloatingMode.BUBBLE)panelBox=rectangle
+                if(imeBottom==0 && mode==FloatingMode.CHAT)chatBox=rectangle
                 imeBottom=bottom
                 if(mode==FloatingMode.CHAT)main.post { if(!destroyed && mode==FloatingMode.CHAT && !motion.busy)place(expandedBox(),false) }
             }
@@ -169,6 +170,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
         root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f
         val previous=mode; val from=rectangle
+        if(previous==FloatingMode.CHAT)chatBox=from else if(previous==FloatingMode.CHOOSER)chooserBox=from
         if(next==FloatingMode.CHOOSER) { context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0); imeBottom=0 }
         switchContents(next)
         var destination=expandedBox()
@@ -177,14 +179,14 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             destination=WindowGeometry.fit(destination.copy(
                 x=destination.x.coerceIn(cx-destination.width+r,cx-r),
                 y=destination.y.coerceIn(cy-destination.height+r,cy-r)),safeArea())
-            panelBox=destination; place(destination,true); render()
+            rememberPanelBox(next,destination); place(destination,true); render()
             val localX=cx-destination.x; val localY=cy-destination.y
             val mark=GlassBubble(context).apply { isClickable=false; isFocusable=false; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
             root.addView(mark,FrameLayout.LayoutParams(d(64),d(64)).apply { leftMargin=localX-r; topMargin=localY-r })
             motion.reveal(root,localX,localY,r.toFloat(),true) { if(mark.parent===root)root.removeView(mark) }
             mark.animate().alpha(0f).setDuration(110).start()
         } else {
-            destination=WindowGeometry.fit(panelBox ?: from,safeArea()); place(destination,true); render()
+            destination=WindowGeometry.fit(panelBox(next) ?: destination,safeArea()); place(destination,true); render()
             root.getChildAt(0)?.let { content -> if(ValueAnimator.areAnimatorsEnabled()) {
                 content.alpha=.35f; content.animate().alpha(1f).setDuration(140).setInterpolator(Ui.ease).start()
             } }
@@ -230,11 +232,18 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         column.addView(top,LinearLayout.LayoutParams(-1,d(52)))
         if(next==FloatingMode.CHOOSER) {
             list=ConversationList(context,{ openChat(it) },{ workspace.close(it) },{ _,id -> QuickMenus.tabOptions(top,workspace,id,::openChat) })
-            list?.setPadding(d(8),d(4),d(56),d(56))
+            // Equal left/right insets. The resize affordance now lives in its own bottom bar,
+            // so the list no longer needs a fake 56dp gutter on the right.
+            list?.setPadding(d(8),d(4),d(8),d(4))
             column.addView(list,LinearLayout.LayoutParams(-1,0,1f))
+            val utility=LinearLayout(context).apply {
+                gravity=Gravity.CENTER_VERTICAL; setPadding(d(2),0,d(2),0); background=Ui.shape(context,Ui.SURFACE,0f)
+            }
+            utility.addView(MinimizeStrip(false),LinearLayout.LayoutParams(0,d(48),1f))
             val resize=control("resize","Resize conversation chooser") { }
             resize.setOnTouchListener { _,event -> drag(event,true,false) }
-            root.addView(resize,FrameLayout.LayoutParams(d(48),d(48),Gravity.BOTTOM or Gravity.RIGHT))
+            utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
+            column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
         } else {
             val web=gecko ?: LiveGeckoView(context).also { it.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW); gecko=it }
             val content=FrameLayout(context); content.addView(web,FrameLayout.LayoutParams(-1,-1))
@@ -390,11 +399,27 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         return WindowBox(d(4),d(28),(p.x-d(8)).coerceAtLeast(1),(p.y-d(60)).coerceAtLeast(1))
     }
     private fun headBox()=WindowGeometry.placed(safeArea(),workspace.bubbleX,workspace.bubbleY,d(64),d(64))
+    private fun panelBox(forMode: FloatingMode): WindowBox?=when(forMode) {
+        FloatingMode.CHAT -> chatBox
+        FloatingMode.CHOOSER -> chooserBox
+        FloatingMode.BUBBLE -> null
+    }
+    private fun rememberPanelBox(forMode: FloatingMode, box: WindowBox) {
+        when(forMode) {
+            FloatingMode.CHAT -> chatBox=box
+            FloatingMode.CHOOSER -> chooserBox=box
+            FloatingMode.BUBBLE -> Unit
+        }
+    }
     private fun expandedBox(): WindowBox {
         val safe=safeArea()
-        val width=(safe.width*WindowGeometry.fraction(workspace.windowWidth,.92f)).toInt().coerceAtLeast(d(280)).coerceAtMost(d(560))
-        val height=(safe.height*WindowGeometry.fraction(workspace.windowHeight,.72f)).toInt().coerceAtLeast(d(260))
-        val resting=panelBox ?: WindowGeometry.placed(safe,workspace.windowX,workspace.windowY,width,height)
+        val fallback=if(mode==FloatingMode.CHAT)
+            FloatingPanelState(workspace.windowX,workspace.windowY,workspace.windowWidth,workspace.windowHeight)
+        else FloatingPanelState(.5f,.25f,.92f,.72f)
+        val state=FloatingPanelGeometry.load(context,mode,fallback)
+        val width=(safe.width*WindowGeometry.fraction(state.width,.92f)).toInt().coerceAtLeast(d(280)).coerceAtMost(d(560))
+        val height=(safe.height*WindowGeometry.fraction(state.height,.72f)).toInt().coerceAtLeast(d(260))
+        val resting=panelBox(mode) ?: WindowGeometry.placed(safe,state.x,state.y,width,height)
         val area=if(mode==FloatingMode.CHAT && imeBottom>0)safe.copy(height=(safe.height-imeBottom).coerceAtLeast(d(180))) else safe
         return WindowGeometry.fit(resting,area)
     }
@@ -460,9 +485,24 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         val safe=safeArea()
         val nx=if(safe.width>rectangle.width)(rectangle.x-safe.x).toFloat()/(safe.width-rectangle.width) else .5f
         val ny=if(safe.height>rectangle.height)(rectangle.y-safe.y).toFloat()/(safe.height-rectangle.height) else .5f
-        if(mode==FloatingMode.BUBBLE) { workspace.bubbleX=nx; workspace.bubbleY=ny }
-        else { panelBox=rectangle; workspace.windowX=nx; workspace.windowY=ny
-            if(resized) { workspace.windowWidth=rectangle.width.toFloat()/safe.width; workspace.windowHeight=rectangle.height.toFloat()/safe.height } }
+        if(mode==FloatingMode.BUBBLE) {
+            workspace.bubbleX=nx; workspace.bubbleY=ny
+        } else {
+            rememberPanelBox(mode,rectangle)
+            val old=FloatingPanelGeometry.load(context,mode,if(mode==FloatingMode.CHAT)
+                FloatingPanelState(workspace.windowX,workspace.windowY,workspace.windowWidth,workspace.windowHeight)
+                else FloatingPanelState(.5f,.25f,.92f,.72f))
+            val state=FloatingPanelState(nx,ny,
+                if(resized)rectangle.width.toFloat()/safe.width else old.width,
+                if(resized)rectangle.height.toFloat()/safe.height else old.height)
+            FloatingPanelGeometry.save(context,mode,state)
+            // Fullscreen handoff already consumes Workspace.window*. Keep that legacy mirror for CHAT
+            // only; chooser geometry must never leak into it.
+            if(mode==FloatingMode.CHAT) {
+                workspace.windowX=state.x; workspace.windowY=state.y
+                workspace.windowWidth=state.width; workspace.windowHeight=state.height
+            }
+        }
         workspace.checkpoint()
     }
     private fun accessibilityMoves(view: View) {
@@ -472,7 +512,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         ViewCompat.addAccessibilityAction(view,"Hide in notification") { _,_ -> service.park() }
     }
     fun configurationChanged() {
-        if(!destroyed) { QuickPanel.dismissFor(root); motion.cancel(); dismiss.hide(true); panelBox=null; place(if(mode==FloatingMode.BUBBLE)headBox() else expandedBox(),true) }
+        if(!destroyed) { QuickPanel.dismissFor(root); motion.cancel(); dismiss.hide(true); chatBox=null; chooserBox=null; place(if(mode==FloatingMode.BUBBLE)headBox() else expandedBox(),true) }
     }
     fun destroy() {
         if(destroyed)return
