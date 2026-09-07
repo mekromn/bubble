@@ -7,14 +7,15 @@ name: Verify current Bubble changes
 # Dark fix and the true matched fullscreen <-> floating morph. The transition captures native chrome
 # and Gecko compositor pixels before surface ownership changes, puts that exact frame in one shared
 # transparent overlay, and morphs one visible card continuously through position, size, corner radius,
-# content reflow and surface opacity. The floating destination now becomes genuinely translucent
-# before the shared overlay is removed, so glass/background visibility is part of the same morph
-# instead of appearing as a final-frame pop. A one-use recent fullscreen visual seed protects an
-# immediate reverse gesture from the SurfaceView/TextureView buffer race; a successful real Gecko
-# fullscreen capture replaces that fallback automatically. Floating ownership is still published
-# synchronously, while obsolete overlay destruction is deferred one main-loop turn so BrowserActivity
-# can transfer the same GeckoSession to its fullscreen surface before the old surface is destroyed.
-# Gecko capture and all final handoffs remain bounded by watchdogs. Runtime performs a complete
+# content reflow and surface opacity. The floating destination becomes genuinely translucent before
+# overlay removal, so glass/background visibility is part of the same morph. A one-use recent
+# fullscreen visual seed protects immediate reversal from the SurfaceView/TextureView buffer race.
+# Floating ownership is published synchronously while obsolete overlay destruction is deferred one
+# main-loop turn so BrowserActivity can take the same GeckoSession first. Snapshot work is bounded,
+# and floating native chrome capture now suppresses the Gecko TextureView while View.draw runs, then
+# composites Gecko's capture separately; a short focus-settle beat lets the new focusable overlay
+# process WindowManager input before any snapshot work. This avoids redundant TextureView raster work
+# and prevents capture from starving a FocusEvent on slow renderers. Runtime performs a complete
 # fullscreen -> floating -> fullscreen -> floating round trip and checks a real system screenshot near
 # each handoff midpoint. Google Voice mixed-theme Force Dark remains the other current runtime gate.
 on:
