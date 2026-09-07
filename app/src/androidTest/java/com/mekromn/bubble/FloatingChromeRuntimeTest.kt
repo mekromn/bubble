@@ -21,7 +21,7 @@ class FloatingChromeRuntimeTest {
     private val context = instrumentation.targetContext
     private val automation = instrumentation.uiAutomation
 
-    @Test fun floatingChatExposesRefreshShareAndSwipeDownMinimize() {
+    @Test fun floatingChatExposesRefreshShareAndBidirectionalPillGestures() {
         val oldFlags = automation.serviceInfo.flags
         val server = ServerSocket(0)
         val worker = Thread {
@@ -48,18 +48,37 @@ class FloatingChromeRuntimeTest {
                 await { main { Workspace.peek()?.selected?.title == "FLOAT-CHROME" && Workspace.peek()?.selected?.painted == true } }
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
+                val chatPillDescription = "Swipe up for chats or down to minimize floating window"
                 await {
                     automation.waitForIdle(50, 500)
                     node("Refresh floating page") != null &&
                         node("Share floating page") != null &&
-                        node("Swipe down to minimize floating window") != null
+                        node(chatPillDescription) != null
                 }
                 assertNotNull(node("Refresh floating page"))
                 assertNotNull(node("Share floating page"))
-                val handle = requireNotNull(node("Swipe down to minimize floating window"))
-                val bounds = Rect(); handle.getBoundsInScreen(bounds)
-                val x = bounds.exactCenterX(); val y = bounds.exactCenterY()
-                val down = SystemClock.uptimeMillis()
+
+                // Up on the floating pill must be exactly equivalent to the tab-switcher button.
+                var handle = requireNotNull(node(chatPillDescription))
+                var bounds = Rect(); handle.getBoundsInScreen(bounds)
+                var x = bounds.exactCenterX(); var y = bounds.exactCenterY()
+                var down = SystemClock.uptimeMillis()
+                event(down, MotionEvent.ACTION_DOWN, x, y)
+                event(down, MotionEvent.ACTION_MOVE, x, y - 56f * context.resources.displayMetrics.density)
+                event(down, MotionEvent.ACTION_UP, x, y - 56f * context.resources.displayMetrics.density)
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
+                assertNotNull(node("Resize conversation chooser"))
+                assertNotNull("Chooser should have its own bottom pill bar", node("Swipe down to minimize floating window"))
+
+                // Return to the tab and keep the existing downward minimize behavior.
+                instrumentation.runOnMainSync {
+                    val workspace = Workspace.peek()!!
+                    BubbleService.active?.window?.openChat(workspace.selectedId)
+                }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
+                handle = requireNotNull(node(chatPillDescription))
+                bounds = Rect(); handle.getBoundsInScreen(bounds)
+                x = bounds.exactCenterX(); y = bounds.exactCenterY(); down = SystemClock.uptimeMillis()
                 event(down, MotionEvent.ACTION_DOWN, x, y)
                 event(down, MotionEvent.ACTION_MOVE, x, y + 56f * context.resources.displayMetrics.density)
                 event(down, MotionEvent.ACTION_UP, x, y + 56f * context.resources.displayMetrics.density)
@@ -73,7 +92,7 @@ class FloatingChromeRuntimeTest {
         }
     }
 
-    @Test fun chooserMovesLegacyFooterActionsIntoTopMenuAndHasResizeHandle() {
+    @Test fun chooserMovesLegacyFooterActionsIntoTopMenuAndHasBottomResizeBar() {
         val oldFlags = automation.serviceInfo.flags
         try {
             prepareOverlayAccess()
@@ -88,10 +107,12 @@ class FloatingChromeRuntimeTest {
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
                 await {
                     automation.waitForIdle(50, 500)
-                    node("Workspace menu") != null && node("Resize conversation chooser") != null
+                    node("Workspace menu") != null && node("Resize conversation chooser") != null &&
+                        node("Swipe down to minimize floating window") != null
                 }
                 assertNotNull(node("Workspace menu"))
                 assertNotNull(node("Resize conversation chooser"))
+                assertNotNull(node("Swipe down to minimize floating window"))
                 assertNull("Legacy Chat tools footer must be removed", textNode("Chat tools"))
                 assertNull("Legacy Edge access footer must be removed", textNode("Edge access"))
                 assertNull("Legacy Reply sound footer must be removed", textNode("Reply sound"))
