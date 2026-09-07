@@ -1,26 +1,36 @@
 package com.mekromn.bubble
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.graphics.Point
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Display
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 
-/** Cross-window motion deliberately animates transforms, not Gecko layout, so the compositor is
- * not reflowed on every animation frame. The live GeckoSession is handed between native surfaces. */
+/**
+ * Cross-window motion keeps Gecko at a fixed render size and animates compositor transforms only.
+ * The fullscreen Activity and TYPE_APPLICATION_OVERLAY never animate their layout bounds frame by
+ * frame, so the page does not reflow and Android never exposes the old opaque black backing surface.
+ */
 internal object FullscreenHandoff {
     const val EXTRA_FROM_FLOATING = "bubble.transition.from.floating"
+    private val main = Handler(Looper.getMainLooper())
 
     fun launchFromFloating(context: Context, source: View, intent: Intent) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         intent.putExtra(EXTRA_FROM_FLOATING, true)
+        // Clip reveal gives spatial continuity from the whole floating card to fullscreen instead
+        // of the older generic scale-up. Android performs this in SurfaceFlinger, not Gecko.
         val options = if (source.isLaidOut && source.width > 0 && source.height > 0)
-            ActivityOptions.makeScaleUpAnimation(source, 0, 0, source.width, source.height).toBundle()
+            ActivityOptions.makeClipRevealAnimation(source, 0, 0, source.width, source.height).toBundle()
         else null
         context.startActivity(intent, options)
     }
@@ -44,20 +54,64 @@ internal object FullscreenHandoff {
     }
 
     /**
-     * The old matched shrink scaled the Activity root while its opaque Activity window still owned
-     * the entire display. Everything outside the shrunken root therefore exposed the Activity's
-     * black backing surface for ~200 ms — exactly the black flash visible on the Pixel recording.
+     * Fullscreen -> floating is a coordinated handoff, not two unrelated fades.
      *
-     * The overlay is now already attached at its final geometry and performs its own translucent
-     * settle animation. Hand the task to the background on the next frame instead of shrinking the
-     * opaque fullscreen window. The launcher/underlying app is immediately visible and Gecko never
-     * gets resized per animation frame.
+     * The overlay is already attached at its final WindowManager bounds. We cancel its ordinary
+     * entrance, hold it fully transparent, spatially bias it toward the fullscreen center, send the
+     * Activity behind the user's previous app/launcher, then let the card arrive with an emphasized
+     * decelerating spring-settle. Header/content/footer are staggered a few milliseconds so the card
+     * reads as one coherent surface rather than a rectangle suddenly appearing.
+     *
+     * Critically, the fullscreen Activity root is never shrunk. That was the source of the black
+     * frame in the earlier recording because its opaque window backing became visible around it.
      */
     fun shrinkFullscreen(activity: Activity, root: View, target: WindowBox, done: () -> Unit) {
-        root.animate().cancel(); root.animate().withEndAction(null)
-        root.scaleX = 1f; root.scaleY = 1f; root.translationX = 0f; root.translationY = 0f; root.alpha = 1f
-        if (!root.isLaidOut || root.width <= 0 || root.height <= 0) { done(); return }
-        root.postOnAnimation { if (!activity.isFinishing) done() else done() }
+        reset(root)
+        val floating = BubbleService.active?.window?.takeIf { it.mode == FloatingMode.CHAT }
+        val card = floating?.transitionView
+        if (card == null || !card.isLaidOut || !ValueAnimator.areAnimatorsEnabled()) {
+            root.postOnAnimation { done() }
+            return
+        }
+
+        card.animate().cancel(); card.animate().withEndAction(null)
+        card.pivotX = card.width / 2f; card.pivotY = card.height / 2f
+        val screenCx = root.width / 2f
+        val screenCy = root.height / 2f
+        val targetCx = target.x + target.width / 2f
+        val targetCy = target.y + target.height / 2f
+        val maxX = dp(activity, 88).toFloat()
+        val maxY = dp(activity, 112).toFloat()
+        card.translationX = (screenCx - targetCx).coerceIn(-maxX, maxX)
+        card.translationY = (screenCy - targetCy).coerceIn(-maxY, maxY)
+        card.scaleX = .82f; card.scaleY = .82f; card.alpha = 0f
+
+        val column = (card as? ViewGroup)?.getChildAt(0) as? ViewGroup
+        val top = column?.getChildAt(0)
+        val body = column?.getChildAt(1)
+        val bottom = column?.getChildAt((column.childCount - 1).coerceAtLeast(0))
+        top?.apply { animate().cancel(); alpha = .35f; translationY = -dp(activity, 10).toFloat() }
+        body?.apply { animate().cancel(); alpha = .58f; scaleX = .99f; scaleY = .99f }
+        if (bottom !== body) bottom?.apply { animate().cancel(); alpha = .30f; translationY = dp(activity, 12).toFloat() }
+
+        // First expose the user's underlying app, then animate the already-positioned overlay.
+        root.postOnAnimation {
+            done()
+            main.postDelayed({
+                if (!card.isAttachedToWindow) return@postDelayed
+                card.animate().cancel(); card.animate().withEndAction(null)
+                card.animate().withLayer().alpha(1f).translationX(0f).translationY(0f)
+                    .scaleX(1.022f).scaleY(1.022f).setDuration(285).setInterpolator(Ui.ease)
+                    .withEndAction {
+                        if (card.isAttachedToWindow) card.animate().withLayer().scaleX(1f).scaleY(1f)
+                            .setDuration(105).setInterpolator(Ui.ease).start()
+                    }.start()
+
+                top?.animate()?.withLayer()?.alpha(1f)?.translationY(0f)?.setStartDelay(28)?.setDuration(205)?.setInterpolator(Ui.ease)?.start()
+                body?.animate()?.withLayer()?.alpha(1f)?.scaleX(1f)?.scaleY(1f)?.setStartDelay(42)?.setDuration(235)?.setInterpolator(Ui.ease)?.start()
+                if (bottom !== body) bottom?.animate()?.withLayer()?.alpha(1f)?.translationY(0f)?.setStartDelay(64)?.setDuration(215)?.setInterpolator(Ui.ease)?.start()
+            }, 22L)
+        }
     }
 
     fun reset(root: View) {
