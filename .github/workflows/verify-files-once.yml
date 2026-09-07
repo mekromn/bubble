@@ -9,16 +9,15 @@ name: Verify current Bubble changes
 # transparent system overlay, and morphs a single visible card continuously through position, size,
 # corner radius and destination-frame fade-through. Content uses uniform center-crop scaling rather
 # than X/Y stretching, the temporary overlay spans Pixel cutout bounds exactly, and the real source
-# or destination stays hidden until the held card occupies the same geometry. The held frame now
-# avoids a circular destination-focus dependency by waiting only for attachment/layout/visibility,
-# then scheduling capture from the main queue even while occluded. Source contraction begins as soon
-# as the old Activity loses task focus. The shared surface absorbs touch, requests the fastest display
-# mode, and morphs its opaque backing continuously into/out of floating glass so combined opacity
-# never drops and no foreign window can bleed through. Runtime performs a complete fullscreen ->
-# floating -> fullscreen -> floating round trip and targets a real system screenshot near the midpoint
-# of each handoff; headless SwiftShader screenshot throughput is intentionally not treated as video FPS.
-# Fullscreen ownership is also published synchronously before BubbleService teardown, so the matched
-# morph cannot expose a stale second floating owner while Service.onDestroy() is still queued.
+# or destination stays hidden until the held card occupies the same geometry. Source contraction
+# begins as soon as the old Activity loses task focus. The shared surface absorbs touch, requests the
+# fastest display mode, and morphs its opaque backing continuously into/out of floating glass so
+# combined opacity never drops and no foreign window can bleed through. Runtime performs a complete
+# fullscreen -> floating -> fullscreen -> floating round trip and checks a real system screenshot near
+# each handoff midpoint. Fullscreen ownership is published synchronously before service teardown.
+# Gecko compositor capture is now bounded to 240 ms and the full-screen destination capture to 520 ms;
+# source and destination morphs also have final watchdogs. A missed SurfaceView/PixelCopy callback can
+# therefore degrade to the already-valid held frame but can never leave a frozen full-screen overlay.
 on:
   push:
     branches: [rebuild-v2]
