@@ -26,8 +26,8 @@ internal data class MorphFrame(val bitmap: Bitmap, val box: WindowBox)
  * The shared container owns geometry, clipping and surface opacity. Source/destination pixels are
  * uniformly center-cropped rather than independently X/Y-scaled, so text and icons never become
  * rubbery when the fullscreen and floating aspect ratios diverge. A matching backing surface also
- * morphs between opaque fullscreen chrome and translucent floating glass, preventing the launcher
- * from bleeding through during a fade-through while preserving the floating card's glass at rest.
+ * morphs between opaque fullscreen chrome and translucent floating glass, preventing a visibility
+ * seam at either end of the transform.
  */
 internal class WindowMorphOverlay(
     context: Context,
@@ -156,8 +156,9 @@ internal class WindowMorphOverlay(
         dest.alpha = 0f
         sourceView.alpha = 1f
         dest.animate().cancel(); sourceView.animate().cancel()
-        // Source deliberately remains fully opaque underneath. Fading both layers at once creates
-        // an avoidable opacity trough where the underlying Activity/launcher can leak through.
+        // Fullscreen destination is opaque, so cover the held source completely before removing the
+        // shared surface. Keeping the source below avoids a one-frame exposure if SurfaceFlinger
+        // presents Activity and overlay transactions on adjacent vsyncs.
         dest.animate().withLayer().alpha(1f).setDuration(durationMs).setInterpolator(Ui.ease)
             .withEndAction { if (attached) onEnd() }.start()
     }
@@ -185,12 +186,21 @@ internal class WindowMorphOverlay(
         destinationView?.let { applyBox(it, current, radius) }
         applySurfaceOpacity(t)
 
-        // Fade-through happens *inside the same moving container*. The source stays opaque below
-        // the destination for the entire transform, so combined opacity never falls below one.
         val destination = destinationView
         if (destination != null) {
-            destination.alpha = smoothstep(.52f, .92f, t)
-            sourceView.alpha = 1f
+            if (expanding) {
+                // Expansion normally has no destination bitmap until the final identical-bounds
+                // dissolve, but retain a safe rule if one is supplied.
+                destination.alpha = smoothstep(.52f, .92f, t)
+                sourceView.alpha = 1f
+            } else {
+                // Contraction must actually become the translucent floating card before detach.
+                // First establish the reflowed floating pixels, then dissolve the opaque fullscreen
+                // source late in the same container. At t=1 the source is truly gone, so there is no
+                // transparency/glass "pop" when the real floating window replaces the overlay.
+                destination.alpha = smoothstep(.40f, .82f, t)
+                sourceView.alpha = 1f - smoothstep(.68f, .985f, t)
+            }
         } else sourceView.alpha = 1f
 
         // Tiny mid-flight content emphasis gives mass without overshooting the container bounds.
@@ -201,12 +211,12 @@ internal class WindowMorphOverlay(
 
     private fun applySurfaceOpacity(t: Float) {
         // Fullscreen's root is opaque while the floating card intentionally uses translucent glass.
-        // Grow the opaque backing during expansion; remove it during contraction. This makes the
-        // surface itself appear to materialize/dematerialize rather than exposing a foreign window.
+        // During contraction, keep the backing solid until the destination is established, then let
+        // the real world behind the card appear continuously instead of all at once on detach.
         backdropView.surfaceAlpha = if (expanding) {
             smoothstep(.08f, .92f, t)
         } else {
-            1f - smoothstep(.18f, .96f, t)
+            1f - smoothstep(.62f, .985f, t)
         }
     }
 
