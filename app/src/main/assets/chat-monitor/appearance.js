@@ -3,9 +3,9 @@
   if (window !== window.top || !/^https?:$/.test(location.protocol)) return;
 
   const STYLE_ID = 'bubble-page-appearance';
-  const ROOT = document.documentElement;
   let requestedMode = 'default';
   let classifyTimer = 0;
+  const root = () => document.documentElement;
 
   const parseColor = value => {
     const m = String(value || '').match(/rgba?\(\s*(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)(?:\D+(\d*(?:\.\d+)?))?\s*\)/i);
@@ -28,7 +28,7 @@
     return null;
   };
   const pageLuma = () => {
-    for (const node of [document.body, ROOT]) {
+    for (const node of [document.body, root()]) {
       const value = nodeLuma(node);
       if (value !== null) return value;
     }
@@ -44,6 +44,8 @@
   };
 
   const ensureStyle = () => {
+    const host = root();
+    if (!host) return null;
     let style = document.getElementById(STYLE_ID);
     if (style) return style;
     style = document.createElement('style');
@@ -60,30 +62,39 @@
         filter: invert(1) hue-rotate(180deg) !important;
       }
     `;
-    (document.head || ROOT).appendChild(style);
+    (document.head || host).appendChild(style);
     return style;
   };
 
   const classify = () => {
-    if (requestedMode !== 'dark' && requestedMode !== 'light') return;
+    const host = root();
+    if (!host || (requestedMode !== 'dark' && requestedMode !== 'light')) return;
     const value = pageLuma();
     if (value === null) return;
     const nativeDark = value < 0.48;
     const needsInvert = requestedMode === 'dark' ? !nativeDark : nativeDark;
-    ROOT.classList.toggle('bubble-needs-invert', needsInvert);
-    ROOT.style.setProperty('background-color', requestedMode === 'dark' ? '#000' : '#fff', 'important');
+    host.classList.toggle('bubble-needs-invert', needsInvert);
+    host.style.setProperty('background-color', requestedMode === 'dark' ? '#000' : '#fff', 'important');
   };
 
-  const install = mode => {
+  const install = (mode, domAttempt = 0) => {
+    const host = root();
+    // At document_start Gecko can run the content script before <html> exists. The old code
+    // captured document.documentElement once, so ROOT stayed null forever and the native reply was
+    // silently discarded. Wait for the actual root instead of losing the user's setting.
+    if (!host) {
+      if (domAttempt < 20) setTimeout(() => install(mode, domAttempt + 1), 16);
+      return;
+    }
     requestedMode = mode === 'dark' || mode === 'light' ? mode : 'default';
-    ROOT.classList.remove('bubble-force-dark', 'bubble-force-light', 'bubble-needs-invert');
-    ROOT.style.removeProperty('background-color');
+    host.classList.remove('bubble-force-dark', 'bubble-force-light', 'bubble-needs-invert');
+    host.style.removeProperty('background-color');
     if (requestedMode === 'default') {
       document.getElementById(STYLE_ID)?.remove();
       return;
     }
     ensureStyle();
-    ROOT.classList.add(requestedMode === 'dark' ? 'bubble-force-dark' : 'bubble-force-light');
+    host.classList.add(requestedMode === 'dark' ? 'bubble-force-dark' : 'bubble-force-light');
     classify();
     clearTimeout(classifyTimer);
     const rerun = () => { classify(); classifyTimer = setTimeout(classify, 700); };
