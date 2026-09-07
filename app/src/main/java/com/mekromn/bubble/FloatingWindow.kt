@@ -159,13 +159,9 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         val destination=WindowGeometry.fit(rectangle.copy(
             x=if(edge.left)safe.x else safe.x+safe.width-rectangle.width,
             y=handleCenterY-rectangle.height/2),safe)
-        // Bottom-handle minimize now visibly travels to the configured edge-handle position.
-        // Dimensions stay fixed during the move, so Gecko is not reflowed on every frame.
         root.pivotX=if(edge.left)0f else root.width.toFloat(); root.pivotY=root.height/2f
         root.animate().alpha(.08f).scaleX(.93f).scaleY(.93f).setDuration(210).setInterpolator(Ui.ease).start()
-        motion.move(rectangle,destination,{ place(it,false) },{
-            if(!destroyed)service.showMinimized()
-        },210L)
+        motion.move(rectangle,destination,{ place(it,false) },{ if(!destroyed)service.showMinimized() },210L)
     }
     private fun present(next: FloatingMode) {
         if(destroyed || hiding)return
@@ -226,23 +222,19 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             count=control("tabs","Choose another conversation") { showChooser() }
             top.addView(count,LinearLayout.LayoutParams(d(48),d(48)))
             top.addView(control("expand","Open fullscreen") { fullscreen() },LinearLayout.LayoutParams(d(48),d(48)))
-        } else top.addView(control("add","New floating ChatGPT chat",true) { if(workspace.ready)openChat(workspace.create().id) },LinearLayout.LayoutParams(d(48),d(48)))
+        } else {
+            top.addView(control("add","New floating ChatGPT chat",true) { if(workspace.ready)openChat(workspace.create().id) },LinearLayout.LayoutParams(d(48),d(48)))
+            top.addView(control("menu","Workspace menu") { FloatingChooserMenu.show(top,workspace,::openChat) },LinearLayout.LayoutParams(d(48),d(48)))
+        }
         top.addView(control("collapse","Minimize floating window") { collapse() },LinearLayout.LayoutParams(d(48),d(48)))
         column.addView(top,LinearLayout.LayoutParams(-1,d(52)))
         if(next==FloatingMode.CHOOSER) {
             list=ConversationList(context,{ openChat(it) },{ workspace.close(it) },{ _,id -> QuickMenus.tabOptions(top,workspace,id,::openChat) })
+            list?.setPadding(d(8),d(4),d(56),d(56))
             column.addView(list,LinearLayout.LayoutParams(-1,0,1f))
-            val footer=LinearLayout(context)
-            footer.addView(Ui.text(context,"Chat tools",12f,Ui.ACCENT,true).apply {
-                gravity=Gravity.CENTER; background=Ui.ripple(context); setOnClickListener { QuickMenus.tools(top,workspace,::openChat) }
-            },LinearLayout.LayoutParams(0,d(48),1f))
-            footer.addView(Ui.text(context,"Edge access",12f,Ui.ACCENT).apply {
-                gravity=Gravity.CENTER; background=Ui.ripple(context); setOnClickListener { AccessMenu.show(top,workspace) }
-            },LinearLayout.LayoutParams(0,d(48),1f))
-            footer.addView(Ui.text(context,"Reply sound",12f,Ui.ACCENT).apply {
-                gravity=Gravity.CENTER; background=Ui.ripple(context); contentDescription="ChatGPT notification settings"; setOnClickListener { Replies.settings(context) }
-            },LinearLayout.LayoutParams(0,d(48),1f))
-            column.addView(footer)
+            val resize=control("resize","Resize conversation chooser") { }
+            resize.setOnTouchListener { _,event -> drag(event,true,false) }
+            root.addView(resize,FrameLayout.LayoutParams(d(48),d(48),Gravity.BOTTOM or Gravity.RIGHT))
         } else {
             val web=gecko ?: LiveGeckoView(context).also { it.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW); gecko=it }
             val content=FrameLayout(context); content.addView(web,FrameLayout.LayoutParams(-1,-1))
@@ -252,9 +244,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }
             content.addView(error,FrameLayout.LayoutParams(-1,-2,Gravity.CENTER).apply { setMargins(d(12),0,d(12),0) })
             column.addView(content,LinearLayout.LayoutParams(-1,0,1f))
-
-            // Requested floating utility strip: refresh/share stay together and the broad center
-            // handle can be swiped downward to collapse without stealing gestures from the page.
             val utility=LinearLayout(context).apply {
                 gravity=Gravity.CENTER_VERTICAL; setPadding(d(2),0,d(2),0); background=Ui.shape(context,Ui.SURFACE,0f)
             }
@@ -265,9 +254,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             resize.setOnTouchListener { _,event -> drag(event,true,false) }
             utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
             column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
-
-            // When edge-access is the selected minimized state, expose the same directional
-            // affordance on that side of the expanded panel: swipe outward to return to it.
             val edge=AccessPreferences.get(context).options
             if(edge.enabled && edge.indicator) {
                 root.addView(MinimizeStrip(true),FrameLayout.LayoutParams(d(24),d(112),Gravity.CENTER_VERTICAL or if(edge.left)Gravity.LEFT else Gravity.RIGHT))
@@ -363,7 +349,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             place(rectangle,true)
         }
         bubble?.update(workspace.tabs.size,workspace.tabs.count { it.unread },workspace.tabs.any { it.generating }); list?.refresh(workspace)
-        if(mode==FloatingMode.CHOOSER) { val text="${workspace.tabs.size} conversations · drag to move"; if(subtitle?.text!=text)subtitle?.text=text; return }
+        if(mode==FloatingMode.CHOOSER) { val text="${workspace.tabs.size} conversations · drag tab icons to reorder"; if(subtitle?.text!=text)subtitle?.text=text; return }
         if(mode!=FloatingMode.CHAT)return
         val tab=workspace.selected ?: return
         count?.count=workspace.tabs.size
