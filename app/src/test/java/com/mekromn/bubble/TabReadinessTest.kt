@@ -1,6 +1,7 @@
 package com.mekromn.bubble
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class TabReadinessTest {
@@ -19,7 +20,14 @@ class TabReadinessTest {
 
         val suspended = ChatTab().apply { suspended = true }
         assertEquals(TabReadiness.SUSPENDED, TabReadiness.of(suspended))
+    }
 
-        assertEquals(TabReadiness.LIVE, TabReadiness.of(ChatTab()))
+    @Test fun everyReadinessStateHasDistinctVisualIdentity() {
+        val fills = TabReadiness.entries.map { it.fill }.toSet()
+        val edges = TabReadiness.entries.map { it.edge }.toSet()
+        assertEquals(TabReadiness.entries.size, fills.size)
+        assertEquals(TabReadiness.entries.size, edges.size)
+        assertNotEquals(TabReadiness.READY.edge, TabReadiness.WORKING.edge)
+        assertNotEquals(TabReadiness.WORKING.edge, TabReadiness.ATTENTION.edge)
     }
 }
