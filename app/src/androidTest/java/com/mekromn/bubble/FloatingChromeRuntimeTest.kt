@@ -21,7 +21,7 @@ class FloatingChromeRuntimeTest {
     private val context = instrumentation.targetContext
     private val automation = instrumentation.uiAutomation
 
-    @Test fun floatingChatExposesRefreshShareAndBidirectionalPillGestures() {
+    @Test fun bothFloatingPillsSwitchUpAndMinimizeDown() {
         val oldFlags = automation.serviceInfo.flags
         val server = ServerSocket(0)
         val worker = Thread {
@@ -48,40 +48,30 @@ class FloatingChromeRuntimeTest {
                 await { main { Workspace.peek()?.selected?.title == "FLOAT-CHROME" && Workspace.peek()?.selected?.painted == true } }
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
-                val chatPillDescription = "Swipe up for chats or down to minimize floating window"
+                val chatPill = "Swipe up for chats or down to minimize floating window"
+                val chooserPill = "Swipe up for last tab or down to minimize floating window"
                 await {
                     automation.waitForIdle(50, 500)
-                    node("Refresh floating page") != null &&
-                        node("Share floating page") != null &&
-                        node(chatPillDescription) != null
+                    node("Refresh floating page") != null && node("Share floating page") != null && node(chatPill) != null
                 }
-                assertNotNull(node("Refresh floating page"))
-                assertNotNull(node("Share floating page"))
 
-                // Up on the floating pill must be exactly equivalent to the tab-switcher button.
-                var handle = requireNotNull(node(chatPillDescription))
-                var bounds = Rect(); handle.getBoundsInScreen(bounds)
-                var x = bounds.exactCenterX(); var y = bounds.exactCenterY()
-                var down = SystemClock.uptimeMillis()
-                event(down, MotionEvent.ACTION_DOWN, x, y)
-                event(down, MotionEvent.ACTION_MOVE, x, y - 56f * context.resources.displayMetrics.density)
-                event(down, MotionEvent.ACTION_UP, x, y - 56f * context.resources.displayMetrics.density)
+                // Page pill: UP opens Your chats.
+                swipe(node(chatPill)!!, -44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
-                assertNotNull(node("Resize conversation chooser"))
-                assertNotNull("Chooser should have its own bottom pill bar", node("Swipe down to minimize floating window"))
+                await { node(chooserPill) != null && node("Resize conversation chooser") != null }
+                // The ACTION_UP that completed the page gesture must not be interpreted as an
+                // outside touch by the newly built chooser and immediately collapse it.
+                Thread.sleep(650)
+                assertTrue(main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER })
 
-                // Return to the tab and keep the existing downward minimize behavior.
-                instrumentation.runOnMainSync {
-                    val workspace = Workspace.peek()!!
-                    BubbleService.active?.window?.openChat(workspace.selectedId)
-                }
+                // Your-chats pill: UP returns to the same/last selected tab.
+                val before = mainValue { Workspace.peek()?.selectedId.orEmpty() }
+                swipe(node(chooserPill)!!, -44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
-                handle = requireNotNull(node(chatPillDescription))
-                bounds = Rect(); handle.getBoundsInScreen(bounds)
-                x = bounds.exactCenterX(); y = bounds.exactCenterY(); down = SystemClock.uptimeMillis()
-                event(down, MotionEvent.ACTION_DOWN, x, y)
-                event(down, MotionEvent.ACTION_MOVE, x, y + 56f * context.resources.displayMetrics.density)
-                event(down, MotionEvent.ACTION_UP, x, y + 56f * context.resources.displayMetrics.density)
+                assertEquals(before, mainValue { Workspace.peek()?.selectedId.orEmpty() })
+
+                // Page pill: DOWN retains the existing minimize behavior.
+                swipe(node(chatPill)!!, 44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE && BubbleService.active?.window?.isTransitioning == false } }
             }
         } finally {
@@ -105,14 +95,14 @@ class FloatingChromeRuntimeTest {
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE } }
                 instrumentation.runOnMainSync { BubbleService.active?.window?.showChooser() }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
+                val chooserPill = "Swipe up for last tab or down to minimize floating window"
                 await {
                     automation.waitForIdle(50, 500)
-                    node("Workspace menu") != null && node("Resize conversation chooser") != null &&
-                        node("Swipe down to minimize floating window") != null
+                    node("Workspace menu") != null && node("Resize conversation chooser") != null && node(chooserPill) != null
                 }
                 assertNotNull(node("Workspace menu"))
                 assertNotNull(node("Resize conversation chooser"))
-                assertNotNull(node("Swipe down to minimize floating window"))
+                assertNotNull(node(chooserPill))
                 assertNull("Legacy Chat tools footer must be removed", textNode("Chat tools"))
                 assertNull("Legacy Edge access footer must be removed", textNode("Edge access"))
                 assertNull("Legacy Reply sound footer must be removed", textNode("Reply sound"))
@@ -132,6 +122,16 @@ class FloatingChromeRuntimeTest {
         }
     }
 
+    private fun swipe(node: AccessibilityNodeInfo, dyDp: Float) {
+        val bounds = Rect(); node.getBoundsInScreen(bounds)
+        val x = bounds.exactCenterX(); val y = bounds.exactCenterY()
+        val dy = dyDp * context.resources.displayMetrics.density
+        val down = SystemClock.uptimeMillis()
+        event(down, MotionEvent.ACTION_DOWN, x, y)
+        event(down, MotionEvent.ACTION_MOVE, x, y + dy * .52f)
+        event(down, MotionEvent.ACTION_MOVE, x, y + dy)
+        event(down, MotionEvent.ACTION_UP, x, y + dy)
+    }
     private fun prepareOverlayAccess() {
         shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
         shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
@@ -154,6 +154,7 @@ class FloatingChromeRuntimeTest {
         try { assertTrue(automation.injectInputEvent(e, true)) } finally { e.recycle() }
     }
     private fun main(test: () -> Boolean): Boolean { var result = false; instrumentation.runOnMainSync { result = test() }; return result }
+    private fun <T> mainValue(value: () -> T): T { lateinit var result: Any; instrumentation.runOnMainSync { result = value() as Any }; @Suppress("UNCHECKED_CAST") return result as T }
     private fun await(test: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + 45_000
         while (SystemClock.elapsedRealtime() < end) { if (test()) return; Thread.sleep(100) }
