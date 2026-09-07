@@ -1,11 +1,12 @@
 name: Verify browser file transfers
 # Consolidated verification for unrestricted attachment selection, no-stale ChatGPT resume,
-# shape-clipped Window background blur only (never screen-wide blur-behind), continuous glass during
-# drag/resize/animation, circular resting-bubble glass, adjustable bubble opacity, drag-to-reorder
-# tab order, protected Google Voice notification channels with REAL Voice visibility/focus semantics
-# so background web alerts are not suppressed, and the existing file/session/profile/floating/edge
-# runtime gates. API-31 blur calls remain runtime-gated on the min-26 app. Runtime failure still
-# publishes a clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds.
+# five-minute idle ChatGPT suspension grace, shape-clipped Window background blur only (never
+# screen-wide blur-behind), continuous glass during drag/resize/animation, circular resting-bubble
+# glass, adjustable bubble opacity, drag-to-reorder tab order, shared Android notification health,
+# high-visibility ChatGPT reply alerts, protected Google Voice channels with real Voice
+# visibility/focus semantics, and the existing file/session/profile/floating/edge runtime gates.
+# API-31 blur calls remain runtime-gated on the min-26 app. Runtime failure still publishes a
+# clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds.
 on:
   push:
     branches: [rebuild-v2]
