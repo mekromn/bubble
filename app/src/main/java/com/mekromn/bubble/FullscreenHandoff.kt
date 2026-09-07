@@ -12,7 +12,7 @@ import android.view.WindowInsets
 import android.view.WindowManager
 
 /** Cross-window motion deliberately animates transforms, not Gecko layout, so the compositor is
- * not reflowed on every animation frame. The live GeckoSession is handed over only at the end. */
+ * not reflowed on every animation frame. The live GeckoSession is handed between native surfaces. */
 internal object FullscreenHandoff {
     const val EXTRA_FROM_FLOATING = "bubble.transition.from.floating"
 
@@ -43,19 +43,21 @@ internal object FullscreenHandoff {
         return WindowGeometry.placed(safe, workspace.windowX, workspace.windowY, width, height)
     }
 
+    /**
+     * The old matched shrink scaled the Activity root while its opaque Activity window still owned
+     * the entire display. Everything outside the shrunken root therefore exposed the Activity's
+     * black backing surface for ~200 ms — exactly the black flash visible on the Pixel recording.
+     *
+     * The overlay is now already attached at its final geometry and performs its own translucent
+     * settle animation. Hand the task to the background on the next frame instead of shrinking the
+     * opaque fullscreen window. The launcher/underlying app is immediately visible and Gecko never
+     * gets resized per animation frame.
+     */
     fun shrinkFullscreen(activity: Activity, root: View, target: WindowBox, done: () -> Unit) {
-        root.animate().cancel()
-        if (!android.animation.ValueAnimator.areAnimatorsEnabled() || !root.isLaidOut || root.width <= 0 || root.height <= 0) {
-            done(); return
-        }
-        val location = IntArray(2); root.getLocationOnScreen(location)
-        root.pivotX = 0f; root.pivotY = 0f
-        val sx = target.width.toFloat() / root.width.coerceAtLeast(1)
-        val sy = target.height.toFloat() / root.height.coerceAtLeast(1)
-        val tx = (target.x - location[0]).toFloat()
-        val ty = (target.y - location[1]).toFloat()
-        root.animate().scaleX(sx).scaleY(sy).translationX(tx).translationY(ty)
-            .setDuration(235).setInterpolator(Ui.ease).withEndAction(done).start()
+        root.animate().cancel(); root.animate().withEndAction(null)
+        root.scaleX = 1f; root.scaleY = 1f; root.translationX = 0f; root.translationY = 0f; root.alpha = 1f
+        if (!root.isLaidOut || root.width <= 0 || root.height <= 0) { done(); return }
+        root.postOnAnimation { if (!activity.isFinishing) done() else done() }
     }
 
     fun reset(root: View) {
