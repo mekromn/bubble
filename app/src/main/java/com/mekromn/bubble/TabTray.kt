@@ -19,6 +19,7 @@ internal class TabTray(c: Context, select: (String) -> Unit, close: (String) -> 
     private val count = Ui.text(c, "", 12f, Ui.MUTED)
     private var backCallback: android.window.OnBackInvokedCallback? = null
     private var backDispatcher: android.window.OnBackInvokedDispatcher? = null
+    private var revealedSelected = ""
     init {
         orientation = VERTICAL; background = Ui.shape(c, Ui.SURFACE, 0f); isClickable = true; isFocusable = true
         setPadding(d(12), d(8), d(12), d(12))
@@ -46,7 +47,9 @@ internal class TabTray(c: Context, select: (String) -> Unit, close: (String) -> 
     }
     override fun onAttachedToWindow() { super.onAttachedToWindow(); syncBackHandler() }
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
-        super.onVisibilityChanged(changedView,visibility); if (isAttachedToWindow) syncBackHandler()
+        super.onVisibilityChanged(changedView,visibility)
+        if (visibility != View.VISIBLE) revealedSelected = ""
+        if (isAttachedToWindow) syncBackHandler()
     }
     override fun onDetachedFromWindow() { releaseBackHandler(); super.onDetachedFromWindow() }
     private fun syncBackHandler() {
@@ -67,9 +70,13 @@ internal class TabTray(c: Context, select: (String) -> Unit, close: (String) -> 
         backCallback=null; backDispatcher=null
     }
     fun refresh(workspace: Workspace) {
-        val value="${workspace.tabs.size} tabs · all kept live"
+        val value="${workspace.tabs.size} tabs · green ready · amber working · red attention · gray suspended"
         if (count.text != value) count.text=value
         conversations.refresh(workspace)
+        if (isShown && revealedSelected != workspace.selectedId) {
+            revealedSelected = workspace.selectedId
+            conversations.reveal(workspace.selectedId)
+        }
     }
     private fun d(n: Int)=Ui.dp(context,n.toFloat())
 }
