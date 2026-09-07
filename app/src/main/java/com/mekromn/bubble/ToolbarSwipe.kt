@@ -6,6 +6,8 @@ internal enum class ToolbarSwipe {
     NONE,
     NEXT_TAB,
     PREVIOUS_TAB,
+    PAGE_BACK,
+    PAGE_FORWARD,
     OPEN_CHOOSER,
     RETURN_TO_TAB,
     MINIMIZE
@@ -18,14 +20,16 @@ internal object ToolbarSwipePolicy {
         dy: Float,
         threshold: Float,
         horizontalTabs: Boolean = false,
+        horizontalHistory: Boolean = false,
         swipeUpChooser: Boolean = false,
         swipeUpReturn: Boolean = false,
         swipeDownMinimize: Boolean = false
     ): ToolbarSwipe {
         val ax = abs(dx)
         val ay = abs(dy)
-        if (horizontalTabs && ax > threshold && ax > ay * 1.15f) {
-            return if (dx < 0f) ToolbarSwipe.NEXT_TAB else ToolbarSwipe.PREVIOUS_TAB
+        if (ax > threshold && ax > ay * 1.15f) {
+            if (horizontalTabs) return if (dx < 0f) ToolbarSwipe.NEXT_TAB else ToolbarSwipe.PREVIOUS_TAB
+            if (horizontalHistory) return if (dx < 0f) ToolbarSwipe.PAGE_BACK else ToolbarSwipe.PAGE_FORWARD
         }
         // Floating-window pills are deliberately forgiving. A user's thumb does not have to travel
         // perfectly vertically; once vertical travel is materially larger than horizontal drift,
