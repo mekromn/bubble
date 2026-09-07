@@ -21,7 +21,7 @@ class FloatingChromeRuntimeTest {
     private val context = instrumentation.targetContext
     private val automation = instrumentation.uiAutomation
 
-    @Test fun bothFloatingPillsSwitchUpAndMinimizeDown() {
+    @Test fun floatingPagePillHandlesHistorySwitcherAndMinimizeDirections() {
         val oldFlags = automation.serviceInfo.flags
         val server = ServerSocket(0)
         val worker = Thread {
@@ -29,8 +29,11 @@ class FloatingChromeRuntimeTest {
                 server.accept().use { socket ->
                     socket.soTimeout = 5000
                     val reader = socket.getInputStream().bufferedReader()
+                    val first = reader.readLine().orEmpty()
                     while (!reader.readLine().isNullOrEmpty()) { }
-                    val html = """<!doctype html><meta name="viewport" content="width=device-width"><title>FLOAT-CHROME</title><style>body{background:#111;color:white;font:20px sans-serif}</style><h1>Floating chrome fixture</h1>""".toByteArray()
+                    val path = first.split(' ').getOrNull(1).orEmpty()
+                    val title = if (path.startsWith("/two")) "FLOAT-TWO" else "FLOAT-ONE"
+                    val html = """<!doctype html><meta name="viewport" content="width=device-width"><title>$title</title><style>body{background:#111;color:white;font:20px sans-serif}</style><h1>$title</h1>""".toByteArray()
                     socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray())
                     socket.getOutputStream().write(html)
                 }
@@ -38,35 +41,50 @@ class FloatingChromeRuntimeTest {
         }.apply { isDaemon = true; start() }
         try {
             prepareOverlayAccess()
+            val one = "http://127.0.0.1:${server.localPort}/one"
+            val two = "http://127.0.0.1:${server.localPort}/two"
             ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)).use { scenario ->
                 await { main { Workspace.peek()?.ready == true } }
                 scenario.onActivity { activity ->
                     AccessPreferences.get(activity).update(AccessPreferences.get(activity).options.copy(enabled = false))
-                    val id = activity.workspace.create("http://127.0.0.1:${server.localPort}/").id
+                    val id = activity.workspace.create(one).id
                     activity.workspace.tabs.map { it.id }.filter { it != id }.forEach(activity.workspace::close)
                 }
-                await { main { Workspace.peek()?.selected?.title == "FLOAT-CHROME" && Workspace.peek()?.selected?.painted == true } }
+                await { main { Workspace.peek()?.selected?.title == "FLOAT-ONE" && Workspace.peek()?.selected?.painted == true } }
+                scenario.onActivity { it.workspace.navigate(two) }
+                await { main { Workspace.peek()?.selected?.title == "FLOAT-TWO" && Workspace.peek()?.selected?.back == true } }
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
-                val chatPill = "Swipe up for chats or down to minimize floating window"
+
+                val chatPill = "Swipe up for chats, left for back, right for forward, or down to minimize floating window"
                 val chooserPill = "Swipe up for last tab or down to minimize floating window"
                 await {
                     automation.waitForIdle(50, 500)
                     node("Refresh floating page") != null && node("Share floating page") != null && node(chatPill) != null
                 }
 
-                swipe(node(chatPill)!!, -44f)
+                // LEFT = webpage Back.
+                swipe(node(chatPill)!!, -44f, 0f)
+                await { main { Workspace.peek()?.selected?.title == "FLOAT-ONE" && Workspace.peek()?.selected?.forward == true } }
+                // RIGHT = webpage Forward.
+                swipe(node(chatPill)!!, 44f, 0f)
+                await { main { Workspace.peek()?.selected?.title == "FLOAT-TWO" && Workspace.peek()?.selected?.back == true } }
+
+                // UP = Your chats.
+                swipe(node(chatPill)!!, 0f, -44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
                 await { node(chooserPill) != null && node("Resize conversation chooser") != null }
                 Thread.sleep(650)
                 assertTrue(main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER })
 
+                // UP on Your chats = return to the same/last selected tab.
                 val before = selectedId()
-                swipe(node(chooserPill)!!, -44f)
+                swipe(node(chooserPill)!!, 0f, -44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
                 assertEquals(before, selectedId())
 
-                swipe(node(chatPill)!!, 44f)
+                // DOWN = existing minimize behavior.
+                swipe(node(chatPill)!!, 0f, 44f)
                 await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE && BubbleService.active?.window?.isTransitioning == false } }
             }
         } finally {
@@ -117,15 +135,16 @@ class FloatingChromeRuntimeTest {
         }
     }
 
-    private fun swipe(node: AccessibilityNodeInfo, dyDp: Float) {
+    private fun swipe(node: AccessibilityNodeInfo, dxDp: Float, dyDp: Float) {
         val bounds = Rect(); node.getBoundsInScreen(bounds)
         val x = bounds.exactCenterX(); val y = bounds.exactCenterY()
+        val dx = dxDp * context.resources.displayMetrics.density
         val dy = dyDp * context.resources.displayMetrics.density
         val down = SystemClock.uptimeMillis()
         event(down, MotionEvent.ACTION_DOWN, x, y)
-        event(down, MotionEvent.ACTION_MOVE, x, y + dy * .52f)
-        event(down, MotionEvent.ACTION_MOVE, x, y + dy)
-        event(down, MotionEvent.ACTION_UP, x, y + dy)
+        event(down, MotionEvent.ACTION_MOVE, x + dx * .52f, y + dy * .52f)
+        event(down, MotionEvent.ACTION_MOVE, x + dx, y + dy)
+        event(down, MotionEvent.ACTION_UP, x + dx, y + dy)
     }
     private fun prepareOverlayAccess() {
         shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
