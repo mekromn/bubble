@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -55,12 +54,12 @@ internal object FullscreenHandoff {
             root.postOnAnimation { done() }
             return
         }
-        floating.holdForMatchedMorph()
+        holdFloating(floating)
         root.postOnAnimation {
             if (activity.isFinishing) {
-                source.bitmap.safeRecycle(); done(); return@postOnAnimation
+                source.bitmap.safeRecycle(); showFloating(floating); done(); return@postOnAnimation
             }
-            val destination = floating.snapshotForMatchedMorph()
+            val destination = captureFloatingFrame(floating)
             val exactTarget = floating.box.takeIf { it.width > 0 && it.height > 0 } ?: target
             val overlay = WindowMorphOverlay(
                 activity.applicationContext,
@@ -77,7 +76,7 @@ internal object FullscreenHandoff {
                 done()
                 main.postOnAnimation {
                     overlay.morph(365L) {
-                        floating.finishMatchedMorphIn()
+                        showFloating(floating)
                         if (morphOverlay === overlay) morphOverlay = null
                         overlay.detach()
                     }
@@ -94,7 +93,7 @@ internal object FullscreenHandoff {
      */
     fun expandFloatingToFullscreen(context: Context, floating: FloatingWindow, intent: Intent) {
         if (expandingIntoFullscreen || morphOverlay != null) return
-        val source = floating.snapshotForMatchedMorph()
+        val source = captureFloatingFrame(floating)
         if (source == null) {
             launchFullscreenDirect(context, intent)
             return
@@ -110,7 +109,7 @@ internal object FullscreenHandoff {
         morphOverlay = overlay
         expandingIntoFullscreen = true
         overlay.attach {
-            floating.holdForMatchedMorph()
+            holdFloating(floating)
             overlay.morph(380L) {
                 // Keep the full-screen frozen card above everything while BrowserActivity starts.
                 // System Activity animation may happen underneath; it is never visible to the user.
@@ -122,7 +121,7 @@ internal object FullscreenHandoff {
                     context.applicationContext.startActivity(launch)
                 } catch (_: RuntimeException) {
                     expandingIntoFullscreen = false
-                    floating.finishMatchedMorphIn()
+                    showFloating(floating)
                     if (morphOverlay === overlay) morphOverlay = null
                     overlay.detach()
                 }
@@ -151,9 +150,11 @@ internal object FullscreenHandoff {
     fun isEnteringFullscreen(intent: Intent?): Boolean =
         intent?.getBooleanExtra(EXTRA_FROM_FLOATING, false) == true && expandingIntoFullscreen
 
-    /** Compatibility fallback for callers that only have a source View. */
+    /** BubbleService funnels floating fullscreen launches here so the outer card, not Gecko alone, morphs. */
     fun launchFromFloating(context: Context, source: View, intent: Intent) {
-        launchFullscreenDirect(context, intent)
+        val floating = BubbleService.active?.window?.takeIf { it.mode == FloatingMode.CHAT }
+        if (floating != null) expandFloatingToFullscreen(context, floating, intent)
+        else launchFullscreenDirect(context, intent)
     }
 
     fun floatingTarget(context: Context, workspace: Workspace): WindowBox {
@@ -184,6 +185,42 @@ internal object FullscreenHandoff {
         cancelPendingFullscreenFrame()
         morphOverlay?.detach(); morphOverlay = null
         expandingIntoFullscreen = false
+    }
+
+    private fun holdFloating(floating: FloatingWindow) {
+        val card = floating.transitionView
+        card.animate().cancel(); card.animate().withEndAction(null)
+        card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f
+        card.alpha = 0f
+    }
+
+    private fun showFloating(floating: FloatingWindow) {
+        val card = floating.transitionView
+        if (!card.isAttachedToWindow) return
+        card.animate().cancel(); card.animate().withEndAction(null)
+        card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f; card.alpha = 1f
+    }
+
+    private fun captureFloatingFrame(floating: FloatingWindow): MorphFrame? {
+        val card = floating.transitionView
+        if (!card.isLaidOut || card.width <= 0 || card.height <= 0) return null
+        val oldAlpha = card.alpha
+        val oldSx = card.scaleX; val oldSy = card.scaleY
+        val oldTx = card.translationX; val oldTy = card.translationY
+        card.alpha = 1f; card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f
+        val bitmap = try { Bitmap.createBitmap(card.width, card.height, Bitmap.Config.ARGB_8888) } catch (_: Throwable) { null }
+        if (bitmap == null) {
+            card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy; card.translationX = oldTx; card.translationY = oldTy
+            return null
+        }
+        return try {
+            card.draw(Canvas(bitmap))
+            MorphFrame(bitmap, floating.box)
+        } catch (_: Throwable) {
+            bitmap.safeRecycle(); null
+        } finally {
+            card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy; card.translationX = oldTx; card.translationY = oldTy
+        }
     }
 
     private fun captureActivityFrame(activity: Activity, root: View, attempt: Int, result: (MorphFrame?) -> Unit) {
