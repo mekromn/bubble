@@ -77,14 +77,19 @@ internal object FullscreenHandoff {
                 try {
                     overlay.attach {
                         destination?.let(overlay::setDestination)
-                        // Only after the captured fullscreen frame has itself been committed as an
-                        // overlay do we let the Activity move behind the launcher.
+                        // The captured fullscreen frame is now the only visible app surface. Ask
+                        // Android to background BrowserActivity, but keep the held frame full-screen
+                        // until the real source window is no longer visible. This is the critical
+                        // difference between a matched morph and two independent app animations:
+                        // the launcher is stable before the container exposes even one pixel of it.
                         done()
-                        main.post {
-                            overlay.morph(365L) {
-                                showFloating(floating)
-                                if (morphOverlay === overlay) morphOverlay = null
-                                overlay.detach()
+                        waitUntilSourceWindowHidden(activity, root, 0) {
+                            if (morphOverlay === overlay) {
+                                overlay.morph(365L) {
+                                    showFloating(floating)
+                                    if (morphOverlay === overlay) morphOverlay = null
+                                    overlay.detach()
+                                }
                             }
                         }
                     }
@@ -123,9 +128,14 @@ internal object FullscreenHandoff {
                     holdFloating(floating)
                     overlay.morph(380L) {
                         // The card is now physically full-screen and opaque. Start BrowserActivity
-                        // behind that held frame; no launcher/background pixels can leak through.
+                        // behind that held frame with Android's unrelated task animation suppressed;
+                        // the user continues to see only the one shared morph object.
                         val launch = Intent(intent).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+                            )
                             putExtra(EXTRA_FROM_FLOATING, true)
                         }
                         try {
@@ -152,13 +162,20 @@ internal object FullscreenHandoff {
     fun finishIntoFullscreen(activity: Activity, root: View) {
         if (!expandingIntoFullscreen) return
         val overlay = morphOverlay ?: run { expandingIntoFullscreen = false; return }
-        root.postOnAnimation {
-            root.postOnAnimation {
-                captureActivityFrame(activity, root, 0) { destination ->
-                    overlay.finishWith(destination, 115L) {
-                        if (morphOverlay === overlay) morphOverlay = null
-                        expandingIntoFullscreen = false
-                        overlay.detach()
+        // onStart can precede task-focus/SurfaceControl settling. Keep the opaque held card on top
+        // until the destination window is actually visible and focused, then allow two compositor
+        // frames before capturing it. The system transition is also suppressed with NO_ANIMATION.
+        waitUntilDestinationWindowReady(activity, root, 0) {
+            if (morphOverlay === overlay && expandingIntoFullscreen) {
+                root.postOnAnimation {
+                    root.postOnAnimation {
+                        captureActivityFrame(activity, root, 0) { destination ->
+                            overlay.finishWith(destination, 115L) {
+                                if (morphOverlay === overlay) morphOverlay = null
+                                expandingIntoFullscreen = false
+                                overlay.detach()
+                            }
+                        }
                     }
                 }
             }
@@ -303,17 +320,30 @@ internal object FullscreenHandoff {
         try {
             gecko.capturePixels().accept({ web ->
                 if (web != null && !web.isRecycled) {
-                    try {
-                        val ownerLocation = IntArray(2); owner.getLocationOnScreen(ownerLocation)
-                        val geckoLocation = IntArray(2); gecko.getLocationOnScreen(geckoLocation)
-                        val left = geckoLocation[0] - ownerLocation[0]
-                        val top = geckoLocation[1] - ownerLocation[1]
-                        val dest = Rect(left, top, left + gecko.width, top + gecko.height)
-                        Canvas(base).drawBitmap(web, null, dest, capturePaint)
-                    } catch (_: Throwable) { }
-                    web.safeRecycle()
-                }
-                done()
+                    // Immediately after a surface handoff Gecko can briefly return the previous
+                    // surface-sized frame. Prefer a frame matching the destination View geometry;
+                    // retrying here prevents a responsive-layout snap on the very last morph frame.
+                    val stale = kotlin.math.abs(web.width - gecko.width) > 8 ||
+                        kotlin.math.abs(web.height - gecko.height) > 8
+                    if (stale && attempt < 3 && gecko.isAttachedToWindow) {
+                        web.safeRecycle()
+                        main.postDelayed(
+                            { compositeGeckoPixels(gecko, owner, base, attempt + 1, done) },
+                            20L * (attempt + 1)
+                        )
+                    } else {
+                        try {
+                            val ownerLocation = IntArray(2); owner.getLocationOnScreen(ownerLocation)
+                            val geckoLocation = IntArray(2); gecko.getLocationOnScreen(geckoLocation)
+                            val left = geckoLocation[0] - ownerLocation[0]
+                            val top = geckoLocation[1] - ownerLocation[1]
+                            val dest = Rect(left, top, left + gecko.width, top + gecko.height)
+                            Canvas(base).drawBitmap(web, null, dest, capturePaint)
+                        } catch (_: Throwable) { }
+                        web.safeRecycle()
+                        done()
+                    }
+                } else done()
             }, { _ ->
                 if (attempt < 3 && gecko.isAttachedToWindow) {
                     main.postDelayed({ compositeGeckoPixels(gecko, owner, base, attempt + 1, done) }, 20L * (attempt + 1))
@@ -323,6 +353,28 @@ internal object FullscreenHandoff {
             if (attempt < 3 && gecko.isAttachedToWindow) {
                 main.postDelayed({ compositeGeckoPixels(gecko, owner, base, attempt + 1, done) }, 20L * (attempt + 1))
             } else done()
+        }
+    }
+
+    /** Keep the held fullscreen frame opaque until Android has actually hidden the source task. */
+    private fun waitUntilSourceWindowHidden(activity: Activity, root: View, attempt: Int, ready: () -> Unit) {
+        val hidden = activity.isFinishing || !root.isAttachedToWindow ||
+            root.windowVisibility != View.VISIBLE || !root.isShown
+        if (hidden || attempt >= 30) {
+            main.post(ready)
+        } else {
+            main.postDelayed({ waitUntilSourceWindowHidden(activity, root, attempt + 1, ready) }, 16L)
+        }
+    }
+
+    /** Keep the grown card opaque until the destination task is focused and fully drawable. */
+    private fun waitUntilDestinationWindowReady(activity: Activity, root: View, attempt: Int, ready: () -> Unit) {
+        val stable = !activity.isFinishing && root.isAttachedToWindow && root.isShown &&
+            root.windowVisibility == View.VISIBLE && activity.hasWindowFocus()
+        if (stable || attempt >= 30) {
+            main.post(ready)
+        } else {
+            main.postDelayed({ waitUntilDestinationWindowReady(activity, root, attempt + 1, ready) }, 16L)
         }
     }
 
