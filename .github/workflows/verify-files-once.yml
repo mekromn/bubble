@@ -4,14 +4,13 @@ name: Verify current Bubble changes
 # remain in source but are no longer part of every build's emulator gate.
 #
 # Current gate: floating-window chrome/gesture behavior plus the Google Voice mixed-theme Force
-# Dark fix and the new true matched fullscreen <-> floating morph. The handoff now captures the
-# exact source pixels before Gecko changes surface ownership, places that frame in one transparent
-# system overlay, and animates that single visible card continuously through position, size, corner
-# radius and destination-frame dissolve. The real destination is hidden underneath until its bounds
-# exactly match, preventing black backing flashes, double-card reads and independent-window timing.
-# Floating -> fullscreen grows that same held card to the display before BrowserActivity is launched
-# behind it, then PixelCopies the real destination and dissolves only at identical full-screen bounds.
-# Re-run after correcting the compositor scheduling boundary so the matched morph compiles cleanly.
+# Dark fix and the true matched fullscreen <-> floating morph. The handoff captures native chrome
+# and Gecko compositor pixels before surface ownership changes, places that exact frame in one
+# transparent system overlay, and morphs a single visible card continuously through position, size,
+# corner radius and destination-frame fade-through. Content uses uniform center-crop scaling rather
+# than X/Y stretching, the temporary overlay spans Pixel cutout bounds exactly, and the real source
+# or destination stays hidden until the held card occupies the same geometry. Floating runtime now
+# exercises a complete fullscreen -> floating -> fullscreen -> floating round trip before minimize.
 on:
   push:
     branches: [rebuild-v2]
