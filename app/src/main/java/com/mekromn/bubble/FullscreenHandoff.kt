@@ -162,13 +162,16 @@ internal object FullscreenHandoff {
     fun finishIntoFullscreen(activity: Activity, root: View) {
         if (!expandingIntoFullscreen) return
         val overlay = morphOverlay ?: run { expandingIntoFullscreen = false; return }
-        // onStart can precede task-focus/SurfaceControl settling. Keep the opaque held card on top
-        // until the destination window is actually visible and focused, then allow two compositor
-        // frames before capturing it. The system transition is also suppressed with NO_ANIMATION.
+        // Do not gate this on window focus. A non-focusable TYPE_APPLICATION_OVERLAY can cover the
+        // destination while it is already laid out and drawable, and some Android builds defer the
+        // focus transition until the overlay is removed. Waiting for focus therefore creates a
+        // circular handoff. Instead wait for real attachment/layout/visibility, then allow about two
+        // display frames on the main queue before PixelCopy. Handler scheduling continues even while
+        // the destination is fully occluded, unlike View.postOnAnimation on an occluded ViewRoot.
         waitUntilDestinationWindowReady(activity, root, 0) {
             if (morphOverlay === overlay && expandingIntoFullscreen) {
-                root.postOnAnimation {
-                    root.postOnAnimation {
+                main.postDelayed({
+                    if (morphOverlay === overlay && expandingIntoFullscreen) {
                         captureActivityFrame(activity, root, 0) { destination ->
                             overlay.finishWith(destination, 115L) {
                                 if (morphOverlay === overlay) morphOverlay = null
@@ -177,7 +180,7 @@ internal object FullscreenHandoff {
                             }
                         }
                     }
-                }
+                }, 32L)
             }
         }
     }
@@ -358,7 +361,10 @@ internal object FullscreenHandoff {
 
     /** Keep the held fullscreen frame opaque until Android has actually hidden the source task. */
     private fun waitUntilSourceWindowHidden(activity: Activity, root: View, attempt: Int, ready: () -> Unit) {
-        val hidden = activity.isFinishing || !root.isAttachedToWindow ||
+        // Losing task focus is sufficient because the held overlay already contains the exact source
+        // pixels. We do not need to wait for ViewRoot teardown, which can lag task backgrounding and
+        // would otherwise add a visible pause before the shrink starts.
+        val hidden = activity.isFinishing || !activity.hasWindowFocus() || !root.isAttachedToWindow ||
             root.windowVisibility != View.VISIBLE || !root.isShown
         if (hidden || attempt >= 30) {
             main.post(ready)
@@ -367,10 +373,10 @@ internal object FullscreenHandoff {
         }
     }
 
-    /** Keep the grown card opaque until the destination task is focused and fully drawable. */
+    /** Keep the grown card opaque until the destination window is attached, laid out and drawable. */
     private fun waitUntilDestinationWindowReady(activity: Activity, root: View, attempt: Int, ready: () -> Unit) {
-        val stable = !activity.isFinishing && root.isAttachedToWindow && root.isShown &&
-            root.windowVisibility == View.VISIBLE && activity.hasWindowFocus()
+        val stable = !activity.isFinishing && root.isAttachedToWindow && root.isShown && root.isLaidOut &&
+            root.width > 0 && root.height > 0 && root.windowVisibility == View.VISIBLE
         if (stable || attempt >= 30) {
             main.post(ready)
         } else {
