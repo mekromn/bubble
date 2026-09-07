@@ -4,6 +4,7 @@
 
   const STYLE_ID = 'bubble-page-appearance';
   const FILTER = 'invert(1) hue-rotate(180deg)';
+  const SURFACE_CLASS = 'bubble-force-dark-surface';
   const VALID = new Set(['default', 'dark', 'light']);
   let requestedMode = 'default';
   let classifyTimer = 0;
@@ -64,6 +65,29 @@
       html.bubble-needs-invert :is(img,picture,video,canvas,iframe,svg) {
         filter: ${FILTER} !important;
       }
+
+      /* Mixed-theme SPAs (Google Voice is the important real-world case) can already render their
+         conversation body dark while leaving the app/header chrome bright white. In that state a
+         whole-page inversion would ruin the correctly-dark content, so Bubble retints only large
+         light surfaces occupying the top application-chrome region. */
+      html.bubble-force-dark .${SURFACE_CLASS} {
+        background-color: #111315 !important;
+        color: #e8eaed !important;
+        border-color: #303134 !important;
+        box-shadow: none !important;
+      }
+      html.bubble-force-dark .${SURFACE_CLASS} :is(h1,h2,h3,h4,p,span,a,button,[role="button"],[role="link"]) {
+        color: #e8eaed !important;
+      }
+      html.bubble-force-dark .${SURFACE_CLASS} :is(input,textarea,[contenteditable="true"]) {
+        background-color: #202124 !important;
+        color: #e8eaed !important;
+        caret-color: #e8eaed !important;
+      }
+      html.bubble-force-dark .${SURFACE_CLASS} :is(svg,path) {
+        color: #e8eaed !important;
+        fill: currentColor !important;
+      }
     `;
     (document.head || host).appendChild(style);
     return style;
@@ -81,16 +105,58 @@
     } else if (current) host.style.removeProperty('filter');
   };
 
+  const clearRetintedSurfaces = () => {
+    document.querySelectorAll(`.${SURFACE_CLASS}`).forEach(node => node.classList.remove(SURFACE_CLASS));
+  };
+
+  const retintMixedTopChrome = () => {
+    if (requestedMode !== 'dark' || !document.body) { clearRetintedSurfaces(); return; }
+    const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight);
+    const topLimit = Math.min(240, Math.max(96, h * .24));
+    const candidates = new Set();
+
+    // Semantic app bars first, then sample the top region so obfuscated Google class names do not
+    // matter. We only accept large, genuinely light rectangles and never touch images/media.
+    document.querySelectorAll('header,[role="banner"],nav[aria-label]').forEach(node => candidates.add(node));
+    for (const y of [18, 48, 82, 118, 166, 214]) {
+      if (y >= topLimit) continue;
+      for (const x of [w * .08, w * .28, w * .5, w * .72, w * .92]) {
+        let node = document.elementFromPoint(x, y);
+        for (let depth = 0; node instanceof Element && node !== document.body && depth < 7; depth++, node = node.parentElement) {
+          candidates.add(node);
+        }
+      }
+    }
+
+    const keep = new Set();
+    candidates.forEach(node => {
+      if (!(node instanceof Element) || node.matches('img,picture,video,canvas,iframe,svg')) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom <= 0 || rect.top >= topLimit || rect.width < w * .46 || rect.height < 34 || rect.height > topLimit * 1.35) return;
+      const value = nodeLuma(node);
+      if (value !== null && value > .78) keep.add(node);
+    });
+
+    document.querySelectorAll(`.${SURFACE_CLASS}`).forEach(node => {
+      if (!keep.has(node)) node.classList.remove(SURFACE_CLASS);
+    });
+    keep.forEach(node => node.classList.add(SURFACE_CLASS));
+  };
+
   const classify = () => {
     const host = root();
     if (!host || (requestedMode !== 'dark' && requestedMode !== 'light')) return;
     const value = pageLuma();
     if (value === null) {
       setInvert(requestedMode === 'dark');
+      clearRetintedSurfaces();
       return;
     }
     const nativeDark = value < 0.48;
-    setInvert(requestedMode === 'dark' ? !nativeDark : nativeDark);
+    const needsInvert = requestedMode === 'dark' ? !nativeDark : nativeDark;
+    setInvert(needsInvert);
+    if (requestedMode === 'dark' && nativeDark && !needsInvert) retintMixedTopChrome();
+    else clearRetintedSurfaces();
   };
 
   const scheduleClassify = delay => {
@@ -121,6 +187,7 @@
     installed = true;
     requestedMode = mode;
     observer?.disconnect(); observer = null;
+    clearRetintedSurfaces();
     host.classList.remove('bubble-force-dark', 'bubble-force-light', 'bubble-needs-invert');
     host.style.removeProperty('filter');
     if (requestedMode === 'default') {
@@ -176,13 +243,7 @@
       browser.runtime.sendNativeMessage('bubbleAppearance', {event: 'appearance'})
         .then(response => {
           const mode = response && typeof response.mode === 'string' ? response.mode : '';
-          if (!VALID.has(mode)) {
-            // A missing/invalid response is not DEFAULT. It means the delegate was not ready or
-            // sender metadata was rejected. The old behavior silently installed DEFAULT here,
-            // which is why Force dark appeared to do nothing on real pages such as Google Voice.
-            portFallback(attempt);
-            return;
-          }
+          if (!VALID.has(mode)) { portFallback(attempt); return; }
           install(mode);
         })
         .catch(() => portFallback(attempt));
