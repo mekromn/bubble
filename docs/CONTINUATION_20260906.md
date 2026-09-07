@@ -21,15 +21,15 @@ Preserve: stable debug package and signing identity, existing account storage an
 Logical tabs remain durable and unlimited, but **idle ChatGPT renderer sessions must not all remain resident**. Only tabs doing work, tabs being actively viewed, loading tabs, non-ChatGPT tabs under the existing compatibility policy, and tabs explicitly marked **Force keep alive** should stay live.
 
 - When an exact-origin ChatGPT monitor reports `started`, that tab is protected from suspension and stays active/high priority even in the background.
-- When that response reports `finished`, Bubble first performs the durable checkpoint and reply-notification decision, then an idle background tab should hibernate immediately.
-- A background ChatGPT tab that is already idle auto-hibernates after a short grace period so a just-submitted response can still announce `started`.
+- When that response reports `finished`, Bubble first performs the durable checkpoint and reply-notification decision, then starts the same idle grace period used by an ordinary background ChatGPT tab.
+- A background ChatGPT tab that is already idle auto-hibernates after a **five-minute grace period**. This supersedes the earlier short-grace/immediate-after-finish behavior so normal tab switching does not cause aggressive renderer churn.
 - Opening/selecting a suspended tab is the explicit resume action and recreates its GeckoSession.
 - **Never show a stale ChatGPT page after suspension.** A reopened/cold ChatGPT renderer must not expose an old restored DOM/session snapshot. Bubble must recreate the renderer from the canonical URL using a fresh cache-bypassed navigation; if fresh content is unavailable, show loading/error UI rather than the old page. This applies to automatic hibernation, manual suspension, process restore and renderer recovery.
-- **Manual Suspend now** must exist per tab, but refuse to kill an in-flight response, page load, or active file-picker transfer.
-- **Force keep alive** must exist per tab, persist locally, and override automatic suspension. An explicit manual suspend remains stronger than Force keep alive.
+- **Manual Suspend now** exists per tab and remains immediate, but refuses to kill an in-flight response, page load, or active file-picker transfer.
+- **Force keep alive** exists per tab, persists locally, and overrides automatic suspension. An explicit manual suspend remains stronger than Force keep alive.
 - Auto-hibernation releases the renderer; it does not close/delete the logical tab or server-side ChatGPT conversation.
 
-Remaining explicit requests: real translucent blurred neutral black glass; text-only quick tabs; inward swipe-release chooser and inward swipe-hold last tab; physically remove native view-only PiP while retaining interactive floating chat; pop-out ChatGPT sidebar whose selected links open new same-profile tabs; local explicit draft recovery, prompt insertion, scratchpads, navigation/search, pins/names/recently-closed/unread navigation, reading controls, explicit copy/export. No automatic prompt send or private-data uploads.
+Remaining explicit requests: text-only quick tabs; inward swipe-release chooser and inward swipe-hold last tab; physically remove native view-only PiP while retaining interactive floating chat; pop-out ChatGPT sidebar whose selected links open new same-profile tabs; local explicit draft recovery, prompt insertion, scratchpads, navigation/search, pins/names/recently-closed/unread navigation, reading controls, explicit copy/export. No automatic prompt send or private-data uploads.
 
 Build policy: consolidate before one explicit verification, preserve Release-only binary publishing and existing rollback builds. No repeat artifact cleanup or unrelated repository changes. A green compile is not a runtime pass, a refresh request is not measured 120 fps, and synthetic profile/DOM fixtures are not authenticated ChatGPT verification.
 
@@ -84,3 +84,22 @@ Current source includes those controls, adaptive ChatGPT renderer hibernation, m
 User installed the published ARM64 manual-test build on the target Pixel 9 Pro XL / Android 16 device and reports that **attachments and downloads work**. Treat general attachment-upload and download behavior as **manually validated on the real target device**. The Android emulator's remaining file-transfer failures are therefore not allowed to block manual product acceptance for those working paths; keep the automated exact-byte/profile/session tests as regression diagnostics and continue hardening the runner separately.
 
 Do not infer more narrowly unreported subcases than the user actually tested. In particular, retain generated-Blob and floating-picker automated coverage until each specific subcase is either green in CI or explicitly confirmed in a real-device test report.
+
+## Google Voice physical-device result — September 6, 2026
+
+The Pixel 9 Pro XL test exposed that Google Voice can receive a new message and update its live tab title to `Voice - (1) Messages` while Gecko reports **zero Web Notification events**. Bubble therefore has a second, privacy-minimal alert path: exact-origin Voice tab title/unread-state changes are classified locally and converted into the existing separate Android Voice channels. It does not read or persist message bodies, sender names, transcripts, cookies or account IDs, and it suppresses a duplicate if a real Gecko Web Notification was just posted.
+
+**User has now confirmed that real Google Voice message notifications work on the target Pixel with this title/unread fallback. Preserve this behavior as a manually accepted real-device feature.** Google Voice tabs remain protected live and exempt from ChatGPT auto-suspension.
+
+## One-shot UI / appearance completion — September 6, 2026
+
+The next requested UI set is implemented together rather than piecemeal:
+
+- **Per-tab webpage appearance:** every logical tab has a persistent UUID-keyed `Bubble default`, `Force dark`, and `Force light` choice. Bubble default preserves the existing dark preferred-color-scheme; explicit dark/light overrides are local presentation and never modify the website account setting. The choice survives renderer suspension because it is keyed by the logical tab rather than the GeckoSession. Changing appearance refuses to interrupt an active ChatGPT generation and reloads a live idle tab to apply the selected presentation.
+- The built-in WebExtension has an isolated top-frame appearance script and a separate `bubbleAppearance` native-message delegate. It does no networking and stores no page/account content. Media is counter-transformed when visual inversion is needed so images/video are not deliberately color-inverted.
+- **Chooser chrome cleanup:** the three bottom footer buttons `Chat tools`, `Edge access`, and `Reply sound` are removed from the chooser. A single top **three-dot Workspace menu** beside New Chat contains those same actions.
+- **Chooser resizing:** the conversation chooser now has the same bottom-right diagonal resize affordance and shared persisted geometry as the floating chat window.
+- **Tab icon drag ordering remains enabled:** the left tab icon is the explicit drag handle. Reordering persists, keeps stable UUID/session identity, and preserves the pinned/unpinned grouping boundary.
+- Runtime regression coverage now checks the chooser menu/resize accessibility controls and the absence of the old footer before the menu is opened. Separate runtime coverage exercises Force dark and Force light on two simultaneous logical tabs to catch cross-tab leakage.
+
+Do not call this one-shot set verified until the consolidated build/runtime workflow reaches a terminal result; if emulator-only file harness failures remain, publish the signed ARM64 manual-test prerelease under the established CI policy and report those failures separately from these UI/appearance features.
