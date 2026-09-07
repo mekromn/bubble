@@ -5,11 +5,11 @@ name: Verify current Bubble changes
 #
 # Current gate: floating-window chrome/gesture behavior plus webpage appearance. This includes the
 # four-way floating page pill, chooser return/minimize pill, independent chooser geometry, status
-# colors, mixed-theme Force dark behavior that retints Google Voice-style white top chrome without
-# destroying an already-dark conversation body, and the coordinated fullscreen <-> floating card
-# transition. The handoff never shrinks the opaque fullscreen Activity root; motion is compositor
-# transforms on the already-positioned glass card, with staged header/body/footer arrival and a
-# whole-card system clip reveal in the reverse direction.
+# colors, stable mixed-theme Force dark behavior that keeps Google Voice-style white top chrome
+# dark without oscillating or destroying an already-dark conversation body, and the coordinated
+# fullscreen <-> floating card transition. The handoff never shrinks the opaque fullscreen Activity
+# root; motion is compositor transforms on the already-positioned glass card, with staged
+# header/body/footer arrival and a whole-card system clip reveal in the reverse direction.
 on:
   push:
     branches: [rebuild-v2]
