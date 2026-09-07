@@ -12,9 +12,9 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.WebExtension
 
 internal enum class PageAppearanceMode(val wire: String, val label: String) {
-    DEFAULT("default", "Site / system"),
-    DARK("dark", "Dark mode"),
-    LIGHT("light", "Light mode");
+    DEFAULT("default", "Bubble default"),
+    DARK("dark", "Force dark"),
+    LIGHT("light", "Force light");
 
     companion object {
         fun fromWire(value: String?) = entries.firstOrNull { it.wire == value } ?: DEFAULT
@@ -22,9 +22,9 @@ internal enum class PageAppearanceMode(val wire: String, val label: String) {
 }
 
 /**
- * Per-logical-tab webpage appearance. Gecko's preferredColorScheme is runtime-wide, so true
- * per-tab choice is implemented by the built-in content script while the durable choice is keyed
- * only by Bubble's UUID tab id. No site data, account data or page text is stored here.
+ * Per-logical-tab webpage appearance. Bubble keeps its existing dark preferred-color-scheme as
+ * the default. Explicit force-dark/light is implemented by the built-in content script while the
+ * durable choice is keyed only by Bubble's UUID tab id. No site/account/page text is stored here.
  */
 internal object PageAppearance {
     private const val PREFS = "bubble-page-appearance-v1"
@@ -48,8 +48,7 @@ internal object PageAppearance {
                     sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT || !Policy.isWeb(sender.url)) return null
                 val request = message as? JSONObject ?: return null
                 if (request.optString("event") != "appearance") return null
-                val response = JSONObject().put("mode", mode(context, tabId).wire)
-                return GeckoResult.fromValue(response)
+                return GeckoResult.fromValue(JSONObject().put("mode", mode(context, tabId).wire))
             }
         }, NATIVE_APP)
     }
@@ -87,7 +86,7 @@ internal object PageAppearance {
         }
         PageAppearanceMode.entries.forEach { body.addView(row(it), LinearLayout.LayoutParams(-1, d(56))) }
         body.addView(Ui.text(anchor.context,
-            "Dark/light forcing is local presentation only; it never changes the website account setting.", 11f, Ui.MUTED).apply {
+            "Bubble default preserves the existing dark web preference. Force dark/light is local presentation only and never changes the website account setting.", 11f, Ui.MUTED).apply {
             gravity = Gravity.CENTER_VERTICAL; setPadding(d(10), d(6), d(10), d(6))
         }, LinearLayout.LayoutParams(-1, d(48)))
     }
