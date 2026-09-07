@@ -4,20 +4,19 @@ name: Verify current Bubble changes
 # remain in source but are no longer part of every build's emulator gate.
 #
 # Current gate: floating-window chrome/gesture behavior plus the Google Voice mixed-theme Force
-# Dark fix and the true matched fullscreen <-> floating morph. The handoff captures native chrome
-# and Gecko compositor pixels before surface ownership changes, places that exact frame in one
-# transparent system overlay, and morphs a single visible card continuously through position, size,
-# corner radius and destination-frame fade-through. Content uses uniform center-crop scaling rather
-# than X/Y stretching, the temporary overlay spans Pixel cutout bounds exactly, and the real source
-# or destination stays hidden until the held card occupies the same geometry. Source contraction
-# begins as soon as the old Activity loses task focus. The shared surface absorbs touch, requests the
-# fastest display mode, and morphs its opaque backing continuously into/out of floating glass so
-# combined opacity never drops and no foreign window can bleed through. Runtime performs a complete
+# Dark fix and the true matched fullscreen <-> floating morph. The transition captures native chrome
+# and Gecko compositor pixels before surface ownership changes, puts that exact frame in one shared
+# transparent overlay, and morphs one visible card continuously through position, size, corner radius,
+# content reflow and surface opacity. The floating destination now becomes genuinely translucent
+# before the shared overlay is removed, so glass/background visibility is part of the same morph
+# instead of appearing as a final-frame pop. A one-use recent fullscreen visual seed protects an
+# immediate reverse gesture from the SurfaceView/TextureView buffer race; a successful real Gecko
+# fullscreen capture replaces that fallback automatically. Floating ownership is still published
+# synchronously, while obsolete overlay destruction is deferred one main-loop turn so BrowserActivity
+# can transfer the same GeckoSession to its fullscreen surface before the old surface is destroyed.
+# Gecko capture and all final handoffs remain bounded by watchdogs. Runtime performs a complete
 # fullscreen -> floating -> fullscreen -> floating round trip and checks a real system screenshot near
-# each handoff midpoint. Fullscreen ownership is published synchronously before service teardown.
-# Gecko compositor capture is now bounded to 240 ms and the full-screen destination capture to 520 ms;
-# source and destination morphs also have final watchdogs. A missed SurfaceView/PixelCopy callback can
-# therefore degrade to the already-valid held frame but can never leave a frozen full-screen overlay.
+# each handoff midpoint. Google Voice mixed-theme Force Dark remains the other current runtime gate.
 on:
   push:
     branches: [rebuild-v2]
