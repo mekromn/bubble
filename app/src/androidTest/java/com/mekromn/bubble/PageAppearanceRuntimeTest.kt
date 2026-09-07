@@ -17,11 +17,14 @@ class PageAppearanceRuntimeTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
 
-    @Test fun forceDarkAndLightAreIndependentPerLogicalTab() {
+    @Test fun forceDarkActuallyTransformsLightSpaAndRemainsIndependentFromForceLight() {
         val server = ServerSocket(0)
-        val html = """<!doctype html><meta name="viewport" content="width=device-width"><style>html,body{background:#fff;color:#111}</style><title>WAIT</title><p>appearance fixture</p><script>
-          function bubbleMode(){const c=document.documentElement.classList;if(c.contains('bubble-force-dark'))return 'FORCE-DARK';if(c.contains('bubble-force-light'))return 'FORCE-LIGHT';return 'DEFAULT';}
-          const update=()=>document.title=bubbleMode(); new MutationObserver(update).observe(document.documentElement,{attributes:true,attributeFilter:['class']}); update();
+        // Delayed nested white surface approximates SPAs such as Google Voice: the first paint may
+        // contain transparent containers and the meaningful light surface arrives after startup.
+        val html = """<!doctype html><meta name="viewport" content="width=device-width"><style>html,body{margin:0;min-height:100%;color:#111}#app{min-height:100vh}</style><title>WAIT</title><div id="app"></div><script>
+          setTimeout(()=>{const s=document.createElement('section');s.style.cssText='position:fixed;inset:0;background:rgb(255,255,255);color:rgb(20,20,20)';s.textContent='late light SPA surface';document.querySelector('#app').appendChild(s);},700);
+          function bubbleMode(){const h=document.documentElement,c=h.classList,f=h.style.getPropertyValue('filter');if(c.contains('bubble-force-dark'))return f.includes('invert')?'FORCE-DARK-INVERT':'FORCE-DARK-NATIVE';if(c.contains('bubble-force-light'))return f.includes('invert')?'FORCE-LIGHT-INVERT':'FORCE-LIGHT-NATIVE';return 'DEFAULT';}
+          const update=()=>document.title=bubbleMode();new MutationObserver(update).observe(document.documentElement,{attributes:true,attributeFilter:['class','style']});setInterval(update,200);update();
         </script>""".toByteArray()
         val worker = Thread {
             while (!server.isClosed) try {
@@ -44,7 +47,11 @@ class PageAppearanceRuntimeTest {
                     context.getSharedPreferences("bubble-page-appearance-v1", 0).edit().putString(darkId, "dark").commit()
                     activity.workspace.selected!!.session!!.reload()
                 }
-                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK" } }
+                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-INVERT" } }
+                // Regression guard for the old bug where Bubble painted <html> black, sampled that
+                // self-painted backing color on the next pass, then removed inversion again.
+                Thread.sleep(2200)
+                assertTrue(main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-INVERT" })
 
                 var lightId = ""
                 scenario.onActivity { activity ->
@@ -54,10 +61,13 @@ class PageAppearanceRuntimeTest {
                     activity.workspace.tabs += tab
                     activity.workspace.select(lightId)
                 }
-                await { main { Workspace.peek()?.selectedId == lightId && Workspace.peek()?.selected?.title == "FORCE-LIGHT" } }
+                await { main {
+                    Workspace.peek()?.selectedId == lightId &&
+                        Workspace.peek()?.selected?.title?.startsWith("FORCE-LIGHT") == true
+                } }
 
                 scenario.onActivity { it.workspace.select(darkId) }
-                await { main { Workspace.peek()?.selectedId == darkId } }
+                await { main { Workspace.peek()?.selectedId == darkId && Workspace.peek()?.selected?.title == "FORCE-DARK-INVERT" } }
                 scenario.onActivity {
                     assertEquals(PageAppearanceMode.DARK, PageAppearance.mode(it, darkId))
                     assertEquals(PageAppearanceMode.LIGHT, PageAppearance.mode(it, lightId))
