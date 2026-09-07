@@ -4,10 +4,12 @@
 
   const STYLE_ID = 'bubble-page-appearance';
   const FILTER = 'invert(1) hue-rotate(180deg)';
+  const VALID = new Set(['default', 'dark', 'light']);
   let requestedMode = 'default';
   let classifyTimer = 0;
   let observer = null;
   let observerStop = 0;
+  let installed = false;
   const root = () => document.documentElement;
 
   const parseColor = value => {
@@ -32,9 +34,6 @@
     return null;
   };
   const pageLuma = () => {
-    // Never sample <html>: Bubble itself may paint that element black/white as a safe backing
-    // color, which previously fooled later passes into thinking a light Google Voice page was
-    // already dark and immediately removed the inversion.
     const bodyValue = nodeLuma(document.body);
     if (bodyValue !== null) return bodyValue;
     const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight);
@@ -75,8 +74,6 @@
     if (!host) return;
     const wasInvert = host.classList.contains('bubble-needs-invert');
     if (wasInvert !== needsInvert) host.classList.toggle('bubble-needs-invert', needsInvert);
-    // Inline !important beats application CSS that places its own filter on <html>. Avoid writing
-    // the same value repeatedly so our MutationObserver cannot create a self-sustaining loop.
     const current = host.style.getPropertyValue('filter').trim();
     if (needsInvert) {
       if (current !== FILTER || host.style.getPropertyPriority('filter') !== 'important')
@@ -89,9 +86,6 @@
     if (!host || (requestedMode !== 'dark' && requestedMode !== 'light')) return;
     const value = pageLuma();
     if (value === null) {
-      // Force-dark must still visibly do something on SPAs whose first paint is all transparent
-      // containers (Google Voice is a real example). Reclassification corrects this as soon as a
-      // concrete surface appears. Force-light defaults to no inversion for the same reason.
       setInvert(requestedMode === 'dark');
       return;
     }
@@ -118,18 +112,20 @@
   };
 
   const install = (mode, domAttempt = 0) => {
+    if (!VALID.has(mode)) return false;
     const host = root();
     if (!host) {
       if (domAttempt < 30) setTimeout(() => install(mode, domAttempt + 1), 16);
-      return;
+      return false;
     }
-    requestedMode = mode === 'dark' || mode === 'light' ? mode : 'default';
+    installed = true;
+    requestedMode = mode;
     observer?.disconnect(); observer = null;
     host.classList.remove('bubble-force-dark', 'bubble-force-light', 'bubble-needs-invert');
     host.style.removeProperty('filter');
     if (requestedMode === 'default') {
       document.getElementById(STYLE_ID)?.remove();
-      return;
+      return true;
     }
     ensureStyle();
     host.classList.add(requestedMode === 'dark' ? 'bubble-force-dark' : 'bubble-force-light');
@@ -141,15 +137,57 @@
     window.addEventListener('pageshow', rerun);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleClassify(80); });
     for (const delay of [60, 180, 450, 900, 1800, 3500, 6500, 10000]) setTimeout(classify, delay);
+    return true;
+  };
+
+  const retry = attempt => {
+    if (installed || attempt >= 12) return;
+    setTimeout(() => requestMode(attempt + 1), Math.min(900, 75 * (attempt + 1)));
+  };
+
+  const portFallback = attempt => {
+    if (installed) return;
+    try {
+      const port = browser.runtime.connectNative('bubbleAppearance');
+      let answered = false;
+      const finish = message => {
+        if (answered || installed) return;
+        const mode = message && typeof message.mode === 'string' ? message.mode : '';
+        if (!VALID.has(mode)) return;
+        answered = true;
+        install(mode);
+        try { port.disconnect(); } catch (_) {}
+      };
+      port.onMessage.addListener(finish);
+      setTimeout(() => {
+        if (!answered && !installed) {
+          try { port.disconnect(); } catch (_) {}
+          retry(attempt);
+        }
+      }, 350);
+    } catch (_) {
+      retry(attempt);
+    }
   };
 
   const requestMode = attempt => {
+    if (installed) return;
     try {
       browser.runtime.sendNativeMessage('bubbleAppearance', {event: 'appearance'})
-        .then(response => install(response?.mode || 'default'))
-        .catch(() => { if (attempt < 6) setTimeout(() => requestMode(attempt + 1), 75 * (attempt + 1)); });
+        .then(response => {
+          const mode = response && typeof response.mode === 'string' ? response.mode : '';
+          if (!VALID.has(mode)) {
+            // A missing/invalid response is not DEFAULT. It means the delegate was not ready or
+            // sender metadata was rejected. The old behavior silently installed DEFAULT here,
+            // which is why Force dark appeared to do nothing on real pages such as Google Voice.
+            portFallback(attempt);
+            return;
+          }
+          install(mode);
+        })
+        .catch(() => portFallback(attempt));
     } catch (_) {
-      if (attempt < 6) setTimeout(() => requestMode(attempt + 1), 75 * (attempt + 1));
+      portFallback(attempt);
     }
   };
   requestMode(0);
