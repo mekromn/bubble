@@ -9,7 +9,6 @@ import android.graphics.Point
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.view.Display
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -27,10 +26,18 @@ internal object FullscreenHandoff {
     fun launchFromFloating(context: Context, source: View, intent: Intent) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         intent.putExtra(EXTRA_FROM_FLOATING, true)
-        // Clip reveal gives spatial continuity from the whole floating card to fullscreen instead
-        // of the older generic scale-up. Android performs this in SurfaceFlinger, not Gecko.
-        val options = if (source.isLaidOut && source.width > 0 && source.height > 0)
-            ActivityOptions.makeClipRevealAnimation(source, 0, 0, source.width, source.height).toBundle()
+        // Walk from Gecko to the outer floating card so the system reveal originates from the
+        // complete glass surface (header + page + utility bar), not just the webpage rectangle.
+        var launchSource = source
+        var parent = source.parent
+        while (parent is View && parent.isLaidOut && parent.width > 0 && parent.height > 0) {
+            launchSource = parent
+            parent = parent.parent
+        }
+        // Clip reveal gives spatial continuity from the floating card to fullscreen instead of the
+        // older generic scale-up. Android performs this in SurfaceFlinger, not Gecko.
+        val options = if (launchSource.isLaidOut && launchSource.width > 0 && launchSource.height > 0)
+            ActivityOptions.makeClipRevealAnimation(launchSource, 0, 0, launchSource.width, launchSource.height).toBundle()
         else null
         context.startActivity(intent, options)
     }
@@ -99,6 +106,8 @@ internal object FullscreenHandoff {
             done()
             main.postDelayed({
                 if (!card.isAttachedToWindow) return@postDelayed
+                // The ordinary direct-panel entrance may have begun a few milliseconds earlier;
+                // claim the compositor here and replace it with the coordinated matched motion.
                 card.animate().cancel(); card.animate().withEndAction(null)
                 card.animate().withLayer().alpha(1f).translationX(0f).translationY(0f)
                     .scaleX(1.022f).scaleY(1.022f).setDuration(285).setInterpolator(Ui.ease)
