@@ -89,9 +89,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     }
     fun attach(initial: FloatingMode=FloatingMode.BUBBLE, origin: WindowBox?=null) {
         root.isFocusableInTouchMode=true; root.elevation=d(12).toFloat()
-        // Fullscreen/notification handoff has no edge origin. Build the requested panel directly
-        // at its saved geometry instead of creating a tiny bubble first. That avoids a redundant
-        // Gecko relayout and lets the panel fade/settle over the already-visible underlying app.
         val directPanel=origin==null && initial!=FloatingMode.BUBBLE
         if(directPanel) {
             mode=initial; workspace.floatingVisible=initial==FloatingMode.CHAT
@@ -142,8 +139,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(!ValueAnimator.areAnimatorsEnabled()) {
             root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f; return
         }
-        // Two-stage settle gives the floating panel a material/container-transform feel without
-        // resizing Gecko every frame. The WindowManager bounds stay fixed for the whole motion.
         root.postDelayed({
             if(destroyed || mode==FloatingMode.BUBBLE)return@postDelayed
             root.animate().cancel(); root.animate().withEndAction(null)
@@ -158,7 +153,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(!workspace.ready || workspace.tabs.none { it.id==id })return
         workspace.select(id); present(FloatingMode.CHAT)
     }
-    /** Reverse the reveal, never squash the webpage. Move only the circle afterward. */
     fun collapse() {
         if(destroyed || mode==FloatingMode.BUBBLE || hiding)return
         if(service.prefersEdge()) { exitToRestingEdge(); return }
@@ -173,7 +167,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             if(!destroyed) { switchContents(FloatingMode.BUBBLE); place(startHead,true); motion.move(startHead,end,{ place(it,false) },{ render() }) }
         }
     }
-    /** Long press is the same notification-only state as a successful drop on the x target. */
     internal fun hideToNotification() {
         if(destroyed || hiding)return
         if(!service.canPark()) { service.park(); return }
@@ -339,13 +332,17 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             isClickable=true; isFocusable=true
             contentDescription=when {
                 vertical -> "Swipe outward to minimize floating window"
-                mode==FloatingMode.CHAT -> "Swipe up for chats or down to minimize floating window"
+                mode==FloatingMode.CHAT -> "Swipe up for chats, left for back, right for forward, or down to minimize floating window"
                 mode==FloatingMode.CHOOSER -> "Swipe up for last tab or down to minimize floating window"
                 else -> "Swipe down to minimize floating window"
             }
             background=Ui.ripple(context,android.graphics.Color.TRANSPARENT,14f)
             ViewCompat.addAccessibilityAction(this,"Minimize floating window") { _,_ -> collapse(); true }
-            if(!vertical && mode==FloatingMode.CHAT) ViewCompat.addAccessibilityAction(this,"Open conversation chooser") { _,_ -> openChooserFromPill(); true }
+            if(!vertical && mode==FloatingMode.CHAT) {
+                ViewCompat.addAccessibilityAction(this,"Open conversation chooser") { _,_ -> openChooserFromPill(); true }
+                ViewCompat.addAccessibilityAction(this,"Back in webpage") { _,_ -> navigateFromPill(false); true }
+                ViewCompat.addAccessibilityAction(this,"Forward in webpage") { _,_ -> navigateFromPill(true); true }
+            }
             if(!vertical && mode==FloatingMode.CHOOSER) ViewCompat.addAccessibilityAction(this,"Return to last tab") { _,_ -> returnToTabFromPill(); true }
         }
         override fun onDraw(canvas:Canvas) {
@@ -367,6 +364,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                 return if(outward>threshold && outward>abs(dy)*.72f)ToolbarSwipe.MINIMIZE else ToolbarSwipe.NONE
             }
             return ToolbarSwipePolicy.classify(dx,dy,threshold,
+                horizontalHistory=mode==FloatingMode.CHAT,
                 swipeUpChooser=mode==FloatingMode.CHAT,
                 swipeUpReturn=mode==FloatingMode.CHOOSER,
                 swipeDownMinimize=true)
@@ -384,17 +382,22 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                     val next=classify(dx,dy)
                     if(next!=ToolbarSwipe.NONE && next!=gesture)performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     gesture=next; armed=next!=ToolbarSwipe.NONE
-                    if(vertical)translationX=dx.coerceIn(-d(22).toFloat(),d(22).toFloat())
-                    else translationY=dy.coerceIn(-d(22).toFloat(),d(22).toFloat())
+                    when {
+                        vertical -> { translationX=dx.coerceIn(-d(22).toFloat(),d(22).toFloat()); translationY=0f }
+                        next==ToolbarSwipe.PAGE_BACK || next==ToolbarSwipe.PAGE_FORWARD -> {
+                            translationX=dx.coerceIn(-d(22).toFloat(),d(22).toFloat()); translationY=0f
+                        }
+                        else -> { translationX=0f; translationY=dy.coerceIn(-d(22).toFloat(),d(22).toFloat()) }
+                    }
                     alpha=if(armed).62f else .84f; invalidate()
                 }
                 MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> {
                     val dx=event.rawX-startX; val dy=event.rawY-startY
-                    // Re-evaluate the final total travel on ACTION_UP. Very fast 120Hz swipes can
-                    // otherwise cross the threshold between the final MOVE and UP events.
                     val accepted=if(event.actionMasked==MotionEvent.ACTION_UP && active)classify(dx,dy) else ToolbarSwipe.NONE
                     active=false; armed=false; gesture=ToolbarSwipe.NONE; reset()
                     when(accepted) {
+                        ToolbarSwipe.PAGE_BACK -> navigateFromPill(false)
+                        ToolbarSwipe.PAGE_FORWARD -> navigateFromPill(true)
                         ToolbarSwipe.OPEN_CHOOSER -> openChooserFromPill()
                         ToolbarSwipe.RETURN_TO_TAB -> returnToTabFromPill()
                         ToolbarSwipe.MINIMIZE -> collapse()
@@ -403,6 +406,14 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                 }
             }
             return true
+        }
+        private fun navigateFromPill(forward:Boolean) {
+            if(mode!=FloatingMode.CHAT)return
+            val tab=workspace.selected ?: return
+            val session=tab.session?.takeIf { it.isOpen } ?: return
+            if(forward) {
+                if(tab.forward)session.goForward()
+            } else if(tab.back)session.goBack()
         }
         private fun openChooserFromPill() {
             ignoreOutsideUntil=SystemClock.uptimeMillis()+450L
