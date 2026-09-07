@@ -7,23 +7,25 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
-import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 internal data class MorphFrame(val bitmap: Bitmap, val box: WindowBox)
 
 /**
- * A short-lived, non-interactive TYPE_APPLICATION_OVERLAY used only while the same browser surface
- * crosses the Activity/overlay boundary. The visible object is one card for the whole animation:
- * its bounds, corner radius and source/destination pixels are interpolated in one compositor-owned
- * window. Nothing underneath is resized and Gecko never reflows on animation frames.
+ * Temporary, non-interactive compositor surface used only while the same browser window crosses
+ * the Activity / TYPE_APPLICATION_OVERLAY boundary.
+ *
+ * Unlike a normal View scale animation, the bitmap is never stretched independently on X/Y.
+ * Container bounds morph continuously while each source/destination frame is center-cropped with
+ * a uniform scale, matching the perceptual behavior of a high-quality container transform: text
+ * and icons never become rubbery as the fullscreen and floating aspect ratios diverge.
  */
 internal class WindowMorphOverlay(
     context: Context,
@@ -34,6 +36,7 @@ internal class WindowMorphOverlay(
 ) {
     private val app = context.applicationContext
     private val manager = app.getSystemService(WindowManager::class.java)
+    private val display = displayBox(app)
     private val root = FrameLayout(app).apply {
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
         clipChildren = false
@@ -45,7 +48,6 @@ internal class WindowMorphOverlay(
     private var attached = false
     private var current = source.box
     private var animator: ValueAnimator? = null
-    private val display = displayBox(app)
     private val params = WindowManager.LayoutParams(
         display.width,
         display.height,
@@ -64,7 +66,7 @@ internal class WindowMorphOverlay(
 
     init {
         sourceView.alpha = 1f
-        root.addView(sourceView, FrameLayout.LayoutParams(source.bitmap.width.coerceAtLeast(1), source.bitmap.height.coerceAtLeast(1)))
+        root.addView(sourceView, FrameLayout.LayoutParams(-1, -1))
         applyBox(sourceView, source.box, sourceRadiusPx)
     }
 
@@ -72,15 +74,19 @@ internal class WindowMorphOverlay(
         if (attached) { onReady(); return }
         manager.addView(root, params)
         attached = true
+        // Wait for one committed overlay frame before allowing the source Activity/card to hide.
         root.postOnAnimation { if (attached) onReady() }
     }
 
     fun setDestination(frame: MorphFrame?) {
         if (frame == null || !attached) return
-        destinationView?.let { root.removeView(it) }
+        destinationView?.let {
+            root.removeView(it)
+            it.release()
+        }
         val view = MorphBitmapView(app, frame.bitmap).apply { alpha = 0f }
         destinationView = view
-        root.addView(view, FrameLayout.LayoutParams(frame.bitmap.width.coerceAtLeast(1), frame.bitmap.height.coerceAtLeast(1)))
+        root.addView(view, FrameLayout.LayoutParams(-1, -1))
         applyBox(view, current, lerpRadius(progressFor(current)))
     }
 
@@ -93,6 +99,7 @@ internal class WindowMorphOverlay(
             onEnd()
             return
         }
+        var cancelled = false
         animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = durationMs
             interpolator = Ui.ease
@@ -102,21 +109,23 @@ internal class WindowMorphOverlay(
                 applyCurrent(t)
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                    if (animator === animation) animator = null
+                }
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     if (animator === animation) animator = null
+                    if (cancelled || !attached) return
                     current = destinationBox
                     applyCurrent(1f)
                     onEnd()
-                }
-                override fun onAnimationCancel(animation: android.animation.Animator) {
-                    if (animator === animation) animator = null
                 }
             })
             start()
         }
     }
 
-    /** At full size, swap the held morph frame for the real Activity frame before removing it. */
+    /** At full size, dissolve the held morph frame into a real PixelCopy of BrowserActivity. */
     fun finishWith(frame: MorphFrame?, durationMs: Long = 105L, onEnd: () -> Unit) {
         if (!attached || frame == null || !ValueAnimator.areAnimatorsEnabled()) {
             onEnd(); return
@@ -128,11 +137,13 @@ internal class WindowMorphOverlay(
         dest.animate().cancel(); sourceView.animate().cancel()
         dest.animate().withLayer().alpha(1f).setDuration(durationMs).setInterpolator(Ui.ease).start()
         sourceView.animate().withLayer().alpha(0f).setDuration(durationMs).setInterpolator(Ui.ease)
-            .withEndAction { onEnd() }.start()
+            .withEndAction { if (attached) onEnd() }.start()
     }
 
     fun detach(recycle: Boolean = true) {
-        animator?.cancel(); animator = null
+        val running = animator
+        animator = null
+        running?.cancel()
         sourceView.animate().cancel(); destinationView?.animate()?.cancel()
         if (attached) {
             attached = false
@@ -149,69 +160,86 @@ internal class WindowMorphOverlay(
         val radius = lerp(sourceRadiusPx, destinationRadiusPx, t)
         applyBox(sourceView, current, radius)
         destinationView?.let { applyBox(it, current, radius) }
-        // Chrome/content reflow is hidden inside the same moving geometry. When a prepared
-        // destination frame exists (fullscreen -> floating), dissolve inside the shared bounds.
-        // When it does not yet exist (floating -> fullscreen), the source MUST remain fully opaque
-        // until BrowserActivity is alive behind the full-screen held frame; otherwise the launcher
-        // would leak through during expansion.
+
+        // Fade-through happens *inside the same moving container*. With a prepared floating
+        // destination, its reflowed chrome/page starts contributing only near the landing zone.
+        // During floating -> fullscreen there is no destination Activity yet, so the held card is
+        // intentionally opaque until it covers the display and BrowserActivity is ready behind it.
         val destination = destinationView
         if (destination != null) {
-            val destAlpha = smoothstep(.48f, .88f, t)
-            destination.alpha = destAlpha
-            sourceView.alpha = 1f - smoothstep(.58f, .96f, t)
+            destination.alpha = smoothstep(.52f, .90f, t)
+            sourceView.alpha = 1f - smoothstep(.62f, .97f, t)
         } else sourceView.alpha = 1f
-        val lift = 1f + .008f * (1f - kotlin.math.abs(t * 2f - 1f))
-        sourceView.scaleExtra = lift
-        destination?.scaleExtra = lift
+
+        // Tiny mid-flight emphasis gives mass without overshooting the actual container bounds.
+        val lift = 1f + .006f * (1f - abs(t * 2f - 1f))
+        sourceView.contentScale = lift
+        destination?.contentScale = lift
     }
 
     private fun applyBox(view: MorphBitmapView, box: WindowBox, radiusPx: Float) {
-        val localX = box.x - display.x
-        val localY = box.y - display.y
-        val sx = box.width.toFloat() / view.bitmapWidth.coerceAtLeast(1)
-        val sy = box.height.toFloat() / view.bitmapHeight.coerceAtLeast(1)
-        view.pivotX = 0f; view.pivotY = 0f
-        view.translationX = localX.toFloat(); view.translationY = localY.toFloat()
-        view.scaleX = sx; view.scaleY = sy
-        val localRadius = radiusPx / max(.001f, min(sx, sy))
-        view.cornerRadius = localRadius
+        view.container = RectF(
+            (box.x - display.x).toFloat(),
+            (box.y - display.y).toFloat(),
+            (box.x - display.x + box.width).toFloat(),
+            (box.y - display.y + box.height).toFloat()
+        )
+        view.cornerRadius = radiusPx
     }
 
     private fun progressFor(box: WindowBox): Float {
-        val total = kotlin.math.abs(destinationBox.x - source.box.x) + kotlin.math.abs(destinationBox.y - source.box.y) +
-            kotlin.math.abs(destinationBox.width - source.box.width) + kotlin.math.abs(destinationBox.height - source.box.height)
+        val total = abs(destinationBox.x - source.box.x) + abs(destinationBox.y - source.box.y) +
+            abs(destinationBox.width - source.box.width) + abs(destinationBox.height - source.box.height)
         if (total == 0) return 1f
-        val done = kotlin.math.abs(box.x - source.box.x) + kotlin.math.abs(box.y - source.box.y) +
-            kotlin.math.abs(box.width - source.box.width) + kotlin.math.abs(box.height - source.box.height)
+        val done = abs(box.x - source.box.x) + abs(box.y - source.box.y) +
+            abs(box.width - source.box.width) + abs(box.height - source.box.height)
         return (done.toFloat() / total).coerceIn(0f, 1f)
     }
 
     private fun lerpRadius(t: Float) = lerp(sourceRadiusPx, destinationRadiusPx, t)
 
+    /** Full-overlay custom draw: container moves, content scales uniformly and is clipped/cropped. */
     private class MorphBitmapView(context: Context, bitmap: Bitmap) : View(context) {
         private var image: Bitmap? = bitmap
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
         private val clipPath = Path()
+        private val drawRect = RectF()
+        private var _container = RectF()
+        var container: RectF
+            get() = RectF(_container)
+            set(value) { _container.set(value); invalidate() }
         var cornerRadius: Float = 0f
             set(value) { if (field != value) { field = value; invalidate() } }
-        var scaleExtra: Float = 1f
+        var contentScale: Float = 1f
             set(value) { if (field != value) { field = value; invalidate() } }
-        val bitmapWidth get() = image?.width ?: 1
-        val bitmapHeight get() = image?.height ?: 1
+
         init { setLayerType(LAYER_TYPE_HARDWARE, null) }
+
         override fun onDraw(canvas: Canvas) {
             val bitmap = image ?: return
-            val w = width.toFloat(); val h = height.toFloat()
-            if (w <= 0f || h <= 0f) return
+            val box = _container
+            if (box.width() <= 0f || box.height() <= 0f || bitmap.width <= 0 || bitmap.height <= 0) return
+
             val save = canvas.save()
-            if (cornerRadius > .5f) {
-                clipPath.reset(); clipPath.addRoundRect(RectF(0f, 0f, w, h), cornerRadius, cornerRadius, Path.Direction.CW)
-                canvas.clipPath(clipPath)
-            }
-            if (scaleExtra != 1f) canvas.scale(scaleExtra, scaleExtra, w / 2f, h / 2f)
-            canvas.drawBitmap(bitmap, null, Rect(0, 0, width, height), paint)
+            clipPath.reset()
+            clipPath.addRoundRect(box, cornerRadius, cornerRadius, Path.Direction.CW)
+            canvas.clipPath(clipPath)
+
+            // Center-crop with one scalar so glyphs, text and faces retain their exact aspect ratio.
+            var scale = max(box.width() / bitmap.width.toFloat(), box.height() / bitmap.height.toFloat())
+            scale *= contentScale
+            val dw = bitmap.width * scale
+            val dh = bitmap.height * scale
+            drawRect.set(
+                box.centerX() - dw / 2f,
+                box.centerY() - dh / 2f,
+                box.centerX() + dw / 2f,
+                box.centerY() + dh / 2f
+            )
+            canvas.drawBitmap(bitmap, null, drawRect, paint)
             canvas.restoreToCount(save)
         }
+
         fun release() {
             val bitmap = image
             image = null
