@@ -1,6 +1,9 @@
 package com.mekromn.bubble
 
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.drawable.RippleDrawable
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -20,8 +23,10 @@ import androidx.recyclerview.widget.RecyclerView
 internal class ConversationList(context: Context, private val select: (String) -> Unit,
     private val close: (String) -> Unit, private val options: ((View, String) -> Unit)? = null) : RecyclerView(context) {
     private data class Row(val id: String, val title: String, val subtitle: String,
-        val selected: Boolean, val unread: Boolean, val busy: Boolean, val pinned: Boolean)
+        val selected: Boolean, val unread: Boolean, val busy: Boolean, val pinned: Boolean,
+        val readiness: TabReadiness)
     private var rows = emptyList<Row>(); private var query = ""; private var filter = TabFilter.ALL
+    private var pendingReveal: String? = null
     var onResultCount: ((Int) -> Unit)? = null
     private val cards = Rows()
     private val drag = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
@@ -68,19 +73,39 @@ internal class ConversationList(context: Context, private val select: (String) -
                 tab.forceKeepAlive -> "Forced live · ${Policy.host(tab.url)}"
                 tab.suspended || tab.session == null -> "Suspended · tap to resume"
                 else -> "Live · ${Policy.host(tab.url)}${if (tab.muted) " · alerts muted" else ""}"
-            }, tab.id == workspace.selectedId, tab.unread, tab.generating || tab.loading, tab.pinned) }
-        if (rows == next) return
+            }, tab.id == workspace.selectedId, tab.unread, tab.generating || tab.loading, tab.pinned, TabReadiness.of(tab)) }
+        if (rows == next) { revealPending(); return }
         rows = next; submit()
     }
+    /** Reveal the tab the user came from when opening the switcher, instead of jumping to the top. */
+    fun reveal(id: String) { pendingReveal = id; revealPending() }
     fun search(value: String) { query = value.trim(); submit() }
     fun filter(value: TabFilter) { filter = value; submit() }
     private fun submit() {
         val matched = rows.filter { QuickTabPolicy.accepts(filter, it.unread, it.busy, it.pinned) && (it.title.contains(query, true) || it.subtitle.contains(query, true)) }
-        cards.submitList(matched); onResultCount?.invoke(matched.size)
+        cards.submitList(matched) { revealPending() }; onResultCount?.invoke(matched.size)
+    }
+    private fun revealPending() {
+        val id = pendingReveal ?: return
+        val position = cards.currentList.indexOfFirst { it.id == id }
+        if (position < 0) return
+        pendingReveal = null
+        post {
+            val manager = layoutManager as? LinearLayoutManager ?: return@post
+            val offset = ((height - d(76)) / 3).coerceAtLeast(0)
+            manager.scrollToPositionWithOffset(position, offset)
+        }
     }
     private fun d(value: Int) = Ui.dp(context, value.toFloat())
+    private fun fill(readiness: TabReadiness, selected: Boolean): Int {
+        val base = readiness.fill
+        return Color.argb(if (selected) 0x88 else 0x58, Color.red(base), Color.green(base), Color.blue(base))
+    }
     private inner class Holder(val row: LinearLayout, val dragHandle: GlyphView, val title: TextView, val subtitle: TextView,
-        val closeButton: GlyphView) : ViewHolder(row) { var selected: Boolean? = null }
+        val closeButton: GlyphView) : ViewHolder(row) {
+        var selected: Boolean? = null
+        var readiness: TabReadiness? = null
+    }
     private inner class Rows : ListAdapter<Row, Holder>(object : DiffUtil.ItemCallback<Row>() {
         override fun areItemsTheSame(a: Row, b: Row) = a.id == b.id
         override fun areContentsTheSame(a: Row, b: Row) = a == b
@@ -102,12 +127,16 @@ internal class ConversationList(context: Context, private val select: (String) -
         }
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val row = getItem(position)
-            if (holder.selected != row.selected) { holder.selected = row.selected; holder.row.background = Ui.ripple(context, if (row.selected) Ui.SURFACE_HIGH else Ui.SURFACE, 20f) }
+            if (holder.selected != row.selected || holder.readiness != row.readiness) {
+                holder.selected = row.selected; holder.readiness = row.readiness
+                holder.row.background = RippleDrawable(
+                    ColorStateList.valueOf(GlassPalette.RIPPLE),
+                    Ui.shape(context, fill(row.readiness, row.selected), 20f, row.readiness.edge), null)
+            }
             if (holder.title.text != row.title) holder.title.text = row.title
             if (holder.subtitle.text != row.subtitle) holder.subtitle.text = row.subtitle
-            val tint = if (row.unread || row.busy) Ui.MINT else Ui.MUTED
-            if (holder.subtitle.currentTextColor != tint) holder.subtitle.setTextColor(tint)
-            holder.row.contentDescription = "${row.title}, ${row.subtitle}${if (row.selected) ", selected" else ""}"
+            if (holder.subtitle.currentTextColor != row.readiness.edge) holder.subtitle.setTextColor(row.readiness.edge)
+            holder.row.contentDescription = "${row.title}, ${row.readiness.label}, ${row.subtitle}${if (row.selected) ", selected" else ""}"
             holder.row.setOnClickListener { select(row.id) }
             holder.row.setOnLongClickListener {
                 val ws = Workspace.peek() ?: return@setOnLongClickListener true
