@@ -277,7 +277,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun selectedVisible(tab: ChatTab): Boolean = tab.id == selectedId && (visible || floatingVisible)
     private fun cancelAutoSuspend(id: String) { pendingAutoSuspends.remove(id)?.let(main::removeCallbacks) }
-    private fun scheduleAutoSuspend(tab: ChatTab, session: GeckoSession, delayMs: Long = 1800L) {
+    private fun scheduleAutoSuspend(tab: ChatTab, session: GeckoSession, delayMs: Long = TabSuspendPolicy.AUTO_SUSPEND_DELAY_MS) {
         if (tab.forceKeepAlive || tab.manualSuspended || tab.generating || tab.loading || selectedVisible(tab) || !Policy.isChat(tab.url)) {
             cancelAutoSuspend(tab.id); return
         }
@@ -489,10 +489,11 @@ internal class Workspace private constructor(private val app: Context, initialUr
                     "finished" -> {
                         if (!tab.generating || tab.run != run || tab.lastNotice == run) return null
                         tab.generating = false; tab.lastNotice = run; tab.unread = !(chatVisible && tab.id == selectedId); applyPolicy(); changed()
-                        checkpoint { saved ->
-                            if (saved && tab in tabs && tab.unread && !tab.muted && tab.lastNotice == run) Replies.finished(app, tab.id)
+                        checkpoint { _ ->
+                            // A local persistence failure must never suppress a user-visible reply alert.
+                            if (tab in tabs && tab.unread && !tab.muted && tab.lastNotice == run) Replies.finished(app, tab.id)
                             if (tab in tabs && tab.session === session && !selectedVisible(tab) && !tab.forceKeepAlive && !tab.manualSuspended) {
-                                scheduleAutoSuspend(tab, session, 0)
+                                scheduleAutoSuspend(tab, session)
                             }
                         }
                     }
