@@ -8,6 +8,7 @@ import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.*
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
@@ -31,6 +32,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var frameQueued=false
     private var hiding=false
     private var imeBottom=0
+    private var ignoreOutsideUntil=0L
     private var params=WindowManager.LayoutParams()
     private var rectangle=WindowBox(0,0,68,68)
     private var target=rectangle
@@ -72,7 +74,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             return super.dispatchKeyEvent(event)
         }
         override fun onTouchEvent(event: MotionEvent): Boolean {
-            if(event.action==MotionEvent.ACTION_OUTSIDE && mode==FloatingMode.CHOOSER && !workspace.quickMenuVisible) { collapse(); return true }
+            if(event.action==MotionEvent.ACTION_OUTSIDE && mode==FloatingMode.CHOOSER &&
+                SystemClock.uptimeMillis()>=ignoreOutsideUntil && !workspace.quickMenuVisible) {
+                collapse(); return true
+            }
             return super.onTouchEvent(event)
         }
     }
@@ -84,14 +89,30 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     }
     fun attach(initial: FloatingMode=FloatingMode.BUBBLE, origin: WindowBox?=null) {
         root.isFocusableInTouchMode=true; root.elevation=d(12).toFloat()
-        rectangle=if(origin==null)headBox() else WindowGeometry.fit(WindowBox(origin.x+origin.width/2-d(32),origin.y+origin.height/2-d(32),d(64),d(64)),safeArea()); target=rectangle
+        // Fullscreen/notification handoff has no edge origin. Build the requested panel directly
+        // at its saved geometry instead of creating a tiny bubble first. That avoids a redundant
+        // Gecko relayout and lets the panel fade/settle over the already-visible underlying app.
+        val directPanel=origin==null && initial!=FloatingMode.BUBBLE
+        if(directPanel) {
+            mode=initial; workspace.floatingVisible=initial==FloatingMode.CHAT
+            rectangle=expandedBox(); target=rectangle; rememberPanelBox(initial,rectangle)
+        } else {
+            rectangle=if(origin==null)headBox() else WindowGeometry.fit(WindowBox(origin.x+origin.width/2-d(32),origin.y+origin.height/2-d(32),d(64),d(64)),safeArea())
+            target=rectangle
+        }
+        val initialMode=if(directPanel)initial else FloatingMode.BUBBLE
         params=WindowManager.LayoutParams(rectangle.width,rectangle.height,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            flags(FloatingMode.BUBBLE),PixelFormat.TRANSLUCENT).apply {
+            flags(initialMode),PixelFormat.TRANSLUCENT).apply {
             gravity=Gravity.TOP or Gravity.LEFT; x=rectangle.x; y=rectangle.y
             title="Bubble floating workspace"; softInputMode=WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
-        OverlayGlass.apply(context,manager,params,false)
-        build(FloatingMode.BUBBLE); RenderPolicy.vote(context,root,params)
+        OverlayGlass.apply(context,manager,params,directPanel)
+        build(initialMode)
+        if(directPanel) {
+            root.alpha=0f; root.scaleX=.94f; root.scaleY=.94f; root.translationY=d(14).toFloat()
+            ignoreOutsideUntil=SystemClock.uptimeMillis()+450L
+        }
+        RenderPolicy.vote(context,root,params)
         manager.addView(root,params); workspace.listen(listener)
         root.post {
             if(!destroyed && Build.VERSION.SDK_INT>=33) {
@@ -109,11 +130,28 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }
             insets
         }
-        when(initial) {
-            FloatingMode.CHOOSER -> showChooser()
-            FloatingMode.CHAT -> openChat(workspace.selectedId)
+        when {
+            directPanel -> revealDirectPanel()
+            initial==FloatingMode.CHOOSER -> showChooser()
+            initial==FloatingMode.CHAT -> openChat(workspace.selectedId)
             else -> if(ValueAnimator.areAnimatorsEnabled()) { root.alpha=0f; root.animate().alpha(1f).setDuration(160).setInterpolator(Ui.ease).start() }
         }
+    }
+    private fun revealDirectPanel() {
+        render()
+        if(!ValueAnimator.areAnimatorsEnabled()) {
+            root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f; return
+        }
+        // Two-stage settle gives the floating panel a material/container-transform feel without
+        // resizing Gecko every frame. The WindowManager bounds stay fixed for the whole motion.
+        root.postDelayed({
+            if(destroyed || mode==FloatingMode.BUBBLE)return@postDelayed
+            root.animate().cancel(); root.animate().withEndAction(null)
+            root.animate().alpha(1f).scaleX(1.012f).scaleY(1.012f).translationY(0f)
+                .setDuration(185).setInterpolator(Ui.ease).withEndAction {
+                    if(!destroyed)root.animate().scaleX(1f).scaleY(1f).setDuration(90).setInterpolator(Ui.ease).start()
+                }.start()
+        },32L)
     }
     fun showChooser()=present(FloatingMode.CHOOSER)
     fun openChat(id: String) {
@@ -126,7 +164,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(service.prefersEdge()) { exitToRestingEdge(); return }
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true)
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
-        root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f
+        root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
         val end=headBox(); val radius=d(32)
         val cx=(end.x+radius-rectangle.x).coerceIn(radius,(rectangle.width-radius).coerceAtLeast(radius))
         val cy=(end.y+radius-rectangle.y).coerceIn(radius,(rectangle.height-radius).coerceAtLeast(radius))
@@ -168,7 +206,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(destroyed || hiding)return
         if(mode==next) { render(); return }
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
-        root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f
+        root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
         val previous=mode; val from=rectangle
         if(previous==FloatingMode.CHAT)chatBox=from else if(previous==FloatingMode.CHOOSER)chooserBox=from
         if(next==FloatingMode.CHOOSER) { context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0); imeBottom=0 }
@@ -188,7 +226,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         } else {
             destination=WindowGeometry.fit(panelBox(next) ?: destination,safeArea()); place(destination,true); render()
             root.getChildAt(0)?.let { content -> if(ValueAnimator.areAnimatorsEnabled()) {
-                content.alpha=.35f; content.animate().alpha(1f).setDuration(140).setInterpolator(Ui.ease).start()
+                content.animate().cancel(); content.alpha=.28f; content.scaleX=.985f; content.scaleY=.985f
+                content.translationY=(if(next==FloatingMode.CHOOSER)d(10) else -d(10)).toFloat()
+                content.animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
+                    .setDuration(180).setInterpolator(Ui.ease).start()
             } }
         }
     }
@@ -232,8 +273,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         column.addView(top,LinearLayout.LayoutParams(-1,d(52)))
         if(next==FloatingMode.CHOOSER) {
             list=ConversationList(context,{ openChat(it) },{ workspace.close(it) },{ _,id -> QuickMenus.tabOptions(top,workspace,id,::openChat) })
-            // Equal left/right insets. The resize affordance now lives in its own bottom bar,
-            // so the list no longer needs a fake 56dp gutter on the right.
             list?.setPadding(d(8),d(4),d(8),d(4))
             column.addView(list,LinearLayout.LayoutParams(-1,0,1f))
             val utility=LinearLayout(context).apply {
@@ -301,13 +340,13 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             contentDescription=when {
                 vertical -> "Swipe outward to minimize floating window"
                 mode==FloatingMode.CHAT -> "Swipe up for chats or down to minimize floating window"
+                mode==FloatingMode.CHOOSER -> "Swipe up for last tab or down to minimize floating window"
                 else -> "Swipe down to minimize floating window"
             }
             background=Ui.ripple(context,android.graphics.Color.TRANSPARENT,14f)
             ViewCompat.addAccessibilityAction(this,"Minimize floating window") { _,_ -> collapse(); true }
-            if(!vertical && mode==FloatingMode.CHAT) {
-                ViewCompat.addAccessibilityAction(this,"Open conversation chooser") { _,_ -> showChooser(); true }
-            }
+            if(!vertical && mode==FloatingMode.CHAT) ViewCompat.addAccessibilityAction(this,"Open conversation chooser") { _,_ -> openChooserFromPill(); true }
+            if(!vertical && mode==FloatingMode.CHOOSER) ViewCompat.addAccessibilityAction(this,"Return to last tab") { _,_ -> returnToTabFromPill(); true }
         }
         override fun onDraw(canvas:Canvas) {
             super.onDraw(canvas)
@@ -316,9 +355,21 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                 val w=d(4).toFloat(); val h=min(height-d(24),d(44)).coerceAtLeast(d(18)).toFloat(); val cx=width/2f; val cy=height/2f
                 canvas.drawRoundRect(cx-w/2,cy-h/2,cx+w/2,cy+h/2,w,w,paint)
             } else {
-                val w=min(width-d(24),d(56)).coerceAtLeast(d(28)).toFloat(); val h=d(4).toFloat(); val cx=width/2f; val cy=height/2f
+                val w=min(width-d(24),d(56)).coerceAtLeast(d(28)).toFloat(); val h=d(if(armed)5 else 4).toFloat(); val cx=width/2f; val cy=height/2f
                 canvas.drawRoundRect(cx-w/2,cy-h/2,cx+w/2,cy+h/2,h,h,paint)
             }
+        }
+        private fun classify(dx:Float,dy:Float):ToolbarSwipe {
+            val threshold=maxOf(d(18).toFloat(),slop*1.15f)
+            if(vertical) {
+                val left=AccessPreferences.get(context).options.left
+                val outward=if(left)-dx else dx
+                return if(outward>threshold && outward>abs(dy)*.72f)ToolbarSwipe.MINIMIZE else ToolbarSwipe.NONE
+            }
+            return ToolbarSwipePolicy.classify(dx,dy,threshold,
+                swipeUpChooser=mode==FloatingMode.CHAT,
+                swipeUpReturn=mode==FloatingMode.CHOOSER,
+                swipeDownMinimize=true)
         }
         override fun onTouchEvent(event:MotionEvent):Boolean {
             if(hiding)return true
@@ -330,24 +381,22 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                 MotionEvent.ACTION_POINTER_DOWN -> { active=false; armed=false; gesture=ToolbarSwipe.NONE; reset(); return true }
                 MotionEvent.ACTION_MOVE -> if(active) {
                     val dx=event.rawX-startX; val dy=event.rawY-startY
-                    val threshold=d(32).toFloat()
-                    val next=if(vertical) {
-                        val left=AccessPreferences.get(context).options.left
-                        val outward=if(left)-dx else dx
-                        if(outward>threshold && outward>abs(dy)*1.15f)ToolbarSwipe.MINIMIZE else ToolbarSwipe.NONE
-                    } else ToolbarSwipePolicy.classify(dx,dy,threshold,
-                        swipeUpChooser=mode==FloatingMode.CHAT,swipeDownMinimize=true)
+                    val next=classify(dx,dy)
                     if(next!=ToolbarSwipe.NONE && next!=gesture)performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     gesture=next; armed=next!=ToolbarSwipe.NONE
-                    if(vertical) translationX=dx.coerceIn(-d(18).toFloat(),d(18).toFloat())
-                    else translationY=dy.coerceIn(-d(18).toFloat(),d(18).toFloat())
-                    alpha=if(armed).62f else .82f; invalidate()
+                    if(vertical)translationX=dx.coerceIn(-d(22).toFloat(),d(22).toFloat())
+                    else translationY=dy.coerceIn(-d(22).toFloat(),d(22).toFloat())
+                    alpha=if(armed).62f else .84f; invalidate()
                 }
                 MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> {
-                    val accepted=if(event.actionMasked==MotionEvent.ACTION_UP && active)gesture else ToolbarSwipe.NONE
+                    val dx=event.rawX-startX; val dy=event.rawY-startY
+                    // Re-evaluate the final total travel on ACTION_UP. Very fast 120Hz swipes can
+                    // otherwise cross the threshold between the final MOVE and UP events.
+                    val accepted=if(event.actionMasked==MotionEvent.ACTION_UP && active)classify(dx,dy) else ToolbarSwipe.NONE
                     active=false; armed=false; gesture=ToolbarSwipe.NONE; reset()
                     when(accepted) {
-                        ToolbarSwipe.OPEN_CHOOSER -> showChooser()
+                        ToolbarSwipe.OPEN_CHOOSER -> openChooserFromPill()
+                        ToolbarSwipe.RETURN_TO_TAB -> returnToTabFromPill()
                         ToolbarSwipe.MINIMIZE -> collapse()
                         else -> Unit
                     }
@@ -355,9 +404,17 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }
             return true
         }
+        private fun openChooserFromPill() {
+            ignoreOutsideUntil=SystemClock.uptimeMillis()+450L
+            showChooser()
+        }
+        private fun returnToTabFromPill() {
+            ignoreOutsideUntil=SystemClock.uptimeMillis()+450L
+            openChat(workspace.selectedId)
+        }
         private fun reset() {
             invalidate()
-            if(ValueAnimator.areAnimatorsEnabled())animate().translationX(0f).translationY(0f).alpha(1f).setDuration(150).setInterpolator(Ui.ease).start()
+            if(ValueAnimator.areAnimatorsEnabled())animate().translationX(0f).translationY(0f).alpha(1f).setDuration(130).setInterpolator(Ui.ease).start()
             else { translationX=0f; translationY=0f; alpha=1f }
         }
         override fun performClick():Boolean { collapse(); return super.performClick() }
@@ -450,7 +507,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         when(event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 QuickPanel.dismissFor(root); main.removeCallbacks(hold); motion.cancel(); root.animate().cancel(); root.animate().withEndAction(null)
-                root.alpha=1f; root.scaleX=1f; root.scaleY=1f
+                root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
                 gestureInitial=rectangle; gestureX=event.rawX; gestureY=event.rawY; dragging=false; held=false
                 if(isHead)main.postDelayed(hold,ViewConfiguration.getLongPressTimeout().toLong()); return true
             }
@@ -509,8 +566,6 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                 if(resized)rectangle.width.toFloat()/safe.width else old.width,
                 if(resized)rectangle.height.toFloat()/safe.height else old.height)
             FloatingPanelGeometry.save(context,mode,state)
-            // Fullscreen handoff already consumes Workspace.window*. Keep that legacy mirror for CHAT
-            // only; chooser geometry must never leak into it.
             if(mode==FloatingMode.CHAT) {
                 workspace.windowX=state.x; workspace.windowY=state.y
                 workspace.windowWidth=state.width; workspace.windowHeight=state.height
