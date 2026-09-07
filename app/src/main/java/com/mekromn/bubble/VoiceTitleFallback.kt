@@ -3,7 +3,6 @@ package com.mekromn.bubble
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
-import android.os.SystemClock
 
 internal data class VoiceTitleSignal(val kind: VoiceNoticeKind, val unreadCount: Int, val ringing: Boolean)
 
@@ -54,7 +53,7 @@ internal object VoiceTitleFallback {
     fun diagnostics(): String = "title fallback alerts: $fallbackEvents${lastKind?.let { " · last: ${it.label}" }.orEmpty()}"
 
     private fun scan(context: Context, workspace: Workspace) {
-        val liveIds = workspace.tabs.filter { Policy.isVoice(it.url) }.mapTo(HashSet()) { it.id }
+        val liveIds = workspace.tabs.filter { Policy.isVoice(it.url) }.mapTo(HashSet<String>()) { it.id }
         seen.keys.retainAll(liveIds)
         workspace.tabs.filter { Policy.isVoice(it.url) }.forEach { tab ->
             val signal = VoiceTitlePolicy.parse(tab.title, tab.url) ?: return@forEach
@@ -85,7 +84,7 @@ internal object VoiceTitleFallback {
         val now = System.currentTimeMillis()
         return runCatching {
             manager.activeNotifications.any { item ->
-                item.notification.channelId == kind.channel && (now - item.postTime) in 0..2500
+                item.notification.channelId == kind.channel && (now - item.postTime) in 0L..2500L
             }
         }.getOrDefault(false)
     }
