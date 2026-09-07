@@ -149,14 +149,20 @@ internal class WindowMorphOverlay(
         val radius = lerp(sourceRadiusPx, destinationRadiusPx, t)
         applyBox(sourceView, current, radius)
         destinationView?.let { applyBox(it, current, radius) }
-        // Chrome/content reflow is hidden inside the same moving geometry. The destination starts
-        // contributing only after the card is already well on its way, avoiding a double-image read.
-        val destAlpha = smoothstep(.48f, .88f, t)
-        destinationView?.alpha = destAlpha
-        sourceView.alpha = 1f - smoothstep(.58f, .96f, t)
+        // Chrome/content reflow is hidden inside the same moving geometry. When a prepared
+        // destination frame exists (fullscreen -> floating), dissolve inside the shared bounds.
+        // When it does not yet exist (floating -> fullscreen), the source MUST remain fully opaque
+        // until BrowserActivity is alive behind the full-screen held frame; otherwise the launcher
+        // would leak through during expansion.
+        val destination = destinationView
+        if (destination != null) {
+            val destAlpha = smoothstep(.48f, .88f, t)
+            destination.alpha = destAlpha
+            sourceView.alpha = 1f - smoothstep(.58f, .96f, t)
+        } else sourceView.alpha = 1f
         val lift = 1f + .008f * (1f - kotlin.math.abs(t * 2f - 1f))
         sourceView.scaleExtra = lift
-        destinationView?.scaleExtra = lift
+        destination?.scaleExtra = lift
     }
 
     private fun applyBox(view: MorphBitmapView, box: WindowBox, radiusPx: Float) {
@@ -189,7 +195,7 @@ internal class WindowMorphOverlay(
         var cornerRadius: Float = 0f
             set(value) { if (field != value) { field = value; invalidate() } }
         var scaleExtra: Float = 1f
-            set(value) { field = value }
+            set(value) { if (field != value) { field = value; invalidate() } }
         val bitmapWidth get() = image?.width ?: 1
         val bitmapHeight get() = image?.height ?: 1
         init { setLayerType(LAYER_TYPE_HARDWARE, null) }
@@ -202,9 +208,7 @@ internal class WindowMorphOverlay(
                 clipPath.reset(); clipPath.addRoundRect(RectF(0f, 0f, w, h), cornerRadius, cornerRadius, Path.Direction.CW)
                 canvas.clipPath(clipPath)
             }
-            if (scaleExtra != 1f) {
-                canvas.scale(scaleExtra, scaleExtra, w / 2f, h / 2f)
-            }
+            if (scaleExtra != 1f) canvas.scale(scaleExtra, scaleExtra, w / 2f, h / 2f)
             canvas.drawBitmap(bitmap, null, Rect(0, 0, width, height), paint)
             canvas.restoreToCount(save)
         }
