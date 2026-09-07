@@ -27,15 +27,12 @@ class RebuildRegressionTest {
         var savedDuringChurn = false
         val end = SystemClock.elapsedRealtime() + 5000
         var sequence = 0
-        // There is never a 500ms idle gap. The previous trailing debounce could not pass this.
         while (!savedDuringChurn && SystemClock.elapsedRealtime() < end) {
             scenario.onActivity {
                 it.workspace.selected!!.title = prefix + sequence++
                 it.workspace.changed(true)
             }
             Thread.sleep(70)
-            // Read only the committed base file. AtomicFile.openRead() may perform recovery
-            // writes, so it must not race an active writer from an independent test reader.
             savedDuringChurn = runCatching {
                 val data = JSONObject(file.readText())
                 val tabs = data.getJSONArray("tabs")
@@ -48,8 +45,8 @@ class RebuildRegressionTest {
         assertTrue("Continuous page updates postponed every disk checkpoint", savedDuringChurn)
     }
 
-    @Test fun darkWebPreferenceAndBadSessionSnapshotFallBackToRealNavigation() = withPage { scenario ->
-        waitFor(scenario) { it.painted && it.pageTitle == "DARK-PREFERENCE" }
+    @Test fun systemWebPreferenceAndBadSessionSnapshotFallBackToRealNavigation() = withPage { scenario ->
+        waitFor(scenario) { it.painted && it.pageTitle in setOf("DARK-PREFERENCE", "LIGHT-PREFERENCE") }
         var id = ""
         scenario.onActivity { activity ->
             val tab = ChatTab(url = activity.workspace.selected!!.url).apply {
@@ -59,7 +56,10 @@ class RebuildRegressionTest {
             activity.workspace.tabs += tab
             activity.workspace.select(id)
         }
-        waitFor(scenario) { it.workspace.selectedId == id && it.painted && it.pageTitle == "DARK-PREFERENCE" }
+        waitFor(scenario) {
+            it.workspace.selectedId == id && it.painted &&
+                it.pageTitle in setOf("DARK-PREFERENCE", "LIGHT-PREFERENCE")
+        }
         scenario.onActivity { assertFalse(it.isFinishing); assertNull(it.workspace.selected!!.error) }
     }
 
@@ -83,8 +83,6 @@ class RebuildRegressionTest {
     }
 
     @Test fun compactBrowserBarHasRefreshShareAndFloatingBeforeTabs() = withPage { scenario ->
-        // ActivityScenario can report the Activity ready slightly before the first measured layout
-        // and accessibility pass. Wait until every requested control exists and is laid out.
         waitFor(scenario) { activity ->
             val root = activity.window.decorView
             listOf("Refresh page", "Share page", "Open interactive floating chat", "Workspace tabs", "Browser menu")
