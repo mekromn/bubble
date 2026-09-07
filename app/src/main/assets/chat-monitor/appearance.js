@@ -3,6 +3,7 @@
   if (window !== window.top || !/^https?:$/.test(location.protocol)) return;
 
   const STYLE_ID = 'bubble-page-appearance';
+  const FILTER = 'invert(1) hue-rotate(180deg)';
   let requestedMode = 'default';
   let classifyTimer = 0;
   let observer = null;
@@ -62,7 +63,7 @@
       html.bubble-force-dark:not(.bubble-needs-invert) { background: #000 !important; }
       html.bubble-force-light:not(.bubble-needs-invert) { background: #fff !important; }
       html.bubble-needs-invert :is(img,picture,video,canvas,iframe,svg) {
-        filter: invert(1) hue-rotate(180deg) !important;
+        filter: ${FILTER} !important;
       }
     `;
     (document.head || host).appendChild(style);
@@ -72,10 +73,15 @@
   const setInvert = needsInvert => {
     const host = root();
     if (!host) return;
-    host.classList.toggle('bubble-needs-invert', needsInvert);
-    // Inline !important beats application CSS that places its own filter on <html>.
-    if (needsInvert) host.style.setProperty('filter', 'invert(1) hue-rotate(180deg)', 'important');
-    else host.style.removeProperty('filter');
+    const wasInvert = host.classList.contains('bubble-needs-invert');
+    if (wasInvert !== needsInvert) host.classList.toggle('bubble-needs-invert', needsInvert);
+    // Inline !important beats application CSS that places its own filter on <html>. Avoid writing
+    // the same value repeatedly so our MutationObserver cannot create a self-sustaining loop.
+    const current = host.style.getPropertyValue('filter').trim();
+    if (needsInvert) {
+      if (current !== FILTER || host.style.getPropertyPriority('filter') !== 'important')
+        host.style.setProperty('filter', FILTER, 'important');
+    } else if (current) host.style.removeProperty('filter');
   };
 
   const classify = () => {
