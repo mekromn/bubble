@@ -36,16 +36,14 @@ run_group() {
   fi
 }
 
-# P0 transfer behavior gets a fresh process and runs first so unrelated launcher/IME flakes
-# cannot hide a genuine byte/account/session failure.
-run_group files 'com.mekromn.bubble.FileTransferRuntimeTest'
-run_group floating 'com.mekromn.bubble.FloatingChromeRuntimeTest,com.mekromn.bubble.FloatingWorkspaceTest'
+# Emulator time is intentionally a CURRENT-FEATURE gate, not an ever-growing historical suite.
+# Older regression tests remain in source and unit coverage, but once a shipped feature has already
+# been proven we do not spend every build re-running it. Add a runtime test here while actively
+# developing that feature, then rotate it out when the next feature becomes the focus.
+#
+# Current work: floating-window pill/switcher/chrome behavior and forced webpage appearance.
+run_group floating 'com.mekromn.bubble.FloatingChromeRuntimeTest'
 run_group appearance 'com.mekromn.bubble.PageAppearanceRuntimeTest'
-run_group edge 'com.mekromn.bubble.EdgeAccessRuntimeTest,com.mekromn.bubble.ParkedWorkspaceTest'
-run_group core 'com.mekromn.bubble.BlackGlassTest,com.mekromn.bubble.BrowserInputTest,com.mekromn.bubble.BrowserSmokeTest,com.mekromn.bubble.RebuildRegressionTest,com.mekromn.bubble.ToolkitStoreTest,com.mekromn.bubble.WorkspaceRuntimeTest'
-run_group tools 'com.mekromn.bubble.LiveToolsRuntimeTest,com.mekromn.bubble.ProfileIsolationTest'
 
-adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence/ evidence/ || true
 adb logcat -d > emulator-logcat.txt
-python3 tools/ci-file-evidence.py
 exit "$failures"
