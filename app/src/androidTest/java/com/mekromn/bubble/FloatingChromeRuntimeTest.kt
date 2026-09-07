@@ -37,9 +37,7 @@ class FloatingChromeRuntimeTest {
             } catch (_: Exception) { if (server.isClosed) break }
         }.apply { isDaemon = true; start() }
         try {
-            shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
-            shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
-            automation.serviceInfo = automation.serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
+            prepareOverlayAccess()
             ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)).use { scenario ->
                 await { main { Workspace.peek()?.ready == true } }
                 scenario.onActivity { activity ->
@@ -50,10 +48,6 @@ class FloatingChromeRuntimeTest {
                 await { main { Workspace.peek()?.selected?.title == "FLOAT-CHROME" && Workspace.peek()?.selected?.painted == true } }
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT && BubbleService.active?.window?.isTransitioning == false } }
-
-                // WindowManager has completed the overlay transition before the accessibility
-                // service necessarily publishes its new tree. Wait for the real nodes instead
-                // of racing an immediate one-shot lookup.
                 await {
                     automation.waitForIdle(50, 500)
                     node("Refresh floating page") != null &&
@@ -79,10 +73,55 @@ class FloatingChromeRuntimeTest {
         }
     }
 
-    private fun node(description: String): AccessibilityNodeInfo? {
+    @Test fun chooserMovesLegacyFooterActionsIntoTopMenuAndHasResizeHandle() {
+        val oldFlags = automation.serviceInfo.flags
+        try {
+            prepareOverlayAccess()
+            ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)).use { scenario ->
+                await { main { Workspace.peek()?.ready == true } }
+                scenario.onActivity { activity ->
+                    AccessPreferences.get(activity).update(AccessPreferences.get(activity).options.copy(enabled = false))
+                    activity.collapse(FloatingMode.BUBBLE)
+                }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.BUBBLE } }
+                instrumentation.runOnMainSync { BubbleService.active?.window?.showChooser() }
+                await { main { BubbleService.active?.window?.mode == FloatingMode.CHOOSER && BubbleService.active?.window?.isTransitioning == false } }
+                await {
+                    automation.waitForIdle(50, 500)
+                    node("Workspace menu") != null && node("Resize conversation chooser") != null
+                }
+                assertNotNull(node("Workspace menu"))
+                assertNotNull(node("Resize conversation chooser"))
+                assertNull("Legacy Chat tools footer must be removed", textNode("Chat tools"))
+                assertNull("Legacy Edge access footer must be removed", textNode("Edge access"))
+                assertNull("Legacy Reply sound footer must be removed", textNode("Reply sound"))
+
+                val menu = requireNotNull(node("Workspace menu"))
+                assertTrue(menu.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                await {
+                    automation.waitForIdle(50, 500)
+                    textNode("Chat tools") != null && textNode("Edge access") != null &&
+                        textNode("Reply sound / ChatGPT notifications") != null
+                }
+            }
+        } finally {
+            context.stopService(Intent(context, BubbleService::class.java))
+            automation.serviceInfo = automation.serviceInfo.apply { flags = oldFlags }
+            shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW default")
+        }
+    }
+
+    private fun prepareOverlayAccess() {
+        shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
+        shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+        automation.serviceInfo = automation.serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
+    }
+    private fun node(description: String): AccessibilityNodeInfo? = findNode { n -> n.contentDescription?.toString() == description }
+    private fun textNode(text: String): AccessibilityNodeInfo? = findNode { n -> n.text?.toString() == text }
+    private fun findNode(match: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
         fun walk(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             if (n == null) return null
-            if (n.isVisibleToUser && n.contentDescription?.toString() == description) return n
+            if (n.isVisibleToUser && match(n)) return n
             for (i in 0 until n.childCount) walk(n.getChild(i))?.let { return it }
             return null
         }
