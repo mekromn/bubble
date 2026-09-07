@@ -19,8 +19,9 @@ import kotlin.math.max
 internal data class MorphFrame(val bitmap: Bitmap, val box: WindowBox)
 
 /**
- * Temporary, non-interactive compositor surface used only while the same browser window crosses
- * the Activity / TYPE_APPLICATION_OVERLAY boundary.
+ * Temporary compositor surface used only while the same browser window crosses the Activity /
+ * TYPE_APPLICATION_OVERLAY boundary. It absorbs touch during the few transition frames so input
+ * can never hit an invisible source/destination window while the shared card is in flight.
  *
  * Unlike a normal View scale animation, the bitmap is never stretched independently on X/Y.
  * Container bounds morph continuously while each source/destination frame is center-cropped with
@@ -41,6 +42,9 @@ internal class WindowMorphOverlay(
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
         clipChildren = false
         clipToPadding = false
+        isClickable = true
+        isFocusable = false
+        setOnTouchListener { _, _ -> true }
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
     }
     private val sourceView = MorphBitmapView(app, source.bitmap)
@@ -53,7 +57,6 @@ internal class WindowMorphOverlay(
         display.height,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
@@ -75,10 +78,18 @@ internal class WindowMorphOverlay(
 
     fun attach(onReady: () -> Unit = {}) {
         if (attached) { onReady(); return }
+        // The transition surface itself gets the fastest real display mode. On the Pixel this is
+        // essential: voting only the source/destination windows would let the temporary shared
+        // element fall back to 60 Hz exactly while it is the only thing the user is watching.
+        RenderPolicy.vote(app, root, params)
         manager.addView(root, params)
         attached = true
-        // Wait for one committed overlay frame before allowing the source Activity/card to hide.
-        root.postOnAnimation { if (attached) onReady() }
+        root.postOnAnimation {
+            if (attached) {
+                RenderPolicy.vote(app, root)
+                onReady()
+            }
+        }
     }
 
     fun setDestination(frame: MorphFrame?) {
@@ -90,6 +101,7 @@ internal class WindowMorphOverlay(
         val view = MorphBitmapView(app, frame.bitmap).apply { alpha = 0f }
         destinationView = view
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
+        if (Build.VERSION.SDK_INT >= 35) RenderPolicy.vote(app, view)
         applyBox(view, current, lerpRadius(progressFor(current)))
     }
 
