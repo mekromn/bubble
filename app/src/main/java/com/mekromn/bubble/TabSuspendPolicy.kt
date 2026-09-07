@@ -7,6 +7,8 @@ package com.mekromn.bubble
  * manual suspend command. */
 internal object TabSuspendPolicy {
     const val MANUAL_MESSAGE = "Tab suspended to save resources. Tap to resume."
+    /** Idle/background ChatGPT renderers get a generous grace period before hibernation. */
+    const val AUTO_SUSPEND_DELAY_MS = 5L * 60L * 1000L
 
     fun automatic(isChat: Boolean, selectedVisible: Boolean, generating: Boolean,
         loading: Boolean, forceKeepAlive: Boolean): Boolean =
