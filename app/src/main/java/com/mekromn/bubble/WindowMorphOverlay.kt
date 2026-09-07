@@ -61,6 +61,9 @@ internal class WindowMorphOverlay(
         gravity = Gravity.TOP or Gravity.LEFT
         x = display.x
         y = display.y
+        if (Build.VERSION.SDK_INT >= 28) {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
         title = "Bubble matched window morph"
     }
 
