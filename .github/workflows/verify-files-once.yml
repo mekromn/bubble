@@ -7,11 +7,12 @@ name: Verify browser file transfers
 # visibility/focus semantics, plus the native Google Voice unread-title fallback for cases where
 # voice.google.com updates its tab title but emits zero Gecko Web Notification events.
 # Also verifies persistent per-tab Bubble-default/Force-dark/Force-light webpage presentation,
-# independently persisted floating-chat and chooser geometry, symmetric chooser list insets,
-# readiness-colored tab cards, current/last-tab reveal in both switchers, and the shared bottom pill:
-# swipe up on a floating page -> Your chats, swipe up on Your chats -> last tab, swipe down on either
-# -> minimize. Fullscreen-to-floating no longer scales an opaque Activity root (which exposed a
-# black backing surface); the overlay now uses a fixed-bounds translucent settle animation instead.
+# including late-rendering light SPAs such as Google Voice, independently persisted floating-chat
+# and chooser geometry, symmetric chooser list insets, readiness-colored tab cards, current/last-tab
+# reveal in both switchers, and the shared bottom pill. Floating webpage pill: left=Back,
+# right=Forward, up=Your chats, down=minimize. Your-chats pill: up=return to last tab, down=minimize.
+# Fullscreen-to-floating no longer scales an opaque Activity root (which exposed a black backing
+# surface); the overlay now uses a fixed-bounds translucent settle animation instead.
 # The exact observed title form "Voice - (1) Messages" remains covered by unit regression tests.
 # API-31 blur calls remain runtime-gated on the min-26 app. Runtime failure still publishes a
 # clearly marked UNVERIFIED ARM64 APK when compilation/signing succeeds.
