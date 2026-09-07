@@ -69,10 +69,22 @@ class BrowserActivity : Activity() {
     }
     override fun onStart() {
         super.onStart(); FullscreenHandoff.reset(root); started = true; handoff = false
+        val matchedEntry = FullscreenHandoff.isEnteringFullscreen(intent)
         BubbleService.active?.releaseForActivity(); stopService(Intent(this, BubbleService::class.java))
         workspace.host = WeakReference(this); workspace.visible = true
         workspace.listen(changed); workspace.applyPolicy(); Refresh.request(this)
         if (measuring) meter.start(this)
+        if (matchedEntry) {
+            // The full-screen morph frame is still above this Activity. Render/attach the existing
+            // GeckoSession behind it, then let FullscreenHandoff PixelCopy the real destination and
+            // dissolve the held frame only when both occupy identical full-screen bounds.
+            root.post {
+                if (started && !isFinishing) {
+                    render()
+                    FullscreenHandoff.finishIntoFullscreen(this, root)
+                }
+            }
+        }
     }
     override fun onResume() {
         super.onResume(); externalFlow = false; enteringPip = false
@@ -291,26 +303,41 @@ class BrowserActivity : Activity() {
             notificationAsked = true; externalFlow = true; requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS); return
         }
         collapsePending = true; handoff = true; workspace.flush(); val wasPip = isInPictureInPictureMode
-        val reply = object : ResultReceiver(Handler(Looper.getMainLooper())) {
-            override fun onReceiveResult(code: Int, data: Bundle?) {
-                collapsePending = false
-                if (code != 1) { handoff = false; if (started) { render(); toast("Floating window could not be attached. Your chats are retained.") }; return }
-                if (!alreadyLeaving && !isFinishing) {
-                    if (wasPip) finish()
-                    else if (mode == FloatingMode.CHAT) {
-                        val target = FullscreenHandoff.floatingTarget(this@BrowserActivity, workspace)
-                        FullscreenHandoff.shrinkFullscreen(this@BrowserActivity, root, target) {
-                            if (!isFinishing) {
-                                moveTaskToBack(true)
-                                @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+        val startService = {
+            val reply = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+                override fun onReceiveResult(code: Int, data: Bundle?) {
+                    collapsePending = false
+                    if (code != 1) {
+                        FullscreenHandoff.cancelAll(); handoff = false
+                        if (started) { render(); toast("Floating window could not be attached. Your chats are retained.") }
+                        return
+                    }
+                    if (!alreadyLeaving && !isFinishing) {
+                        if (wasPip) finish()
+                        else if (mode == FloatingMode.CHAT) {
+                            val target = FullscreenHandoff.floatingTarget(this@BrowserActivity, workspace)
+                            FullscreenHandoff.shrinkFullscreen(this@BrowserActivity, root, target) {
+                                if (!isFinishing) {
+                                    moveTaskToBack(true)
+                                    @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+                                }
                             }
-                        }
-                    } else moveTaskToBack(true)
+                        } else moveTaskToBack(true)
+                    }
                 }
             }
+            try {
+                startForegroundService(Intent(this, BubbleService::class.java).putExtra(BubbleService.READY, reply).putExtra(BubbleService.MODE, mode.name))
+            } catch (_: RuntimeException) {
+                FullscreenHandoff.cancelAll(); collapsePending = false; handoff = false
+                if (!alreadyLeaving) toast("Android blocked the floating service.")
+            }
         }
-        try { startForegroundService(Intent(this, BubbleService::class.java).putExtra(BubbleService.READY, reply).putExtra(BubbleService.MODE, mode.name)) }
-        catch (_: RuntimeException) { collapsePending = false; handoff = false; if (!alreadyLeaving) toast("Android blocked the floating service.") }
+        if (mode == FloatingMode.CHAT && !alreadyLeaving && !wasPip) {
+            // PixelCopy happens before BubbleService can detach the fullscreen Gecko surface. That
+            // exact frame is the visual source of the matched geometry morph.
+            FullscreenHandoff.armFullscreenToFloating(this, root) { startService() }
+        } else startService()
     }
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, result: IntArray) {
         super.onRequestPermissionsResult(code, permissions, result)
