@@ -147,10 +147,12 @@ class BubbleService : Service() {
     private fun removeSurfaces() { edge?.destroy(); edge = null; window?.destroy(); window = null }
 
     /**
-     * Fullscreen has taken ownership of the workspace. Drop the process-level floating-owner
-     * reference synchronously before tearing down the overlay views; Service.onDestroy() is an
-     * asynchronous lifecycle callback and leaving `active` non-null until then creates a false
-     * second owner during the final matched-morph handoff.
+     * Fullscreen has taken ownership of the workspace. Publish that ownership synchronously so no
+     * caller can observe a false second floating owner, but defer destruction of the old overlay by
+     * one main-loop turn. BrowserActivity's onStart then attaches the same GeckoSession to its
+     * fullscreen GeckoView first; Workspace.attachSurface() releases the floating surface itself.
+     * The deferred destroy therefore removes only obsolete chrome instead of creating a no-surface
+     * gap between TextureView and SurfaceView.
      */
     internal fun releaseForActivity() {
         if (stopping) {
@@ -160,8 +162,10 @@ class BubbleService : Service() {
         stopping = true
         pendingMode = null
         if (active === this) active = null
-        removeSurfaces()
-        stopSelf()
+        Handler(Looper.getMainLooper()).post {
+            removeSurfaces()
+            stopSelf()
+        }
     }
     private fun createChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Floating workspace", NotificationManager.IMPORTANCE_LOW).apply {
