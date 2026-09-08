@@ -1,591 +1,325 @@
 package com.mekromn.bubble
 
 import android.app.Activity
+import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Paint
+import android.graphics.Point
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
-import android.view.PixelCopy
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowManager
 import java.util.concurrent.atomic.AtomicBoolean
-import org.mozilla.geckoview.GeckoView
 
 /**
- * Matched Activity <-> overlay handoff.
+ * Cross-window handoff.
  *
- * The transition owns one visible object from end to end. Source/destination chrome is frozen into
- * bitmaps, and Gecko's compositor pixels are captured separately and composited into those bitmaps
- * so SurfaceView/TextureView ownership changes can never create black holes in the held frame.
+ * Floating -> fullscreen deliberately stays on the previously accepted system clip-reveal path.
+ * Fullscreen -> floating uses a separate screenshot-driven morph: freeze the exact fullscreen
+ * browser, stretch that one frame into the saved floating rectangle, then cross-fade it into the
+ * already-positioned live floating card at the end of the same motion.
  */
 internal object FullscreenHandoff {
     const val EXTRA_FROM_FLOATING = "bubble.transition.from.floating"
-    private const val GECKO_CAPTURE_TIMEOUT_MS = 240L
-    private const val FULLSCREEN_CAPTURE_TIMEOUT_MS = 620L
-    private const val SHRINK_WATCHDOG_MS = 1800L
-    private const val EXPANSION_WATCHDOG_MS = 1800L
-    private const val RECENT_FULLSCREEN_SEED_MS = 30_000L
-    private const val FLOATING_FOCUS_SETTLE_MS = 32L
+    private const val CAPTURE_TIMEOUT_MS = 180L
+    private const val SHRINK_WATCHDOG_MS = 1400L
     private val main = Handler(Looper.getMainLooper())
-    private val capturePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
     private var pendingFullscreenFrame: MorphFrame? = null
-    private var morphOverlay: WindowMorphOverlay? = null
-    private var expandingIntoFullscreen = false
-    private var recentFullscreenSeed: FullscreenSeed? = null
-    private var seedExpiry: Runnable? = null
+    private var shrinkOverlay: FullscreenShrinkOverlay? = null
+    private var shrinkWatchdog: Runnable? = null
 
-    private data class FullscreenSeed(
-        val frame: MorphFrame,
-        val tabId: String,
-        val url: String,
-        val createdAt: Long
-    )
-
-    /**
-     * Capture the exact fullscreen pixels before BubbleService steals the GeckoSession surface.
-     *
-     * If this is an immediate reversal of a just-completed floating -> fullscreen morph, prefer the
-     * exact full-screen frame already held by that transition. This removes the one-frame race where
-     * a newly attached SurfaceView has correct state but has not produced a capturable buffer yet.
-     */
+    /** Capture the fullscreen browser before BubbleService takes the Gecko surface. */
     fun armFullscreenToFloating(activity: Activity, root: View, ready: (Boolean) -> Unit) {
         cancelPendingFullscreenFrame()
-        consumeRecentFullscreenSeed(activity, root)?.let { seed ->
-            pendingFullscreenFrame = seed
-            ready(true)
-            return
-        }
-        captureActivityFrame(activity, root, 0) { frame, _ ->
+        captureFullscreenFrame(activity, root, 0) { frame ->
             pendingFullscreenFrame = frame
             ready(frame != null)
         }
     }
 
+    /** FloatingWindow uses this to suppress its ordinary independent entrance animation. */
     fun shouldSuppressDirectFloatingEntrance(): Boolean = pendingFullscreenFrame != null
 
-    /** Fullscreen -> floating: the held fullscreen frame itself contracts into the saved card. */
+    /**
+     * Fullscreen -> floating only.
+     *
+     * The real floating card is attached at its exact final bounds but held at alpha 0. A frozen
+     * fullscreen frame is placed above everything, BrowserActivity is moved behind the user's
+     * previous app, and that one frame stretches into the floating rectangle. During the final
+     * ~30% of the motion the frozen frame fades out while the live floating card fades in underneath.
+     * At no point are two independently moving browser windows visible.
+     */
     fun shrinkFullscreen(activity: Activity, root: View, target: WindowBox, done: () -> Unit) {
         reset(root)
         val source = pendingFullscreenFrame
         pendingFullscreenFrame = null
         val floating = BubbleService.active?.window?.takeIf { it.mode == FloatingMode.CHAT }
-        if (source == null || floating == null) {
+        val card = floating?.transitionView
+
+        if (source == null || floating == null || card == null || !card.isAttachedToWindow || !card.isLaidOut) {
             source?.bitmap.safeRecycle()
+            card?.let(::showFloatingCard)
             root.postOnAnimation { done() }
             return
         }
 
-        holdFloating(floating)
-        // A newly-added CHAT overlay is focusable. Let WindowManager deliver its initial focus/input
-        // transaction before doing any snapshot work on the main thread. This matters on slow GPUs
-        // and eliminates the pathological case where a perfectly valid visual capture could delay a
-        // FocusEvent long enough for InputDispatcher to declare the destination window hung.
-        main.postDelayed({
-            if (activity.isFinishing) {
-                source.bitmap.safeRecycle(); showFloating(floating); done(); return@postDelayed
-            }
-            // The floating Gecko surface has only just received the existing session. capturePixels
-            // is deliberately bounded: a compositor capture is a fidelity enhancement, never a
-            // reason to freeze the user in a transition if a backend handoff stalls.
-            captureFloatingFrame(floating) { destination ->
-                if (activity.isFinishing) {
-                    destination?.bitmap.safeRecycle(); source.bitmap.safeRecycle()
-                    showFloating(floating); done(); return@captureFloatingFrame
-                }
-                val exactTarget = floating.box.takeIf { it.width > 0 && it.height > 0 } ?: target
-                val overlay = WindowMorphOverlay(
-                    activity.applicationContext,
-                    source,
-                    exactTarget,
-                    0f,
-                    Ui.dp(activity, 26f).toFloat()
-                )
-                morphOverlay?.detach(); morphOverlay = overlay
-                try {
-                    overlay.attach {
-                        destination?.let(overlay::setDestination)
-                        scheduleShrinkWatchdog(overlay, floating)
-                        // The captured fullscreen frame is now the only visible app surface. Ask
-                        // Android to background BrowserActivity, but keep the held frame full-screen
-                        // until the real source window is no longer visible.
-                        done()
-                        waitUntilSourceWindowHidden(activity, root, 0) {
-                            if (morphOverlay === overlay) {
-                                overlay.morph(365L) {
-                                    showFloating(floating)
-                                    if (morphOverlay === overlay) morphOverlay = null
-                                    overlay.detach()
-                                }
-                            }
-                        }
-                    }
-                } catch (_: RuntimeException) {
-                    destination?.bitmap.safeRecycle()
-                    if (morphOverlay === overlay) morphOverlay = null
-                    overlay.detach()
-                    showFloating(floating)
-                    done()
-                }
-            }
-        }, FLOATING_FOCUS_SETTLE_MS)
-    }
+        card.animate().cancel()
+        card.animate().withEndAction(null)
+        card.alpha = 0f
+        card.scaleX = 1f
+        card.scaleY = 1f
+        card.translationX = 0f
+        card.translationY = 0f
 
-    /** Floating -> fullscreen: grow the exact card to the display, then hand it to BrowserActivity. */
-    fun expandFloatingToFullscreen(context: Context, floating: FloatingWindow, intent: Intent) {
-        if (expandingIntoFullscreen || morphOverlay != null) return
-        expandingIntoFullscreen = true
-        captureFloatingFrame(floating) { source ->
-            if (source == null) {
-                expandingIntoFullscreen = false
-                launchFullscreenDirect(context, intent)
-                return@captureFloatingFrame
-            }
-            val destination = WindowMorphOverlay.displayBox(context)
+        val exactTarget = floating.box.takeIf { it.width > 0 && it.height > 0 } ?: target
+        val overlay = FullscreenShrinkOverlay(
+            activity.applicationContext,
+            source,
+            exactTarget,
+            0f,
+            Ui.dp(activity, 26f).toFloat()
+        )
+        shrinkOverlay?.detach()
+        shrinkOverlay = overlay
 
-            // Preserve a one-use visual seed before WindowMorphOverlay takes bitmap ownership. It is
-            // a continuity fallback only; finishIntoFullscreen replaces it with a true full-screen
-            // compositor capture as soon as Gecko supplies one. Even the fallback is preferable to
-            // a black/empty frame if the user instantly reverses direction during a backend handoff.
-            rememberFullscreenSeed(source, destination)
-
-            val overlay = WindowMorphOverlay(
-                context,
-                source,
-                destination,
-                Ui.dp(context, 26f).toFloat(),
-                0f
-            )
-            morphOverlay = overlay
-            try {
-                overlay.attach {
-                    holdFloating(floating)
-                    scheduleExpansionWatchdog(overlay, floating)
-                    overlay.morph(380L) {
-                        // The card is now physically full-screen and opaque. Start BrowserActivity
-                        // behind that held frame with Android's unrelated task animation suppressed;
-                        // the user continues to see only the one shared morph object.
-                        val launch = Intent(intent).apply {
-                            addFlags(
-                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
-                            )
-                            putExtra(EXTRA_FROM_FLOATING, true)
-                        }
-                        try {
-                            context.applicationContext.startActivity(launch)
-                        } catch (_: RuntimeException) {
-                            expandingIntoFullscreen = false
-                            clearRecentFullscreenSeed()
-                            showFloating(floating)
-                            if (morphOverlay === overlay) morphOverlay = null
-                            overlay.detach()
-                        }
+        try {
+            overlay.attach {
+                scheduleShrinkWatchdog(overlay, card)
+                // The frozen frame now covers the exact fullscreen browser, so the Activity can be
+                // moved away without ever exposing its black backing surface.
+                done()
+                waitUntilSourceWindowHidden(activity, root, 0) {
+                    if (shrinkOverlay !== overlay) return@waitUntilSourceWindowHidden
+                    overlay.morphInto(card, durationMs = 340L, crossfadeStart = .70f) {
+                        showFloatingCard(card)
+                        clearShrinkWatchdog()
+                        if (shrinkOverlay === overlay) shrinkOverlay = null
+                        overlay.detach()
                     }
                 }
-            } catch (_: RuntimeException) {
-                if (morphOverlay === overlay) morphOverlay = null
-                expandingIntoFullscreen = false
-                clearRecentFullscreenSeed()
-                overlay.detach()
-                showFloating(floating)
-                launchFullscreenDirect(context, intent)
             }
+        } catch (_: RuntimeException) {
+            clearShrinkWatchdog()
+            if (shrinkOverlay === overlay) shrinkOverlay = null
+            overlay.detach()
+            showFloatingCard(card)
+            done()
         }
     }
 
-    /** BrowserActivity is ready behind the full-size held card; dissolve only at identical bounds. */
-    fun finishIntoFullscreen(activity: Activity, root: View) {
-        if (!expandingIntoFullscreen) return
-        val overlay = morphOverlay ?: run { expandingIntoFullscreen = false; return }
-        // Do not gate this on window focus. A non-focusable TYPE_APPLICATION_OVERLAY can cover the
-        // destination while it is already laid out and drawable, and some Android builds defer the
-        // focus transition until the overlay is removed. Waiting for focus therefore creates a
-        // circular handoff. Instead wait for attachment/layout/visibility and capture behind the
-        // held full-screen frame.
-        waitUntilDestinationWindowReady(activity, root, 0) {
-            if (morphOverlay !== overlay || !expandingIntoFullscreen) return@waitUntilDestinationWindowReady
-
-            val deadline = SystemClock.uptimeMillis() + FULLSCREEN_CAPTURE_TIMEOUT_MS
-            val completed = AtomicBoolean(false)
-            val timeout = Runnable {
-                if (completed.compareAndSet(false, true) && morphOverlay === overlay && expandingIntoFullscreen) {
-                    // The shared card is already at exact full-screen geometry. If Gecko never made a
-                    // capturable SurfaceView buffer, reveal BrowserActivity without a fade to a known
-                    // bad/blank bitmap. The preserved visual seed remains available for an immediate
-                    // reverse gesture.
-                    morphOverlay = null
-                    expandingIntoFullscreen = false
-                    overlay.detach()
-                }
-            }
-            main.postDelayed(timeout, FULLSCREEN_CAPTURE_TIMEOUT_MS)
-
-            fun captureDestination() {
-                if (completed.get() || morphOverlay !== overlay || !expandingIntoFullscreen) return
-                captureActivityFrame(activity, root, 0) { destination, hasGeckoPixels ->
-                    if (completed.get()) {
-                        destination?.bitmap.safeRecycle()
-                        return@captureActivityFrame
-                    }
-                    if (destination != null && hasGeckoPixels) {
-                        if (!completed.compareAndSet(false, true)) {
-                            destination.bitmap.safeRecycle(); return@captureActivityFrame
-                        }
-                        main.removeCallbacks(timeout)
-                        // This is the exact real full-screen frame. Keep a private copy as the visual
-                        // source for a possible immediate reverse; the overlay owns the original.
-                        rememberFullscreenSeed(destination, destination.box)
-                        if (morphOverlay === overlay && expandingIntoFullscreen) {
-                            overlay.finishWith(destination, 115L) {
-                                if (morphOverlay === overlay) morphOverlay = null
-                                expandingIntoFullscreen = false
-                                overlay.detach()
-                            }
-                        } else destination.bitmap.safeRecycle()
-                    } else {
-                        destination?.bitmap.safeRecycle()
-                        if (SystemClock.uptimeMillis() + 70L < deadline) {
-                            main.postDelayed(::captureDestination, 42L)
-                        }
-                    }
-                }
-            }
-
-            // Two compositor beats after layout are enough on real hardware; retries above cover a
-            // slower SurfaceView handoff without ever displaying a failed capture.
-            main.postDelayed(::captureDestination, 32L)
-        }
-    }
-
-    fun isEnteringFullscreen(intent: Intent?): Boolean =
-        intent?.getBooleanExtra(EXTRA_FROM_FLOATING, false) == true && expandingIntoFullscreen
-
-    /** BubbleService funnels BrowserActivity launches here so the entire card is the shared object. */
+    /**
+     * Keep floating -> fullscreen exactly on the accepted pre-matched-morph behavior. Android owns
+     * the clip reveal from the whole floating card; Bubble does not insert a screenshot compositor.
+     */
     fun launchFromFloating(context: Context, source: View, intent: Intent) {
-        val floating = BubbleService.active?.window?.takeIf { it.mode == FloatingMode.CHAT }
-        if (floating != null) expandFloatingToFullscreen(context, floating, intent)
-        else launchFullscreenDirect(context, intent)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        intent.putExtra(EXTRA_FROM_FLOATING, true)
+
+        var launchSource = source
+        var parent = source.parent
+        while (parent is View && parent.isLaidOut && parent.width > 0 && parent.height > 0) {
+            launchSource = parent
+            parent = parent.parent
+        }
+
+        val options = if (launchSource.isLaidOut && launchSource.width > 0 && launchSource.height > 0) {
+            ActivityOptions.makeClipRevealAnimation(
+                launchSource,
+                0,
+                0,
+                launchSource.width,
+                launchSource.height
+            ).toBundle()
+        } else null
+        context.startActivity(intent, options)
     }
 
     fun floatingTarget(context: Context, workspace: Workspace): WindowBox {
-        val manager = context.getSystemService(android.view.WindowManager::class.java)
+        val manager = context.getSystemService(WindowManager::class.java)
         val safe = if (Build.VERSION.SDK_INT >= 30) {
             val metrics = manager.maximumWindowMetrics
-            val inset = metrics.windowInsets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
-            WindowBox(inset.left + Ui.dp(context, 4f), inset.top + Ui.dp(context, 4f),
-                (metrics.bounds.width() - inset.left - inset.right - Ui.dp(context, 8f)).coerceAtLeast(1),
-                (metrics.bounds.height() - inset.top - inset.bottom - Ui.dp(context, 8f)).coerceAtLeast(1))
+            val inset = metrics.windowInsets.getInsetsIgnoringVisibility(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+            )
+            WindowBox(
+                inset.left + dp(context, 4),
+                inset.top + dp(context, 4),
+                (metrics.bounds.width() - inset.left - inset.right - dp(context, 8)).coerceAtLeast(1),
+                (metrics.bounds.height() - inset.top - inset.bottom - dp(context, 8)).coerceAtLeast(1)
+            )
         } else {
-            val p = android.graphics.Point(); @Suppress("DEPRECATION") manager.defaultDisplay.getRealSize(p)
-            WindowBox(Ui.dp(context, 4f), Ui.dp(context, 28f), (p.x - Ui.dp(context, 8f)).coerceAtLeast(1), (p.y - Ui.dp(context, 60f)).coerceAtLeast(1))
+            val p = Point()
+            @Suppress("DEPRECATION") manager.defaultDisplay.getRealSize(p)
+            WindowBox(
+                dp(context, 4),
+                dp(context, 28),
+                (p.x - dp(context, 8)).coerceAtLeast(1),
+                (p.y - dp(context, 60)).coerceAtLeast(1)
+            )
         }
         val width = (safe.width * WindowGeometry.fraction(workspace.windowWidth, .92f)).toInt()
-            .coerceAtLeast(Ui.dp(context, 280f)).coerceAtMost(Ui.dp(context, 560f))
-        val height = (safe.height * WindowGeometry.fraction(workspace.windowHeight, .72f)).toInt().coerceAtLeast(Ui.dp(context, 260f))
+            .coerceAtLeast(dp(context, 280)).coerceAtMost(dp(context, 560))
+        val height = (safe.height * WindowGeometry.fraction(workspace.windowHeight, .72f)).toInt()
+            .coerceAtLeast(dp(context, 260))
         return WindowGeometry.placed(safe, workspace.windowX, workspace.windowY, width, height)
     }
 
     fun reset(root: View) {
-        root.animate().cancel(); root.animate().withEndAction(null)
-        root.scaleX = 1f; root.scaleY = 1f; root.translationX = 0f; root.translationY = 0f; root.alpha = 1f
-        root.pivotX = root.width / 2f; root.pivotY = root.height / 2f
+        root.animate().cancel()
+        root.animate().withEndAction(null)
+        root.scaleX = 1f
+        root.scaleY = 1f
+        root.translationX = 0f
+        root.translationY = 0f
+        root.alpha = 1f
+        root.pivotX = root.width / 2f
+        root.pivotY = root.height / 2f
     }
+
+    /** Compatibility with BrowserActivity left by the previous matched-morph experiment. */
+    fun isEnteringFullscreen(intent: Intent?): Boolean = false
+    fun finishIntoFullscreen(activity: Activity, root: View) = Unit
 
     fun cancelAll() {
         cancelPendingFullscreenFrame()
-        clearRecentFullscreenSeed()
-        morphOverlay?.detach(); morphOverlay = null
-        expandingIntoFullscreen = false
-    }
-
-    private fun holdFloating(floating: FloatingWindow) {
-        val card = floating.transitionView
-        card.animate().cancel(); card.animate().withEndAction(null)
-        card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f
-        card.alpha = 0f
-    }
-
-    private fun showFloating(floating: FloatingWindow) {
-        val card = floating.transitionView
-        if (!card.isAttachedToWindow) return
-        card.animate().cancel(); card.animate().withEndAction(null)
-        card.scaleX = 1f; card.scaleY = 1f; card.translationX = 0f; card.translationY = 0f; card.alpha = 1f
+        clearShrinkWatchdog()
+        shrinkOverlay?.detach()
+        shrinkOverlay = null
     }
 
     /**
-     * Capture floating native chrome without redundantly rasterizing GeckoView's TextureView. Gecko
-     * compositor pixels are captured separately below and composited into the exact screen rectangle.
-     * Suppressing only alpha (not visibility) keeps Gecko's lifecycle/surface ownership unchanged.
+     * Build a single fullscreen frame from native chrome plus Gecko's own compositor pixels. This is
+     * faster and more reliable than waiting for a Window screenshot to rediscover a SurfaceView.
      */
-    private fun captureFloatingFrame(floating: FloatingWindow, result: (MorphFrame?) -> Unit) {
-        val card = floating.transitionView
-        if (!card.isLaidOut || !card.isAttachedToWindow || card.width <= 0 || card.height <= 0) {
-            result(null); return
-        }
-        val gecko = floating.geckoView
-        val oldAlpha = card.alpha
-        val oldSx = card.scaleX; val oldSy = card.scaleY
-        val oldTx = card.translationX; val oldTy = card.translationY
-        val oldGeckoAlpha = gecko?.alpha ?: 1f
-        fun restore() {
-            card.alpha = oldAlpha; card.scaleX = oldSx; card.scaleY = oldSy
-            card.translationX = oldTx; card.translationY = oldTy
-            if (gecko != null) gecko.alpha = oldGeckoAlpha
-        }
-        card.alpha = 1f; card.scaleX = 1f; card.scaleY = 1f
-        card.translationX = 0f; card.translationY = 0f
-        if (gecko != null) gecko.alpha = 0f
-        val bitmap = try { Bitmap.createBitmap(card.width, card.height, Bitmap.Config.ARGB_8888) } catch (_: Throwable) { null }
-        if (bitmap == null) {
-            restore(); result(null); return
-        }
-        try {
-            card.draw(Canvas(bitmap))
-        } catch (_: Throwable) {
-            bitmap.safeRecycle(); restore(); result(null); return
-        }
-        restore()
-        val frame = MorphFrame(bitmap, floating.box)
-        compositeGeckoPixels(gecko, card, bitmap) { _ -> result(frame) }
-    }
-
-    /** PixelCopy native Activity chrome, then guarantee whether SurfaceView webpage pixels arrived. */
-    private fun captureActivityFrame(
+    private fun captureFullscreenFrame(
         activity: Activity,
         root: View,
         attempt: Int,
-        result: (MorphFrame?, Boolean) -> Unit
+        result: (MorphFrame?) -> Unit
     ) {
         if (!root.isLaidOut || root.width <= 0 || root.height <= 0 || activity.isFinishing) {
-            if (attempt < 3) root.postOnAnimation { captureActivityFrame(activity, root, attempt + 1, result) }
-            else result(null, false)
+            if (attempt < 3) root.postOnAnimation { captureFullscreenFrame(activity, root, attempt + 1, result) }
+            else result(null)
             return
         }
-        val location = IntArray(2); root.getLocationOnScreen(location)
+
+        val location = IntArray(2)
+        root.getLocationOnScreen(location)
         val box = WindowBox(location[0], location[1], root.width, root.height)
-        val bitmap = try { Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888) } catch (_: Throwable) { null }
-        if (bitmap == null) { result(null, false); return }
-
-        fun finishBase(base: Bitmap) {
-            val gecko = (activity as? BrowserActivity)?.geckoView
-            compositeGeckoPixels(gecko, root, base) { hasGeckoPixels ->
-                result(MorphFrame(base, box), hasGeckoPixels)
-            }
+        val bitmap = try {
+            Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+        } catch (_: Throwable) {
+            null
+        }
+        if (bitmap == null) {
+            result(null)
+            return
         }
 
-        if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                PixelCopy.request(activity.window, bitmap, { code ->
-                    if (code == PixelCopy.SUCCESS) finishBase(bitmap)
-                    else {
-                        bitmap.safeRecycle()
-                        if (attempt < 2) main.postDelayed({ captureActivityFrame(activity, root, attempt + 1, result) }, 24L)
-                        else {
-                            val fallback = drawFallback(root)
-                            if (fallback == null) result(null, false) else finishBase(fallback)
-                        }
-                    }
-                }, main)
-                return
-            } catch (_: RuntimeException) { }
+        try {
+            root.draw(Canvas(bitmap))
+        } catch (_: Throwable) {
+            bitmap.safeRecycle()
+            result(null)
+            return
         }
-        bitmap.safeRecycle()
-        val fallback = drawFallback(root)
-        if (fallback == null) result(null, false) else finishBase(fallback)
-    }
 
-    /**
-     * GeckoView's default fullscreen backend is SurfaceView, while floating uses TextureView.
-     * Window/View screenshots are therefore not sufficient as a correctness primitive. Gecko's
-     * own capturePixels() returns the current compositor surface regardless of backend. That
-     * enhancement is bounded by a hard deadline so a wedged surface handoff can never wedge the UI.
-     */
-    private fun compositeGeckoPixels(
-        gecko: GeckoView?,
-        owner: View,
-        base: Bitmap,
-        done: (Boolean) -> Unit
-    ) {
+        val gecko = (activity as? BrowserActivity)?.geckoView
         if (gecko == null || !gecko.isAttachedToWindow || gecko.width <= 0 || gecko.height <= 0) {
-            done(false); return
+            result(MorphFrame(bitmap, box))
+            return
         }
+
         val finished = AtomicBoolean(false)
-        val deadline = SystemClock.uptimeMillis() + GECKO_CAPTURE_TIMEOUT_MS
         lateinit var timeout: Runnable
-        fun finish(success: Boolean) {
+        fun finish() {
             if (!finished.compareAndSet(false, true)) return
             main.removeCallbacks(timeout)
-            if (Looper.myLooper() === Looper.getMainLooper()) done(success) else main.post { done(success) }
+            result(MorphFrame(bitmap, box))
         }
-        timeout = Runnable { finish(false) }
-        main.postDelayed(timeout, GECKO_CAPTURE_TIMEOUT_MS)
+        timeout = Runnable { finish() }
+        main.postDelayed(timeout, CAPTURE_TIMEOUT_MS)
 
-        fun attempt(index: Int) {
-            if (finished.get()) return
-            if (SystemClock.uptimeMillis() >= deadline || !gecko.isAttachedToWindow) {
-                finish(false); return
-            }
-            try {
-                gecko.capturePixels().accept({ web ->
-                    if (finished.get()) {
-                        web?.safeRecycle()
-                    } else if (web != null && !web.isRecycled) {
-                        // Immediately after a surface handoff Gecko can briefly return the previous
-                        // surface-sized frame. Prefer a frame matching the destination View geometry.
-                        val stale = kotlin.math.abs(web.width - gecko.width) > 8 ||
-                            kotlin.math.abs(web.height - gecko.height) > 8
-                        val delay = 20L * (index + 1)
-                        if (stale && index < 3 && gecko.isAttachedToWindow && SystemClock.uptimeMillis() + delay < deadline) {
-                            web.safeRecycle()
-                            main.postDelayed({ attempt(index + 1) }, delay)
-                        } else {
-                            try {
-                                val ownerLocation = IntArray(2); owner.getLocationOnScreen(ownerLocation)
-                                val geckoLocation = IntArray(2); gecko.getLocationOnScreen(geckoLocation)
-                                val left = geckoLocation[0] - ownerLocation[0]
-                                val top = geckoLocation[1] - ownerLocation[1]
-                                val dest = Rect(left, top, left + gecko.width, top + gecko.height)
-                                Canvas(base).drawBitmap(web, null, dest, capturePaint)
-                            } catch (_: Throwable) { }
-                            web.safeRecycle()
-                            finish(true)
-                        }
-                    } else finish(false)
-                }, { _ ->
-                    if (finished.get()) return@accept
-                    val delay = 20L * (index + 1)
-                    if (index < 3 && gecko.isAttachedToWindow && SystemClock.uptimeMillis() + delay < deadline) {
-                        main.postDelayed({ attempt(index + 1) }, delay)
-                    } else finish(false)
-                })
-            } catch (_: RuntimeException) {
-                val delay = 20L * (index + 1)
-                if (index < 3 && gecko.isAttachedToWindow && SystemClock.uptimeMillis() + delay < deadline) {
-                    main.postDelayed({ attempt(index + 1) }, delay)
-                } else finish(false)
-            }
+        try {
+            gecko.capturePixels().accept({ web ->
+                if (finished.get()) {
+                    web?.safeRecycle()
+                    return@accept
+                }
+                if (web != null && !web.isRecycled) {
+                    try {
+                        val ownerLocation = IntArray(2)
+                        val geckoLocation = IntArray(2)
+                        root.getLocationOnScreen(ownerLocation)
+                        gecko.getLocationOnScreen(geckoLocation)
+                        val left = geckoLocation[0] - ownerLocation[0]
+                        val top = geckoLocation[1] - ownerLocation[1]
+                        val destination = Rect(left, top, left + gecko.width, top + gecko.height)
+                        Canvas(bitmap).drawBitmap(web, null, destination, null)
+                    } catch (_: Throwable) { }
+                    web.safeRecycle()
+                }
+                finish()
+            }, { _ -> finish() })
+        } catch (_: RuntimeException) {
+            finish()
         }
-        attempt(0)
     }
 
-    /** Keep the held fullscreen frame opaque until Android has actually hidden the source task. */
+    /** Start moving only after the original Activity is actually behind the user's previous task. */
     private fun waitUntilSourceWindowHidden(activity: Activity, root: View, attempt: Int, ready: () -> Unit) {
-        // Losing task focus is sufficient because the held overlay already contains the exact source
-        // pixels. We do not need to wait for ViewRoot teardown, which can lag task backgrounding and
-        // would otherwise add a visible pause before the shrink starts.
         val hidden = activity.isFinishing || !activity.hasWindowFocus() || !root.isAttachedToWindow ||
             root.windowVisibility != View.VISIBLE || !root.isShown
-        if (hidden || attempt >= 30) {
+        if (hidden || attempt >= 40) {
             main.post(ready)
         } else {
-            main.postDelayed({ waitUntilSourceWindowHidden(activity, root, attempt + 1, ready) }, 16L)
+            // 8 ms tracks a 120 Hz Pixel without imposing a 60 Hz polling cadence on the handoff.
+            main.postDelayed({ waitUntilSourceWindowHidden(activity, root, attempt + 1, ready) }, 8L)
         }
     }
 
-    /** Keep the grown card opaque until the destination window is attached, laid out and drawable. */
-    private fun waitUntilDestinationWindowReady(activity: Activity, root: View, attempt: Int, ready: () -> Unit) {
-        val stable = !activity.isFinishing && root.isAttachedToWindow && root.isShown && root.isLaidOut &&
-            root.width > 0 && root.height > 0 && root.windowVisibility == View.VISIBLE
-        if (stable || attempt >= 30) {
-            main.post(ready)
-        } else {
-            main.postDelayed({ waitUntilDestinationWindowReady(activity, root, attempt + 1, ready) }, 16L)
-        }
-    }
-
-    /** Never leave a full-screen held frame stranded if Android/Gecko misses a callback. */
-    private fun scheduleShrinkWatchdog(overlay: WindowMorphOverlay, floating: FloatingWindow) {
-        main.postDelayed({
-            if (morphOverlay === overlay) {
-                showFloating(floating)
-                morphOverlay = null
+    private fun scheduleShrinkWatchdog(overlay: FullscreenShrinkOverlay, card: View) {
+        clearShrinkWatchdog()
+        val watchdog = Runnable {
+            if (shrinkOverlay === overlay) {
+                showFloatingCard(card)
+                shrinkOverlay = null
                 overlay.detach()
             }
-        }, SHRINK_WATCHDOG_MS)
-    }
-
-    /** A successful Activity launch must never leave an untouchable full-screen overlay behind. */
-    private fun scheduleExpansionWatchdog(overlay: WindowMorphOverlay, floating: FloatingWindow) {
-        main.postDelayed({
-            if (morphOverlay === overlay && expandingIntoFullscreen) {
-                // If BrowserActivity never took ownership, restore the still-attached floating card.
-                // Otherwise simply reveal the Activity that is already underneath at identical bounds.
-                if (BubbleService.active?.window === floating) showFloating(floating)
-                morphOverlay = null
-                expandingIntoFullscreen = false
-                overlay.detach()
-            }
-        }, EXPANSION_WATCHDOG_MS)
-    }
-
-    /** Store one private bitmap copy so an immediate reverse never depends on a fresh SurfaceView buffer. */
-    private fun rememberFullscreenSeed(frame: MorphFrame, box: WindowBox) {
-        val tab = Workspace.peek()?.selected ?: return
-        val copy = try { frame.bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (_: Throwable) { null } ?: return
-        clearRecentFullscreenSeed()
-        recentFullscreenSeed = FullscreenSeed(MorphFrame(copy, box), tab.id, tab.url, SystemClock.uptimeMillis())
-        val expiry = Runnable {
-            val seed = recentFullscreenSeed
-            if (seed != null && SystemClock.uptimeMillis() - seed.createdAt >= RECENT_FULLSCREEN_SEED_MS) {
-                clearRecentFullscreenSeed()
-            }
         }
-        seedExpiry = expiry
-        main.postDelayed(expiry, RECENT_FULLSCREEN_SEED_MS)
+        shrinkWatchdog = watchdog
+        main.postDelayed(watchdog, SHRINK_WATCHDOG_MS)
     }
 
-    /** Consume only when tab identity, URL and fullscreen geometry still match. */
-    private fun consumeRecentFullscreenSeed(activity: Activity, root: View): MorphFrame? {
-        val seed = recentFullscreenSeed ?: return null
-        val tab = Workspace.peek()?.selected
-        val location = IntArray(2)
-        if (root.isAttachedToWindow) root.getLocationOnScreen(location)
-        val currentBox = WindowBox(location[0], location[1], root.width.coerceAtLeast(1), root.height.coerceAtLeast(1))
-        val sameGeometry = kotlin.math.abs(seed.frame.box.x - currentBox.x) <= 8 &&
-            kotlin.math.abs(seed.frame.box.y - currentBox.y) <= 8 &&
-            kotlin.math.abs(seed.frame.box.width - currentBox.width) <= 8 &&
-            kotlin.math.abs(seed.frame.box.height - currentBox.height) <= 8
-        val valid = tab != null && seed.tabId == tab.id && seed.url == tab.url && sameGeometry &&
-            SystemClock.uptimeMillis() - seed.createdAt <= RECENT_FULLSCREEN_SEED_MS && !activity.isFinishing
-        recentFullscreenSeed = null
-        seedExpiry?.let(main::removeCallbacks); seedExpiry = null
-        return if (valid) MorphFrame(seed.frame.bitmap, currentBox) else {
-            seed.frame.bitmap.safeRecycle(); null
-        }
+    private fun clearShrinkWatchdog() {
+        shrinkWatchdog?.let(main::removeCallbacks)
+        shrinkWatchdog = null
     }
 
-    private fun clearRecentFullscreenSeed() {
-        seedExpiry?.let(main::removeCallbacks); seedExpiry = null
-        recentFullscreenSeed?.frame?.bitmap.safeRecycle(); recentFullscreenSeed = null
-    }
-
-    private fun drawFallback(root: View): Bitmap? {
-        val bitmap = try { Bitmap.createBitmap(root.width.coerceAtLeast(1), root.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888) }
-        catch (_: Throwable) { return null }
-        return try {
-            root.draw(Canvas(bitmap)); bitmap
-        } catch (_: Throwable) {
-            bitmap.safeRecycle(); null
-        }
-    }
-
-    private fun launchFullscreenDirect(context: Context, intent: Intent) {
-        try {
-            context.applicationContext.startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        } catch (_: RuntimeException) { }
+    private fun showFloatingCard(card: View) {
+        if (!card.isAttachedToWindow) return
+        card.animate().cancel()
+        card.animate().withEndAction(null)
+        card.alpha = 1f
+        card.scaleX = 1f
+        card.scaleY = 1f
+        card.translationX = 0f
+        card.translationY = 0f
     }
 
     private fun cancelPendingFullscreenFrame() {
-        pendingFullscreenFrame?.bitmap.safeRecycle(); pendingFullscreenFrame = null
+        pendingFullscreenFrame?.bitmap.safeRecycle()
+        pendingFullscreenFrame = null
     }
 
     private fun Bitmap?.safeRecycle() {
         if (this != null && !isRecycled) recycle()
     }
+
+    private fun dp(context: Context, value: Int) = Ui.dp(context, value.toFloat())
 }
