@@ -59,6 +59,16 @@ class FullscreenShrinkRuntimeTest {
                     }
                 }
 
+                // Validate the observation path itself before judging the transition. If the headless
+                // emulator cannot see Gecko's live SurfaceView in a normal screenshot, a zero-valued
+                // in-flight screenshot cannot be used as evidence that the morph itself went black.
+                val baselineScreenshot = requireNotNull(automation.takeScreenshot())
+                val baselineRatio = try { greenRatio(baselineScreenshot) } finally { baselineScreenshot.recycle() }
+                assertTrue(
+                    "Runtime screenshot cannot observe the painted baseline Gecko page; baseline=$baselineRatio",
+                    baselineRatio >= .010f
+                )
+
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
 
                 // Service readiness happens before the screenshot starts moving. Sample shortly after
@@ -68,7 +78,8 @@ class FullscreenShrinkRuntimeTest {
                 val screenshot = requireNotNull(automation.takeScreenshot())
                 val ratio = try { greenRatio(screenshot) } finally { screenshot.recycle() }
                 assertTrue(
-                    "Fullscreen -> floating morph lost the browser picture in flight; fixture coverage=$ratio",
+                    "Fullscreen -> floating morph lost the browser picture in flight; baseline=$baselineRatio " +
+                        "fixture=$ratio ${FullscreenHandoff.debugSummary()}",
                     ratio >= .010f
                 )
 
