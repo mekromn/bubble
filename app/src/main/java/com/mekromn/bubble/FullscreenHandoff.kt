@@ -61,55 +61,77 @@ internal object FullscreenHandoff {
         val floating = BubbleService.active?.window?.takeIf { it.mode == FloatingMode.CHAT }
         val card = floating?.transitionView
 
-        if (source == null || floating == null || card == null || !card.isAttachedToWindow || !card.isLaidOut) {
+        if (source == null || floating == null || card == null) {
             source?.bitmap.safeRecycle()
             card?.let(::showFloatingCard)
             root.postOnAnimation { done() }
             return
         }
 
-        card.animate().cancel()
-        card.animate().withEndAction(null)
-        card.alpha = 0f
-        card.scaleX = 1f
-        card.scaleY = 1f
-        card.translationX = 0f
-        card.translationY = 0f
-
-        val exactTarget = floating.box.takeIf { it.width > 0 && it.height > 0 } ?: target
-        val overlay = FullscreenShrinkOverlay(
-            activity.applicationContext,
-            source,
-            exactTarget,
-            0f,
-            Ui.dp(activity, 26f).toFloat()
-        )
-        shrinkOverlay?.detach()
-        shrinkOverlay = overlay
-
-        try {
-            overlay.attach {
-                scheduleShrinkWatchdog(overlay, card)
-                // The frozen frame now covers the exact fullscreen browser, so the Activity can be
-                // moved away without ever exposing its black backing surface.
+        /** WindowManager acknowledgement can precede the overlay's first layout by a frame. */
+        fun begin(attempt: Int) {
+            if (activity.isFinishing) {
+                source.bitmap.safeRecycle()
+                showFloatingCard(card)
                 done()
-                waitUntilSourceWindowHidden(activity, root, 0) {
-                    if (shrinkOverlay !== overlay) return@waitUntilSourceWindowHidden
-                    overlay.morphInto(card, durationMs = 340L, crossfadeStart = .70f) {
-                        showFloatingCard(card)
-                        clearShrinkWatchdog()
-                        if (shrinkOverlay === overlay) shrinkOverlay = null
-                        overlay.detach()
+                return
+            }
+            if (!card.isAttachedToWindow || !card.isLaidOut || card.width <= 0 || card.height <= 0) {
+                if (attempt < 24) {
+                    main.postDelayed({ begin(attempt + 1) }, 8L)
+                } else {
+                    source.bitmap.safeRecycle()
+                    showFloatingCard(card)
+                    done()
+                }
+                return
+            }
+
+            card.animate().cancel()
+            card.animate().withEndAction(null)
+            card.alpha = 0f
+            card.scaleX = 1f
+            card.scaleY = 1f
+            card.translationX = 0f
+            card.translationY = 0f
+
+            val exactTarget = floating.box.takeIf { it.width > 0 && it.height > 0 } ?: target
+            val overlay = FullscreenShrinkOverlay(
+                activity.applicationContext,
+                source,
+                exactTarget,
+                0f,
+                Ui.dp(activity, 26f).toFloat()
+            )
+            shrinkOverlay?.detach()
+            shrinkOverlay = overlay
+
+            try {
+                overlay.attach {
+                    scheduleShrinkWatchdog(overlay, card)
+                    // The frozen frame now covers the exact fullscreen browser, so the Activity can
+                    // be moved away without ever exposing its black backing surface.
+                    done()
+                    waitUntilSourceWindowHidden(activity, root, 0) {
+                        if (shrinkOverlay !== overlay) return@waitUntilSourceWindowHidden
+                        overlay.morphInto(card, durationMs = 340L, crossfadeStart = .70f) {
+                            showFloatingCard(card)
+                            clearShrinkWatchdog()
+                            if (shrinkOverlay === overlay) shrinkOverlay = null
+                            overlay.detach()
+                        }
                     }
                 }
+            } catch (_: RuntimeException) {
+                clearShrinkWatchdog()
+                if (shrinkOverlay === overlay) shrinkOverlay = null
+                overlay.detach()
+                showFloatingCard(card)
+                done()
             }
-        } catch (_: RuntimeException) {
-            clearShrinkWatchdog()
-            if (shrinkOverlay === overlay) shrinkOverlay = null
-            overlay.detach()
-            showFloatingCard(card)
-            done()
         }
+
+        begin(0)
     }
 
     /**
@@ -181,7 +203,7 @@ internal object FullscreenHandoff {
         root.pivotY = root.height / 2f
     }
 
-    /** Compatibility with BrowserActivity left by the previous matched-morph experiment. */
+    /** Compatibility with BrowserActivity left by the rejected matched-morph experiment. */
     fun isEnteringFullscreen(intent: Intent?): Boolean = false
     fun finishIntoFullscreen(activity: Activity, root: View) = Unit
 
