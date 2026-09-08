@@ -33,8 +33,19 @@ internal object UploadStaging {
         io.execute { File(root(context), UUID.fromString(tabId).toString()).deleteRecursively() }
     }
     private fun root(context: Context) = File(context.noBackupFilesDir, "attachment-staging-v1")
+    private fun requestRoot(context: Context, tabId: String, id: String) =
+        File(File(root(context), UUID.fromString(tabId).toString()), UUID.fromString(id).toString())
+
+    /** ArchivePicker writes its final ZIP directly here, so selected files never need an intermediate copy. */
+    fun archiveOutput(context: Context, tabId: String, id: String, requestedName: String): File {
+        val base = requestRoot(context, tabId, id).apply { check(mkdirs() || isDirectory) }
+        var name = FileNames.safe(requestedName, ArchiveEngine.defaultName())
+        if (!name.endsWith(".zip", true)) name += ".zip"
+        return File(base, name)
+    }
+
     fun prepare(context: Context, tabId: String, id: String, selected: List<Uri>, job: Job): List<Uri> {
-        val base = File(File(root(context), UUID.fromString(tabId).toString()), UUID.fromString(id).toString())
+        val base = requestRoot(context, tabId, id)
         try {
             check(base.mkdirs() || base.isDirectory)
             val result = ArrayList<Uri>()
@@ -76,6 +87,6 @@ internal object UploadStaging {
         } catch (e: Exception) { job.source = null; base.deleteRecursively(); throw e }
     }
     fun discard(context: Context, tabId: String, id: String) {
-        io.execute { File(File(root(context), UUID.fromString(tabId).toString()), UUID.fromString(id).toString()).deleteRecursively() }
+        io.execute { requestRoot(context, tabId, id).deleteRecursively() }
     }
 }
