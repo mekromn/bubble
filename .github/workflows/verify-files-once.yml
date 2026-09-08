@@ -3,12 +3,12 @@ name: Verify current Bubble changes
 # historical regression queue. Previously-proven file transfer, page appearance, animations and
 # tab behavior remain in source coverage but are not re-run on every build.
 #
-# Current gate: Bubble-owned Archive Picker. Chat/file prompts now route through a native local file
+# Current gate: Bubble-owned Archive Picker. Chat/file prompts route through a native local file
 # browser, can select multiple files even when the webpage ultimately receives one attachment, stream
-# the selected bytes directly into a single ZIP, handle duplicate names, preserve safe relative paths,
-# report progress/cancel, expose external results with a FileProvider, and retain provider browsing as
-# an explicit fallback. The runtime gate exercises the archive engine itself; the Pixel is the UI and
-# provider-integration oracle. This build also makes the active chat visually unmistakable.
+# selected bytes directly into a single ZIP, handle duplicate names, preserve safe relative paths,
+# report progress/cancel, optionally save a Downloads copy, expose external results with FileProvider,
+# and retain provider browsing as an explicit fallback. This build also makes the active chat visually
+# unmistakable, removes the unintended floating side pill, and extends ChatGPT auto-suspend to 15 min.
 on:
   push:
     branches: [rebuild-v2]
