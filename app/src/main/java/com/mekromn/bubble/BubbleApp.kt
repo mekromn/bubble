@@ -13,6 +13,7 @@ class BubbleApp : Application(), Application.ActivityLifecycleCallbacks {
     override fun onCreate() {
         super.onCreate()
         NotificationHealth.prepare(this)
+        UploadStaging.io.execute { ArchiveCache.cleanup(this) }
         registerActivityLifecycleCallbacks(this)
     }
 
