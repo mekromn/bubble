@@ -309,57 +309,12 @@ internal object FullscreenHandoff {
         val finished = AtomicBoolean(false)
         val deadline = SystemClock.uptimeMillis() + GECKO_CAPTURE_TIMEOUT_MS
         lateinit var timeout: Runnable
+        lateinit var attemptCapture: (Int) -> Unit
 
         fun finish(success: Boolean) {
             if (!finished.compareAndSet(false, true)) return
             main.removeCallbacks(timeout)
             if (Looper.myLooper() === Looper.getMainLooper()) done(success) else main.post { done(success) }
-        }
-
-        timeout = Runnable { finish(false) }
-        main.postDelayed(timeout, GECKO_CAPTURE_TIMEOUT_MS)
-
-        fun attempt(index: Int) {
-            if (finished.get()) return
-            if (SystemClock.uptimeMillis() >= deadline || !gecko.isAttachedToWindow) {
-                finish(false)
-                return
-            }
-            try {
-                gecko.capturePixels().accept({ web ->
-                    if (finished.get()) {
-                        web?.safeRecycle()
-                    } else if (web != null && !web.isRecycled) {
-                        val stale = kotlin.math.abs(web.width - gecko.width) > 8 ||
-                            kotlin.math.abs(web.height - gecko.height) > 8
-                        val delay = 20L * (index + 1)
-                        if (
-                            stale && index < 3 && gecko.isAttachedToWindow &&
-                            SystemClock.uptimeMillis() + delay < deadline
-                        ) {
-                            web.safeRecycle()
-                            main.postDelayed({ attempt(index + 1) }, delay)
-                        } else {
-                            try {
-                                val ownerLocation = IntArray(2)
-                                val geckoLocation = IntArray(2)
-                                owner.getLocationOnScreen(ownerLocation)
-                                gecko.getLocationOnScreen(geckoLocation)
-                                val left = geckoLocation[0] - ownerLocation[0]
-                                val top = geckoLocation[1] - ownerLocation[1]
-                                val destination = Rect(left, top, left + gecko.width, top + gecko.height)
-                                Canvas(base).drawBitmap(web, null, destination, capturePaint)
-                            } catch (_: Throwable) { }
-                            web.safeRecycle()
-                            finish(true)
-                        }
-                    } else {
-                        retryOrFinish(index)
-                    }
-                }, { _ -> retryOrFinish(index) })
-            } catch (_: RuntimeException) {
-                retryOrFinish(index)
-            }
         }
 
         fun retryOrFinish(index: Int) {
@@ -369,13 +324,60 @@ internal object FullscreenHandoff {
                 index < 3 && gecko.isAttachedToWindow &&
                 SystemClock.uptimeMillis() + delay < deadline
             ) {
-                main.postDelayed({ attempt(index + 1) }, delay)
+                main.postDelayed({ attemptCapture(index + 1) }, delay)
             } else {
                 finish(false)
             }
         }
 
-        attempt(0)
+        timeout = Runnable { finish(false) }
+        main.postDelayed(timeout, GECKO_CAPTURE_TIMEOUT_MS)
+
+        attemptCapture = { index ->
+            if (!finished.get()) {
+                if (SystemClock.uptimeMillis() >= deadline || !gecko.isAttachedToWindow) {
+                    finish(false)
+                } else {
+                    try {
+                        gecko.capturePixels().accept({ web ->
+                            if (finished.get()) {
+                                web?.safeRecycle()
+                            } else if (web != null && !web.isRecycled) {
+                                val stale = kotlin.math.abs(web.width - gecko.width) > 8 ||
+                                    kotlin.math.abs(web.height - gecko.height) > 8
+                                val delay = 20L * (index + 1)
+                                if (
+                                    stale && index < 3 && gecko.isAttachedToWindow &&
+                                    SystemClock.uptimeMillis() + delay < deadline
+                                ) {
+                                    web.safeRecycle()
+                                    main.postDelayed({ attemptCapture(index + 1) }, delay)
+                                } else {
+                                    try {
+                                        val ownerLocation = IntArray(2)
+                                        val geckoLocation = IntArray(2)
+                                        owner.getLocationOnScreen(ownerLocation)
+                                        gecko.getLocationOnScreen(geckoLocation)
+                                        val left = geckoLocation[0] - ownerLocation[0]
+                                        val top = geckoLocation[1] - ownerLocation[1]
+                                        val destination = Rect(left, top, left + gecko.width, top + gecko.height)
+                                        Canvas(base).drawBitmap(web, null, destination, capturePaint)
+                                    } catch (_: Throwable) { }
+                                    web.safeRecycle()
+                                    finish(true)
+                                }
+                            } else {
+                                retryOrFinish(index)
+                            }
+                        }, { _ -> retryOrFinish(index) })
+                    } catch (_: RuntimeException) {
+                        retryOrFinish(index)
+                    }
+                }
+            }
+        }
+
+        attemptCapture(0)
     }
 
     private fun drawFallback(root: View): Bitmap? {
