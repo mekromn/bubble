@@ -1,14 +1,13 @@
 name: Verify current Bubble changes
 # Emulator time is deliberately scoped to the feature being changed now, not an ever-growing
-# historical regression queue. Previously-proven file transfer, page appearance, animations and
-# tab behavior remain in source coverage but are not re-run on every build.
+# historical regression queue. Archive Picker passed build 62 and remains in source coverage.
 #
-# Current gate: Bubble-owned Archive Picker. Chat/file prompts route through a native local file
-# browser, can select multiple files even when the webpage ultimately receives one attachment, stream
-# selected bytes directly into a single ZIP, handle duplicate names, preserve safe relative paths,
-# report progress/cancel, optionally save a Downloads copy, expose external results with FileProvider,
-# and retain provider browsing as an explicit fallback. This build also makes the active chat visually
-# unmistakable, removes the unintended floating side pill, and sets ChatGPT auto-suspend to 15 min.
+# Current gate: fullscreen -> floating. The latest Pixel recording showed that the screenshot bridge
+# still looked synthetic because width and height were scaled independently as the fullscreen aspect
+# ratio became the floating-card aspect ratio. Build 63 keeps one uniform compositor scale and changes
+# only the visible crop while following the exact destination rectangle, so text/icons keep their
+# proportions instead of visibly squashing. Endpoint remains a no-alpha, two-vsync handoff to live
+# Gecko. Floating -> fullscreen is intentionally unchanged.
 on:
   push:
     branches: [rebuild-v2]
