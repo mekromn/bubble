@@ -104,10 +104,15 @@ internal class ConversationList(context: Context, private val select: (String) -
     private fun d(value: Int) = Ui.dp(context, value.toFloat())
     private fun fill(readiness: TabReadiness, selected: Boolean): Int {
         val base = readiness.fill
-        return Color.argb(if (selected) 0x88 else 0x58, Color.red(base), Color.green(base), Color.blue(base))
+        // Selection needs to be immediately obvious even in peripheral vision. Keep ordinary tabs
+        // subtle, but make the active tab a dense version of its readiness color.
+        return Color.argb(if (selected) 0xd4 else 0x38, Color.red(base), Color.green(base), Color.blue(base))
     }
-    private inner class Holder(val row: LinearLayout, val dragHandle: GlyphView, val title: TextView, val subtitle: TextView,
-        val closeButton: GlyphView) : ViewHolder(row) {
+    private fun edge(readiness: TabReadiness, selected: Boolean): Int = if (selected) readiness.edge else
+        Color.argb(0x78, Color.red(readiness.edge), Color.green(readiness.edge), Color.blue(readiness.edge))
+
+    private inner class Holder(val row: LinearLayout, val activeMark: View, val dragHandle: GlyphView,
+        val title: TextView, val subtitle: TextView, val closeButton: GlyphView) : ViewHolder(row) {
         var selected: Boolean? = null
         var readiness: TabReadiness? = null
     }
@@ -118,9 +123,11 @@ internal class ConversationList(context: Context, private val select: (String) -
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
             val c = parent.context
             val row = LinearLayout(c).apply {
-                gravity = Gravity.CENTER_VERTICAL; setPadding(d(8), d(8), d(4), d(8)); minimumHeight = d(76)
+                gravity = Gravity.CENTER_VERTICAL; setPadding(d(5), d(8), d(4), d(8)); minimumHeight = d(76)
                 layoutParams = RecyclerView.LayoutParams(-1, -2).apply { setMargins(0, d(4), 0, d(4)) }
             }
+            val active = View(c).apply { visibility = View.INVISIBLE; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+            row.addView(active, LinearLayout.LayoutParams(d(5), d(46)).apply { marginEnd = d(5) })
             val handle = GlyphView(c, "bubble", "Drag tab to reorder", true)
             row.addView(handle, LinearLayout.LayoutParams(d(40), d(44)))
             val text = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL; setPadding(d(10), 0, d(4), 0) }
@@ -128,15 +135,20 @@ internal class ConversationList(context: Context, private val select: (String) -
             val subtitle = Ui.text(c, "", 11f, Ui.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(0, d(5), 0, 0) }
             text.addView(title); text.addView(subtitle); row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
             val close = GlyphView(c, "close", "Close conversation")
-            row.addView(close, LinearLayout.LayoutParams(d(48), d(48))); return Holder(row, handle, title, subtitle, close)
+            row.addView(close, LinearLayout.LayoutParams(d(48), d(48))); return Holder(row, active, handle, title, subtitle, close)
         }
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val row = getItem(position)
             if (holder.selected != row.selected || holder.readiness != row.readiness) {
                 holder.selected = row.selected; holder.readiness = row.readiness
-                holder.row.background = RippleDrawable(
-                    ColorStateList.valueOf(GlassPalette.RIPPLE),
-                    Ui.shape(context, fill(row.readiness, row.selected), 20f, row.readiness.edge), null)
+                val stroke = edge(row.readiness, row.selected)
+                val content = Ui.shape(context, fill(row.readiness, row.selected), 20f, stroke).apply {
+                    setStroke(d(if (row.selected) 2 else 1), stroke)
+                }
+                holder.row.background = RippleDrawable(ColorStateList.valueOf(GlassPalette.RIPPLE), content, null)
+                holder.activeMark.visibility = if (row.selected) View.VISIBLE else View.INVISIBLE
+                holder.activeMark.background = Ui.shape(context, row.readiness.edge, 3f)
+                holder.row.elevation = if (row.selected) d(3).toFloat() else 0f
             }
             if (holder.title.text != row.title) holder.title.text = row.title
             if (holder.subtitle.text != row.subtitle) holder.subtitle.text = row.subtitle
