@@ -11,14 +11,13 @@ import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
+import java.io.File
 import java.lang.ref.WeakReference
 import java.util.UUID
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 
-/** Real Android document picker -> bounded IO staging -> original Gecko file prompt.
- * A request survives Activity recreation; IO never owns an Activity or copies an account cookie.
- */
+/** Gecko file prompts are owned by Bubble: native multi-picker -> one staged archive -> original tab. */
 class FloatingFileActivity : Activity() {
     private var token = ""
     override fun onCreate(state: Bundle?) {
@@ -30,7 +29,7 @@ class FloatingFileActivity : Activity() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(24, 24, 24, 24)
             background = Ui.shape(this@FloatingFileActivity, Ui.SURFACE, 20f)
-            addView(Ui.text(this@FloatingFileActivity, "Preparing selected attachments…", 16f))
+            addView(Ui.text(this@FloatingFileActivity, "Opening Bubble Archive Picker…", 16f))
             addView(ProgressBar(this@FloatingFileActivity))
             addView(Ui.text(this@FloatingFileActivity, "Cancel", 15f).apply {
                 gravity = Gravity.CENTER; minHeight = Ui.dp(context, 48f)
@@ -40,41 +39,31 @@ class FloatingFileActivity : Activity() {
         setContentView(panel)
         if (!request.pickerStarted) {
             request.pickerStarted = true
-            // Product policy: Bubble's picker must not hide arbitrary files merely because the
-            // webpage supplied an <input accept=...> / Gecko mimeTypes hint. The user may choose
-            // ANY openable document (APK/ZIP/text/archive/source/etc.); the site remains free to
-            // accept or reject that file after selection. This affects chooser visibility only and
-            // does not bypass any server-side ChatGPT/file-format validation.
-            val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = UploadPickerPolicy.PICKER_MIME
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, request.prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val pick = Intent(this, ArchivePickerActivity::class.java).apply {
+                putExtra(ArchivePickerActivity.EXTRA_TAB_ID, request.tabId)
+                putExtra(ArchivePickerActivity.EXTRA_REQUEST_ID, request.id)
+                addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
             }
             try { startActivityForResult(pick, PICK) }
-            catch (_: RuntimeException) { finishRequest(request, emptyList(), "Android could not open the file picker.") }
+            catch (_: RuntimeException) { finishRequest(request, emptyList(), "Bubble could not open Archive Picker.") }
         }
     }
-    @Deprecated("Native document picker result")
+
+    @Deprecated("Native archive picker result")
     override fun onActivityResult(code: Int, result: Int, data: Intent?) {
         super.onActivityResult(code, result, data)
         if (code != PICK) return
         val request = pending?.takeIf { it.id == token } ?: run { finish(); return }
-        if (request.copying) return
         if (result != RESULT_OK) { finishRequest(request, emptyList(), null); return }
-        val selected = ArrayList<Uri>()
-        data?.data?.let { selected += it }
-        data?.clipData?.let { clip -> for (i in 0 until clip.itemCount) selected += clip.getItemAt(i).uri }
-        val chosen = selected.distinct().let { if (request.prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE) it else it.take(1) }
-        if (chosen.isEmpty()) { finishRequest(request, emptyList(), "No attachment was selected."); return }
-        request.copying = true
-        UploadStaging.io.execute {
-            var failure: String? = null
-            val staged = try { UploadStaging.prepare(request.app, request.tabId, request.id, chosen, request.job) }
-                catch (_: Exception) { failure = "Could not read the selected file. Check free space and the file provider, then try again."; emptyList() }
-            main.post { finishRequest(request, staged, failure) }
+        val path = data?.getStringExtra(ArchivePickerActivity.RESULT_LOCAL_PATH).orEmpty()
+        val file = File(path)
+        if (path.isBlank() || !file.isFile || !file.canRead()) {
+            finishRequest(request, emptyList(), "Archive Picker did not return a readable attachment.")
+            return
         }
+        finishRequest(request, listOf(Uri.fromFile(file)), null)
     }
+
     override fun onDestroy() {
         val request = pending?.takeIf { it.id == token && it.host.get() === this }
         if (request != null) {
@@ -83,6 +72,7 @@ class FloatingFileActivity : Activity() {
         }
         super.onDestroy()
     }
+
     companion object {
         private const val TOKEN = "bubble.file.request"
         private const val PICK = 501
@@ -91,12 +81,11 @@ class FloatingFileActivity : Activity() {
             val prompt: GeckoSession.PromptDelegate.FilePrompt) {
             val id = UUID.randomUUID().toString()
             val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
-            val job = UploadStaging.Job()
             var host = WeakReference<FloatingFileActivity>(null)
             var pickerStarted = false
-            var copying = false
         }
         private var pending: Request? = null
+
         internal fun launch(context: Context, tabId: String, session: GeckoSession,
             prompt: GeckoSession.PromptDelegate.FilePrompt): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
             UploadStaging.initialize(context.applicationContext)
@@ -107,12 +96,14 @@ class FloatingFileActivity : Activity() {
             try {
                 context.startActivity(Intent(context, FloatingFileActivity::class.java).putExtra(TOKEN, request.id)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS))
-            } catch (_: RuntimeException) { finishRequest(request, emptyList(), "Android blocked the file picker. Return to the chat and try again.") }
+            } catch (_: RuntimeException) { finishRequest(request, emptyList(), "Android blocked the attachment picker. Return to the chat and try again.") }
             return request.result
         }
+
         internal fun cancelForSession(session: GeckoSession) {
             pending?.takeIf { it.session === session }?.let { finishRequest(it, emptyList(), null) }
         }
+
         private fun finishRequest(request: Request, files: List<Uri>, error: String?) {
             if (pending !== request) {
                 UploadStaging.discard(request.app, request.tabId, request.id)
@@ -120,15 +111,15 @@ class FloatingFileActivity : Activity() {
             }
             pending = null
             val valid = Workspace.peek()?.tabs?.any { it.id == request.tabId && it.session === request.session } == true
-            val accepted = valid && !request.prompt.isComplete && files.isNotEmpty() && !request.job.cancelled.get()
-            if (!accepted) { request.job.cancel(); UploadStaging.discard(request.app, request.tabId, request.id) }
+            val accepted = valid && !request.prompt.isComplete && files.isNotEmpty()
+            if (!accepted) UploadStaging.discard(request.app, request.tabId, request.id)
             try {
                 if (!request.prompt.isComplete) request.result.complete(
                     if (accepted) request.prompt.confirm(request.app, files.toTypedArray()) else request.prompt.dismiss())
             } catch (_: RuntimeException) {
                 UploadStaging.discard(request.app, request.tabId, request.id)
                 if (!request.prompt.isComplete) request.result.complete(request.prompt.dismiss())
-                Toast.makeText(request.app, "The page could not accept these attachments. Please retry.", Toast.LENGTH_LONG).show()
+                Toast.makeText(request.app, "The page could not accept this attachment. Please retry.", Toast.LENGTH_LONG).show()
             }
             if (error != null) Toast.makeText(request.app, error, Toast.LENGTH_LONG).show()
             request.host.get()?.finish()
