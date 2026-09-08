@@ -8,9 +8,10 @@ name: Verify current Bubble changes
 # changes window owners. Native chrome comes from Window PixelCopy; Gecko's actual fullscreen
 # SurfaceView is discovered in the live GeckoView hierarchy and PixelCopied independently, then
 # composited into the same frame at its exact screen rectangle. Gecko capturePixels remains a bounded
-# fallback. The floating overlay is already at final layout; that one complete screenshot stretches
-# into the saved bounds and cross-fades into the live card only at the end. The reverse direction
-# intentionally remains the previously accepted Android clip-reveal path.
+# fallback. The runtime test now first proves UiAutomation can see the normal painted fixture, then
+# reports source-capture method/center pixel and overlay handoff state if the in-flight screenshot is
+# missing it. This distinguishes a bad capture from an overlay/z-order/timing bug instead of guessing.
+# The reverse floating -> fullscreen direction remains the previously accepted Android clip reveal.
 on:
   push:
     branches: [rebuild-v2]
