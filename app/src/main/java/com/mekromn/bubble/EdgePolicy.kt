@@ -5,12 +5,14 @@ import kotlin.math.abs
 /** Android-free gesture/access appearance decisions. No fake touch replay into the application below the strip. */
 internal data class EdgeOptions(val enabled: Boolean = false, val left: Boolean = false,
     val position: Float = .5f, val heightDp: Int = 104, val widthDp: Int = 18,
-    val indicator: Boolean = true, val bubbleOpacity: Float = .90f) {
+    val indicator: Boolean = false, val bubbleOpacity: Float = .90f) {
     fun sanitized() = copy(
         position = if (position.isFinite()) position.coerceIn(0f, 1f) else .5f,
         heightDp = heightDp.coerceIn(64, 160),
         widthDp = widthDp.coerceIn(12, 28),
-        // Keep the touch target discoverable even at the most transparent setting.
+        // The old visible side pill inside floating chat was not part of the intended chrome.
+        // Keep the edge gesture touch strip functional but make its idle indicator permanently hidden.
+        indicator = false,
         bubbleOpacity = if (bubbleOpacity.isFinite()) bubbleOpacity.coerceIn(.12f, 1f) else .90f)
 }
 internal object EdgePolicy {
