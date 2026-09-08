@@ -1,7 +1,9 @@
 package com.mekromn.bubble
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TabReadinessTest {
@@ -9,17 +11,40 @@ class TabReadinessTest {
         val error = ChatTab().apply { error = "offline"; unread = true; generating = true }
         assertEquals(TabReadiness.ATTENTION, TabReadiness.of(error))
 
-        val working = ChatTab().apply { generating = true; unread = true }
-        assertEquals(TabReadiness.WORKING, TabReadiness.of(working))
+        val generating = ChatTab().apply { this.generating = true; unread = true }
+        val generatingStatus = TabStatusPolicy.of(generating, selectedVisible = false)
+        assertEquals(TabReadiness.GENERATING, generatingStatus.readiness)
+        assertTrue(generatingStatus.busy)
+
+        val loading = ChatTab().apply { this.loading = true; painted = true; progress = 61 }
+        val loadingStatus = TabStatusPolicy.of(loading, selectedVisible = false)
+        assertEquals(TabReadiness.LOADING, loadingStatus.readiness)
+        assertTrue(loadingStatus.detail.contains("61%"))
+        assertTrue(loadingStatus.busy)
 
         val ready = ChatTab().apply { unread = true; suspended = true }
-        assertEquals(TabReadiness.READY, TabReadiness.of(ready))
+        val readyStatus = TabStatusPolicy.of(ready, selectedVisible = false)
+        assertEquals(TabReadiness.READY, readyStatus.readiness)
+        assertTrue(readyStatus.detail.contains("hibernated"))
 
         val voice = ChatTab(url = "https://voice.google.com/")
         assertEquals(TabReadiness.VOICE, TabReadiness.of(voice))
 
+        val forced = ChatTab().apply { forceKeepAlive = true; session = org.mozilla.geckoview.GeckoSession() }
+        assertEquals(TabReadiness.KEEP_ALIVE, TabReadiness.of(forced))
+
         val suspended = ChatTab().apply { suspended = true }
         assertEquals(TabReadiness.SUSPENDED, TabReadiness.of(suspended))
+    }
+
+    @Test fun chatIdleStatusKnowsWhetherItIsActuallyVisible() {
+        val chat = ChatTab().apply { session = org.mozilla.geckoview.GeckoSession() }
+        val active = TabStatusPolicy.of(chat, selectedVisible = true)
+        val background = TabStatusPolicy.of(chat, selectedVisible = false)
+        assertEquals(TabReadiness.ACTIVE, active.readiness)
+        assertEquals(TabReadiness.IDLE, background.readiness)
+        assertTrue(background.detail.contains("15-minute"))
+        assertFalse(active.busy)
     }
 
     @Test fun everyReadinessStateHasDistinctVisualIdentity() {
@@ -27,7 +52,8 @@ class TabReadinessTest {
         val edges = TabReadiness.entries.map { it.edge }.toSet()
         assertEquals(TabReadiness.entries.size, fills.size)
         assertEquals(TabReadiness.entries.size, edges.size)
-        assertNotEquals(TabReadiness.READY.edge, TabReadiness.WORKING.edge)
-        assertNotEquals(TabReadiness.WORKING.edge, TabReadiness.ATTENTION.edge)
+        assertNotEquals(TabReadiness.READY.edge, TabReadiness.GENERATING.edge)
+        assertNotEquals(TabReadiness.GENERATING.edge, TabReadiness.ATTENTION.edge)
+        assertNotEquals(TabReadiness.LOADING.edge, TabReadiness.GENERATING.edge)
     }
 }
