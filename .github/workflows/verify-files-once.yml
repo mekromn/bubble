@@ -4,16 +4,16 @@ name: Verify current Bubble changes
 # readiness colors and the accepted floating -> fullscreen clip reveal remain in source coverage but
 # are not part of this build's emulator gate.
 #
-# Current gate: fullscreen -> floating only. The Pixel recording showed the old screenshot morph was
-# conceptually correct but visually wrong in two ways: the 4MP screenshot was being redrawn into a
-# changing Rect every frame, and the live floating Gecko viewport cross-faded in while that screenshot
-# was still moving, producing obvious double/ghost content after the live page reflowed. The new path
-# uploads the snapshot once to a hardware layer and moves it with compositor translation/scale only.
-# The screenshot stays fully opaque for the entire geometry morph, lands exactly on the saved floating
-# rectangle, holds for one display frame, then performs only a very short stationary dissolve into the
-# already-rendering live card. Headless SwiftShader cannot expose Gecko compositor pixels reliably, so
-# CI validates allocation, overlay attach, morph start, final card visibility and workspace continuity;
-# the Pixel remains the visual-fidelity oracle. Floating -> fullscreen is intentionally unchanged.
+# Current gate: fullscreen -> floating only. The newest Pixel recording exposed two real-device-only
+# defects that the previous mechanical gate could not see: the geometry morph could start as soon as
+# BrowserActivity lost focus even though its old surface was still visibly present underneath, and the
+# short stationary alpha dissolve still blended two differently-reflowed page layouts into a ghosted
+# double image. The frozen fullscreen frame now remains pinned/opaque through that task-removal gap,
+# stays the only visible moving image for the complete trajectory, then lands at the exact saved card
+# rectangle. At the endpoint the real card is made fully opaque behind the still-opaque screenshot for
+# one complete display frame; the screenshot disappears on the following vsync with no alpha blending.
+# CI validates the handoff mechanics/session continuity/final geometry. Pixel hardware remains the
+# visual-fidelity oracle. Floating -> fullscreen is intentionally unchanged.
 on:
   push:
     branches: [rebuild-v2]
