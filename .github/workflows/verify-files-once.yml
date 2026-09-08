@@ -5,12 +5,12 @@ name: Verify current Bubble changes
 # are not part of this build's emulator gate.
 #
 # Current gate: fullscreen -> floating only. Bubble freezes the exact fullscreen browser before Gecko
-# changes window owners. Window PixelCopy captures the real Activity surface while Gecko capturePixels
-# separately supplies the SurfaceView webpage pixels with bounded retries, preventing a root.draw()
-# screenshot from preserving a black SurfaceView hole. The floating overlay is already at its exact
-# final layout; one screenshot stretches into those saved bounds and cross-fades into the live card
-# only at the end. The reverse floating -> fullscreen direction intentionally remains the previously
-# accepted Android clip-reveal path.
+# changes window owners. Native chrome comes from Window PixelCopy; Gecko's actual fullscreen
+# SurfaceView is discovered in the live GeckoView hierarchy and PixelCopied independently, then
+# composited into the same frame at its exact screen rectangle. Gecko capturePixels remains a bounded
+# fallback. The floating overlay is already at final layout; that one complete screenshot stretches
+# into the saved bounds and cross-fades into the live card only at the end. The reverse direction
+# intentionally remains the previously accepted Android clip-reveal path.
 on:
   push:
     branches: [rebuild-v2]
