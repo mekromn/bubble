@@ -2,7 +2,6 @@ package com.mekromn.bubble
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -59,29 +58,35 @@ class FullscreenShrinkRuntimeTest {
                     }
                 }
 
-                // Validate the observation path itself before judging the transition. If the headless
-                // emulator cannot see Gecko's live SurfaceView in a normal screenshot, a zero-valued
-                // in-flight screenshot cannot be used as evidence that the morph itself went black.
-                val baselineScreenshot = requireNotNull(automation.takeScreenshot())
-                val baselineRatio = try { greenRatio(baselineScreenshot) } finally { baselineScreenshot.recycle() }
-                assertTrue(
-                    "Runtime screenshot cannot observe the painted baseline Gecko page; baseline=$baselineRatio",
-                    baselineRatio >= .010f
-                )
-
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
-
-                // Service readiness happens before the screenshot starts moving. Sample shortly after
-                // that point so the emulator validates the in-flight object, not merely the final UI.
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT } }
-                Thread.sleep(105)
-                val screenshot = requireNotNull(automation.takeScreenshot())
-                val ratio = try { greenRatio(screenshot) } finally { screenshot.recycle() }
+
+                // Headless SwiftShader's UiAutomation screenshot does not contain Gecko SurfaceView
+                // pixels even before a transition (proved by build 55), so it cannot be the visual
+                // oracle for this renderer. Validate the actual intermediate source that the user
+                // sees instead: PixelCopy/capturePixels must have frozen the green webpage itself,
+                // not a View.draw() frame with a black SurfaceView hole.
+                await {
+                    val debug = FullscreenHandoff.debugSummary()
+                    debug.contains("frame=") && !debug.contains("frame=0x0")
+                }
+                val debug = FullscreenHandoff.debugSummary()
+                val rgb = Regex("center=(\\d+),(\\d+),(\\d+)").find(debug)?.groupValues
+                assertNotNull("Shrink capture diagnostics missing center pixel: $debug", rgb)
+                val r = rgb!![1].toInt()
+                val g = rgb[2].toInt()
+                val b = rgb[3].toInt()
                 assertTrue(
-                    "Fullscreen -> floating morph lost the browser picture in flight; baseline=$baselineRatio " +
-                        "fixture=$ratio ${FullscreenHandoff.debugSummary()}",
-                    ratio >= .010f
+                    "Frozen fullscreen source did not contain the painted webpage: $debug",
+                    g >= 145 && g > r * 1.65f && g > b * 1.25f
                 )
+
+                // The handoff must really attach and start the dedicated screenshot layer; merely
+                // ending up with a floating card is not enough to pass this current-feature gate.
+                await {
+                    val state = FullscreenHandoff.debugSummary()
+                    state.contains("overlayAttached=true") && state.contains("morphStarted=true")
+                }
 
                 // The real floating card must finish fully visible at its saved geometry after the
                 // frozen screenshot cross-fades away.
@@ -90,7 +95,8 @@ class FullscreenShrinkRuntimeTest {
                         val window = BubbleService.active?.window
                         window?.mode == FloatingMode.CHAT &&
                             window.transitionView.alpha >= .99f &&
-                            window.transitionView.isShown
+                            window.transitionView.isShown &&
+                            window.box.width > 0 && window.box.height > 0
                     }
                 }
                 assertEquals("SHRINK-FIXTURE", mainValue { Workspace.peek()?.selected?.title.orEmpty() })
@@ -103,27 +109,6 @@ class FullscreenShrinkRuntimeTest {
             server.close()
             worker.join(1000)
         }
-    }
-
-    private fun greenRatio(bitmap: Bitmap): Float {
-        val step = maxOf(4, minOf(bitmap.width, bitmap.height) / 180)
-        var matching = 0
-        var total = 0
-        var y = step / 2
-        while (y < bitmap.height) {
-            var x = step / 2
-            while (x < bitmap.width) {
-                val pixel = bitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-                if (g >= 145 && g > r * 1.65f && g > b * 1.25f) matching++
-                total++
-                x += step
-            }
-            y += step
-        }
-        return if (total == 0) 0f else matching.toFloat() / total
     }
 
     private fun prepareOverlayAccess() {
@@ -153,7 +138,7 @@ class FullscreenShrinkRuntimeTest {
             if (test()) return
             Thread.sleep(80)
         }
-        fail("Fullscreen shrink runtime condition timed out")
+        fail("Fullscreen shrink runtime condition timed out; ${FullscreenHandoff.debugSummary()}")
     }
 
     private fun shell(command: String) =
