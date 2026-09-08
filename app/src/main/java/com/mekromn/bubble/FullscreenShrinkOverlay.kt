@@ -7,32 +7,35 @@ import android.graphics.Canvas
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.FrameLayout
-import kotlin.math.sqrt
+import kotlin.math.max
 
 internal data class MorphFrame(val bitmap: Bitmap, val box: WindowBox)
 
 /**
  * Fullscreen -> floating visual bridge.
  *
- * There is exactly one moving object: a frozen fullscreen frame. Its bitmap is uploaded once to a
- * hardware layer, then the compositor changes only translation/scale while it travels to the saved
- * floating rectangle. The live floating card is already laid out underneath at its final geometry.
+ * There is exactly one moving object: a frozen fullscreen frame. The bitmap is uploaded once to a
+ * hardware layer; the animation thereafter changes compositor translation/scale plus a clip rect.
  *
- * Two visual rules are deliberately strict here:
- *  1. The frozen fullscreen frame stays completely stationary and opaque briefly after the Activity
- *     loses focus. Android can revoke focus before SurfaceFlinger has actually removed the Activity,
- *     and beginning the shrink in that interval exposes two copies of the page.
- *  2. There is never an alpha crossfade between the landed screenshot and the reflowed floating
- *     webpage. Two different text layouts blended together are visible as ghosting even for 60 ms.
- *     Instead the live card is made fully opaque behind the still-opaque snapshot for one complete
- *     display frame, then the snapshot is removed on the following vsync. The user sees one image at
- *     every instant and there is no black gap or double-text frame.
+ * The clip rect is important. The fullscreen and floating cards have different aspect ratios. A
+ * non-uniform X/Y scale makes text visibly squash while the card shrinks, which reads as a stretched
+ * screenshot rather than one physical window changing shape. We now use one uniform "cover" scale
+ * and progressively crop the frozen frame to the destination aspect ratio. The outer rectangle still
+ * follows the exact floating geometry, but glyphs, icons and line weights keep their proportions.
+ *
+ * Two additional visual rules remain strict:
+ *  1. The frozen fullscreen frame stays stationary and opaque briefly after Activity focus loss,
+ *     because Android may report focus loss before SurfaceFlinger removes the Activity surface.
+ *  2. There is never an alpha blend between the landed screenshot and the reflowed floating page.
+ *     The real card becomes opaque behind the still-opaque snapshot for a full vsync, then the
+ *     snapshot disappears on the next vsync. There is never a double-text frame or black gap.
  */
 internal class FullscreenShrinkOverlay(
     context: Context,
@@ -96,7 +99,7 @@ internal class FullscreenShrinkOverlay(
         root.postOnAnimation {
             if (attached) {
                 // OEM WindowManager implementations may shift TYPE_APPLICATION_OVERLAY. Anchor the
-                // screen-space geometry to where Android really laid this overlay out.
+                // screen-space geometry to where Android actually laid this overlay out.
                 val location = IntArray(2)
                 root.getLocationOnScreen(location)
                 rootScreenX = location[0]
@@ -111,8 +114,8 @@ internal class FullscreenShrinkOverlay(
     /**
      * Move only the frozen screenshot. The real destination stays warm and fixed underneath. Once
      * the screenshot reaches destinationBox, promote the real card behind it for a complete vsync,
-     * then remove the screenshot on the next vsync. `crossfadeStart` remains in the API only so the
-     * handoff caller does not need a compatibility-only change; no actual crossfade is performed.
+     * then remove the screenshot on the next vsync. `crossfadeStart` remains only for call-site
+     * compatibility; no alpha crossfade is performed.
      */
     @Suppress("UNUSED_PARAMETER")
     fun morphInto(
@@ -152,9 +155,9 @@ internal class FullscreenShrinkOverlay(
                 val t = value.animatedValue as Float
                 val box = lerpBox(source.box, destinationBox, t)
                 currentBox = box
-                // Keep the source square while it is still visually fullscreen, then introduce the
-                // floating card radius during the latter half of the travel.
-                val radiusT = smoothstep(.52f, 1f, t)
+                // The card starts square-edged like fullscreen and acquires its floating radius as
+                // the outer window becomes visibly card-sized.
+                val radiusT = smoothstep(.42f, 1f, t)
                 val radius = lerp(sourceRadiusPx, destinationRadiusPx, radiusT)
                 applyFrame(box, radius)
                 frame.alpha = 1f
@@ -176,14 +179,13 @@ internal class FullscreenShrinkOverlay(
                     liveDestination.alpha = LIVE_WARM_ALPHA
                     onProgress?.invoke(1f, 0f, destinationBox)
 
-                    // First endpoint vsync: make the final card fully visible *behind* the opaque
-                    // screenshot. The screenshot still covers every pixel, so this cannot ghost.
+                    // First endpoint vsync: the final card becomes fully visible behind an opaque
+                    // snapshot, so the TextureView has a complete correctly-sized frame ready.
                     liveDestination.postOnAnimation {
                         if (!attached || !liveDestination.isAttachedToWindow) return@postOnAnimation
                         liveDestination.alpha = 1f
 
-                        // Second endpoint vsync: the live TextureView has owned a complete frame at
-                        // final geometry. Remove the snapshot atomically; no blended text and no gap.
+                        // Second endpoint vsync: remove the snapshot atomically. No ghosted reflow.
                         liveDestination.postOnAnimation {
                             if (!attached || !liveDestination.isAttachedToWindow) return@postOnAnimation
                             frame.alpha = 0f
@@ -197,8 +199,7 @@ internal class FullscreenShrinkOverlay(
         animator = motion
 
         // Focus loss happens earlier than visual task removal on Android 16. Keep the exact captured
-        // fullscreen image pinned in place long enough for that compositor transaction to settle;
-        // otherwise the first part of the shrink can reveal the still-visible Activity underneath.
+        // frame pinned through that compositor transaction before beginning any visible movement.
         root.postDelayed({
             if (attached && animator === motion) motion.start()
         }, PRE_MOTION_HOLD_MS)
@@ -217,29 +218,53 @@ internal class FullscreenShrinkOverlay(
     }
 
     /**
-     * Geometry is compositor-only: the bitmap View never changes layout size after attach and its
-     * content is not redrawn for every animation frame. Translation + non-uniform scale stretch the
-     * one cached texture exactly from source rectangle to destination rectangle.
+     * Keep screenshot pixels geometrically correct while the outer card changes aspect ratio.
+     *
+     * A uniform cover scale is chosen for the requested screen-space box. The visible local region
+     * is then center-cropped to exactly the required width/height. Translation includes the crop
+     * offset, so the visible clip lands on `box` pixel-for-pixel even though the underlying View
+     * remains source-sized and never relayouts during the animation.
      */
     private fun applyFrame(box: WindowBox, radiusPx: Float) {
         val sourceWidth = source.box.width.coerceAtLeast(1).toFloat()
         val sourceHeight = source.box.height.coerceAtLeast(1).toFloat()
-        val sx = box.width.coerceAtLeast(1) / sourceWidth
-        val sy = box.height.coerceAtLeast(1) / sourceHeight
-        frame.translationX = (box.x - rootScreenX).toFloat()
-        frame.translationY = (box.y - rootScreenY).toFloat()
-        frame.scaleX = sx
-        frame.scaleY = sy
-        // Outline lives in local coordinates. Geometric mean keeps the visible corner radius close
-        // to the requested screen-space radius even when width and height scale by different amounts.
-        val scale = sqrt((sx * sy).coerceAtLeast(.0001f))
+        val requestedW = box.width.coerceAtLeast(1).toFloat()
+        val requestedH = box.height.coerceAtLeast(1).toFloat()
+        val scale = max(requestedW / sourceWidth, requestedH / sourceHeight).coerceAtLeast(.0001f)
+
+        val visibleLocalW = (requestedW / scale).coerceAtMost(sourceWidth)
+        val visibleLocalH = (requestedH / scale).coerceAtMost(sourceHeight)
+        val left = ((sourceWidth - visibleLocalW) * .5f).coerceAtLeast(0f)
+        val top = ((sourceHeight - visibleLocalH) * .5f).coerceAtLeast(0f)
+        val right = (left + visibleLocalW).coerceAtMost(sourceWidth)
+        val bottom = (top + visibleLocalH).coerceAtMost(sourceHeight)
+        val clip = Rect(
+            left.toInt(),
+            top.toInt(),
+            right.toInt().coerceAtLeast(left.toInt() + 1),
+            bottom.toInt().coerceAtLeast(top.toInt() + 1)
+        )
+
+        frame.visibleClip = clip
+        frame.translationX = box.x - rootScreenX - clip.left * scale
+        frame.translationY = box.y - rootScreenY - clip.top * scale
+        frame.scaleX = scale
+        frame.scaleY = scale
         frame.localCornerRadius = radiusPx / scale
     }
 
-    /** Bitmap is drawn once into a hardware layer; animation thereafter transforms that layer. */
+    /** Bitmap is drawn once into a hardware layer; animation thereafter transforms/crops that layer. */
     private class SnapshotBitmapView(context: Context, bitmap: Bitmap) : View(context) {
         private var image: Bitmap? = bitmap
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
+        var visibleClip: Rect = Rect(0, 0, bitmap.width.coerceAtLeast(1), bitmap.height.coerceAtLeast(1))
+            set(value) {
+                if (field != value) {
+                    field = Rect(value)
+                    clipBounds = field
+                    invalidateOutline()
+                }
+            }
         var localCornerRadius: Float = 0f
             set(value) {
                 val next = value.coerceAtLeast(0f)
@@ -254,7 +279,8 @@ internal class FullscreenShrinkOverlay(
             clipToOutline = true
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1), localCornerRadius)
+                    val r = visibleClip
+                    outline.setRoundRect(r.left, r.top, r.right.coerceAtLeast(r.left + 1), r.bottom.coerceAtLeast(r.top + 1), localCornerRadius)
                 }
             }
         }
