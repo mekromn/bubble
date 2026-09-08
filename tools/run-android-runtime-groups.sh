@@ -35,11 +35,10 @@ run_group() {
   fi
 }
 
-# Emulator time is intentionally scoped to NEW work only. The current feature is Bubble's native
-# archive attachment pipeline: streaming multiple files into one ZIP, collision handling and safe
-# relative paths. Previously-proven browser/file-transfer/appearance/animation tests stay in source
-# but are not appended to every build.
-run_group archive 'com.mekromn.bubble.ArchiveRuntimeTest'
+# Emulator time follows the feature being actively changed. Archive Picker passed the previous gate,
+# so this build only re-runs the fullscreen -> floating shrink handoff after replacing non-uniform
+# screenshot stretching with aspect-preserving compositor scale + crop.
+run_group shrink 'com.mekromn.bubble.FullscreenShrinkRuntimeTest'
 
 adb logcat -d > emulator-logcat.txt
 exit "$failures"
