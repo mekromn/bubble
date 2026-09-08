@@ -1,13 +1,16 @@
 package com.mekromn.bubble
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ClipData
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
@@ -15,7 +18,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Spinner
@@ -27,6 +29,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
+import java.io.IOException
 import java.text.DecimalFormat
 import java.util.Locale
 
@@ -57,6 +60,7 @@ class ArchivePickerActivity : Activity() {
     private lateinit var compression: Spinner
     private lateinit var preserve: CheckBox
     private lateinit var archiveSingle: CheckBox
+    private lateinit var saveCopy: CheckBox
     private lateinit var action: TextView
     private lateinit var gridButton: TextView
     private lateinit var sortButton: TextView
@@ -73,6 +77,9 @@ class ArchivePickerActivity : Activity() {
         grid = prefs.getBoolean("grid", false)
         collectIncomingShare()
         buildUi()
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
+        }
         refreshAccess()
         refreshFiles()
         updateSelection()
@@ -133,6 +140,10 @@ class ArchivePickerActivity : Activity() {
         options.addView(preserve, LinearLayout.LayoutParams(-2, d(48)))
         options.addView(archiveSingle, LinearLayout.LayoutParams(-2, d(48)))
         root.addView(options, LinearLayout.LayoutParams(-1, -2))
+        saveCopy = CheckBox(this).apply {
+            text = "Save a copy to Downloads/Bubble"; setTextColor(Ui.TEXT); isChecked = prefs.getBoolean("saveCopy", false)
+        }
+        root.addView(saveCopy, LinearLayout.LayoutParams(-1, d(42)))
 
         val requested = intent.type.orEmpty()
         if (!internalUpload && requested.isNotBlank() && requested != "*/*" && requested != "application/zip" && !shareMode) {
@@ -277,20 +288,47 @@ class ArchivePickerActivity : Activity() {
         busy = true; updateSelection(); setControlsBusy(true)
         val job = ArchiveJob(); archiveJob = job
         val selectedCompression = ArchiveCompression.values().getOrElse(compression.selectedItemPosition) { ArchiveCompression.BALANCED }
+        val preservePaths = preserve.isChecked
+        val keepCopy = saveCopy.isChecked
         val out = if (internalUpload) UploadStaging.archiveOutput(this, tabId, requestId, filename.text.toString())
             else ArchiveCache.output(this, filename.text.toString())
         UploadStaging.io.execute {
             try {
-                val archive = ArchiveEngine.createZip(this, sources, out, selectedCompression, preserve.isChecked, job) { p ->
+                val archive = ArchiveEngine.createZip(this, sources, out, selectedCompression, preservePaths, job) { p ->
                     runOnUiThread { showProgress(p) }
                 }
-                runOnUiThread { completeArchive(archive) }
+                val copyFailure = if (keepCopy) runCatching { savePublicCopy(archive) }.exceptionOrNull() else null
+                runOnUiThread {
+                    if (copyFailure != null) toast("Archive created, but the Downloads copy could not be saved.")
+                    completeArchive(archive)
+                }
             } catch (_: Exception) {
                 runOnUiThread {
                     busy = false; archiveJob = null; setControlsBusy(false); updateSelection()
                     if (!job.cancelled.get()) toast("Could not create the archive. Check free space and selected file access.")
                 }
             }
+        }
+    }
+
+    private fun savePublicCopy(file: File) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/zip")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Bubble")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Could not create Downloads item")
+            try {
+                contentResolver.openOutputStream(uri, "w")?.use { output -> file.inputStream().buffered().use { it.copyTo(output, 128 * 1024) } }
+                    ?: throw IOException("Could not open Downloads output")
+                values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); contentResolver.update(uri, values, null, null)
+            } catch (t: Throwable) { contentResolver.delete(uri, null, null); throw t }
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Bubble").apply { mkdirs() }
+            file.copyTo(File(dir, file.name), overwrite = true)
         }
     }
 
@@ -354,19 +392,24 @@ class ArchivePickerActivity : Activity() {
         setResult(RESULT_CANCELED); finish()
     }
 
+    private fun handleBack() { if (busy) cancel() else goUp() }
+
+    @SuppressLint("GestureBackNavigation")
+    @Deprecated("API 26-32 back compatibility")
     override fun onBackPressed() {
-        if (busy) cancel() else goUp()
+        if (Build.VERSION.SDK_INT < 33) handleBack() else super.onBackPressed()
     }
 
     private fun persistOptions() {
         val c = ArchiveCompression.values().getOrElse(compression.selectedItemPosition) { ArchiveCompression.BALANCED }
-        prefs.edit().putString("compression", c.name).putBoolean("paths", preserve.isChecked).putBoolean("single", archiveSingle.isChecked).apply()
+        prefs.edit().putString("compression", c.name).putBoolean("paths", preserve.isChecked)
+            .putBoolean("single", archiveSingle.isChecked).putBoolean("saveCopy", saveCopy.isChecked).apply()
     }
 
     private fun setControlsBusy(value: Boolean) {
         busy = value
-        list.isEnabled = !value; filename.isEnabled = !value; compression.isEnabled = !value; preserve.isEnabled = !value; archiveSingle.isEnabled = !value
-        sortButton.isEnabled = !value; gridButton.isEnabled = !value
+        list.isEnabled = !value; filename.isEnabled = !value; compression.isEnabled = !value; preserve.isEnabled = !value
+        archiveSingle.isEnabled = !value; saveCopy.isEnabled = !value; sortButton.isEnabled = !value; gridButton.isEnabled = !value
         action.text = if (value) "Compressing…" else actionLabel()
     }
 
