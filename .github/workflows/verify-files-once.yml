@@ -4,15 +4,16 @@ name: Verify current Bubble changes
 # readiness colors and the accepted floating -> fullscreen clip reveal remain in source coverage but
 # are not part of this build's emulator gate.
 #
-# Current gate: fullscreen -> floating only. Build 55 proved headless SwiftShader UiAutomation
-# screenshots omit Gecko SurfaceView pixels even before any transition, so system screenshots are not
-# a valid oracle for this renderer. The gate therefore validates the actual frozen intermediate Bubble
-# will animate. Native Activity chrome comes from Window PixelCopy; Gecko capturePixels is now the
-# canonical webpage source because it reads compositor output independent of child SurfaceView
-# topology. The largest attached SurfaceView is only a bounded fallback and is mapped to GeckoView's
-# actual viewport. The completed source must contain the painted webpage, the dedicated overlay must
-# attach/start, and the real floating card must finish visible at its saved geometry. Floating ->
-# fullscreen intentionally remains the previously accepted Android clip-reveal path.
+# Current gate: fullscreen -> floating only. The Pixel recording showed the old screenshot morph was
+# conceptually correct but visually wrong in two ways: the 4MP screenshot was being redrawn into a
+# changing Rect every frame, and the live floating Gecko viewport cross-faded in while that screenshot
+# was still moving, producing obvious double/ghost content after the live page reflowed. The new path
+# uploads the snapshot once to a hardware layer and moves it with compositor translation/scale only.
+# The screenshot stays fully opaque for the entire geometry morph, lands exactly on the saved floating
+# rectangle, holds for one display frame, then performs only a very short stationary dissolve into the
+# already-rendering live card. Headless SwiftShader cannot expose Gecko compositor pixels reliably, so
+# CI validates allocation, overlay attach, morph start, final card visibility and workspace continuity;
+# the Pixel remains the visual-fidelity oracle. Floating -> fullscreen is intentionally unchanged.
 on:
   push:
     branches: [rebuild-v2]
