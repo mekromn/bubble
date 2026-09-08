@@ -8,7 +8,7 @@ name: Verify current Bubble changes
 # selected bytes directly into a single ZIP, handle duplicate names, preserve safe relative paths,
 # report progress/cancel, optionally save a Downloads copy, expose external results with FileProvider,
 # and retain provider browsing as an explicit fallback. This build also makes the active chat visually
-# unmistakable, removes the unintended floating side pill, and extends ChatGPT auto-suspend to 15 min.
+# unmistakable, removes the unintended floating side pill, and sets ChatGPT auto-suspend to 15 min.
 on:
   push:
     branches: [rebuild-v2]
