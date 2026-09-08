@@ -47,8 +47,11 @@ internal object FullscreenHandoff {
     // they let the Android runtime gate distinguish a bad source capture from a bad overlay handoff.
     @Volatile private var debugWindowCopyCode = Int.MIN_VALUE
     @Volatile private var debugSurfaceFound = false
+    @Volatile private var debugSurfaceCount = 0
     @Volatile private var debugSurfaceCopyCode = Int.MIN_VALUE
     @Volatile private var debugGeckoFallback = false
+    @Volatile private var debugGeckoCenterArgb = 0
+    @Volatile private var debugSurfaceCenterArgb = 0
     @Volatile private var debugCenterArgb = 0
     @Volatile private var debugFrameWidth = 0
     @Volatile private var debugFrameHeight = 0
@@ -57,8 +60,12 @@ internal object FullscreenHandoff {
 
     internal fun debugSummary(): String {
         val color = debugCenterArgb
-        return "windowCopy=$debugWindowCopyCode surfaceFound=$debugSurfaceFound " +
-            "surfaceCopy=$debugSurfaceCopyCode geckoFallback=$debugGeckoFallback " +
+        val geckoColor = debugGeckoCenterArgb
+        val surfaceColor = debugSurfaceCenterArgb
+        return "windowCopy=$debugWindowCopyCode surfaceFound=$debugSurfaceFound surfaceCount=$debugSurfaceCount " +
+            "surfaceCopy=$debugSurfaceCopyCode geckoCapture=$debugGeckoFallback " +
+            "geckoCenter=${android.graphics.Color.red(geckoColor)},${android.graphics.Color.green(geckoColor)},${android.graphics.Color.blue(geckoColor)} " +
+            "surfaceCenter=${android.graphics.Color.red(surfaceColor)},${android.graphics.Color.green(surfaceColor)},${android.graphics.Color.blue(surfaceColor)} " +
             "center=${android.graphics.Color.red(color)},${android.graphics.Color.green(color)},${android.graphics.Color.blue(color)} " +
             "frame=${debugFrameWidth}x${debugFrameHeight} overlayAttached=$debugOverlayAttached morphStarted=$debugMorphStarted"
     }
@@ -66,8 +73,11 @@ internal object FullscreenHandoff {
     private fun resetDebug() {
         debugWindowCopyCode = Int.MIN_VALUE
         debugSurfaceFound = false
+        debugSurfaceCount = 0
         debugSurfaceCopyCode = Int.MIN_VALUE
         debugGeckoFallback = false
+        debugGeckoCenterArgb = 0
+        debugSurfaceCenterArgb = 0
         debugCenterArgb = 0
         debugFrameWidth = 0
         debugFrameHeight = 0
@@ -269,11 +279,10 @@ internal object FullscreenHandoff {
 
     /**
      * Capture the exact fullscreen browser while its SurfaceView still belongs to BrowserActivity.
-     * Window PixelCopy captures native chrome. Gecko's SurfaceView is a separate SurfaceControl, so
-     * it is copied independently with PixelCopy and composited at its exact screen rectangle. Gecko
-     * capturePixels remains a bounded fallback for renderer/backend variants with no discoverable
-     * SurfaceView. BubbleService is not started until this finishes, so nothing can change owners
-     * underneath the capture.
+     * Window PixelCopy captures native chrome. Gecko's own capturePixels() is preferred for webpage
+     * content because it reads the compositor output independent of child SurfaceView topology. A
+     * direct PixelCopy from the largest attached Gecko SurfaceView remains a bounded fallback.
+     * BubbleService is not started until this finishes, so nothing can change owners underneath it.
      */
     private fun captureFullscreenFrame(
         activity: Activity,
@@ -336,7 +345,7 @@ internal object FullscreenHandoff {
         if (fallback == null) result(null) else finishBase(fallback)
     }
 
-    /** Prefer direct PixelCopy from Gecko's actual SurfaceView; fall back to Gecko compositor readback. */
+    /** Prefer Gecko's compositor readback; child SurfaceView PixelCopy is only a fallback. */
     private fun compositeGeckoPixels(
         gecko: GeckoView?,
         owner: View,
@@ -348,20 +357,30 @@ internal object FullscreenHandoff {
             return
         }
 
-        val surface = findSurfaceView(gecko)
-        debugSurfaceFound = surface != null
-        if (surface != null && Build.VERSION.SDK_INT >= 24) {
-            pixelCopySurface(surface, owner, base, 0) { copied ->
-                if (copied) done(true)
-                else captureGeckoCompositor(gecko, owner, base, done)
+        val surfaces = ArrayList<SurfaceView>()
+        collectSurfaceViews(gecko, surfaces)
+        debugSurfaceCount = surfaces.size
+        debugSurfaceFound = surfaces.isNotEmpty()
+
+        captureGeckoCompositor(gecko, owner, base) { captured ->
+            if (captured) {
+                done(true)
+                return@captureGeckoCompositor
             }
-        } else {
-            captureGeckoCompositor(gecko, owner, base, done)
+            val surface = surfaces.maxByOrNull { it.width.toLong() * it.height.toLong() }
+            if (surface != null && Build.VERSION.SDK_INT >= 24) {
+                // A child SurfaceView can have backend-specific local geometry. Its pixels belong to
+                // the GeckoView viewport, so composite the fallback into GeckoView's screen bounds.
+                pixelCopySurface(surface, gecko, owner, base, 0, done)
+            } else {
+                done(false)
+            }
         }
     }
 
     private fun pixelCopySurface(
         surface: SurfaceView,
+        destinationView: View,
         owner: View,
         base: Bitmap,
         attempt: Int,
@@ -385,8 +404,11 @@ internal object FullscreenHandoff {
             PixelCopy.request(surface, web, { code ->
                 debugSurfaceCopyCode = code
                 if (code == PixelCopy.SUCCESS && !web.isRecycled) {
+                    if (web.width > 0 && web.height > 0) {
+                        debugSurfaceCenterArgb = web.getPixel(web.width / 2, web.height / 2)
+                    }
                     try {
-                        compositeIntoOwner(surface, owner, base, web)
+                        compositeIntoOwner(destinationView, owner, base, web)
                         web.safeRecycle()
                         done(true)
                     } catch (_: Throwable) {
@@ -397,7 +419,7 @@ internal object FullscreenHandoff {
                     web.safeRecycle()
                     if (attempt < SURFACE_COPY_RETRIES && surface.isAttachedToWindow) {
                         main.postDelayed(
-                            { pixelCopySurface(surface, owner, base, attempt + 1, done) },
+                            { pixelCopySurface(surface, destinationView, owner, base, attempt + 1, done) },
                             16L * (attempt + 1)
                         )
                     } else {
@@ -409,7 +431,7 @@ internal object FullscreenHandoff {
             web.safeRecycle()
             if (attempt < SURFACE_COPY_RETRIES && surface.isAttachedToWindow) {
                 main.postDelayed(
-                    { pixelCopySurface(surface, owner, base, attempt + 1, done) },
+                    { pixelCopySurface(surface, destinationView, owner, base, attempt + 1, done) },
                     16L * (attempt + 1)
                 )
             } else {
@@ -418,7 +440,7 @@ internal object FullscreenHandoff {
         }
     }
 
-    /** Gecko compositor fallback for non-SurfaceView backends or PixelCopy source-no-data races. */
+    /** Gecko compositor capture is backend-aware and therefore the canonical webpage snapshot. */
     private fun captureGeckoCompositor(
         gecko: GeckoView,
         owner: View,
@@ -463,6 +485,9 @@ internal object FullscreenHandoff {
                             if (finished.get()) {
                                 web?.safeRecycle()
                             } else if (web != null && !web.isRecycled) {
+                                if (web.width > 0 && web.height > 0) {
+                                    debugGeckoCenterArgb = web.getPixel(web.width / 2, web.height / 2)
+                                }
                                 val stale = kotlin.math.abs(web.width - gecko.width) > 8 ||
                                     kotlin.math.abs(web.height - gecko.height) > 8
                                 val delay = 20L * (index + 1)
@@ -507,14 +532,13 @@ internal object FullscreenHandoff {
         Canvas(base).drawBitmap(pixels, null, destination, capturePaint)
     }
 
-    private fun findSurfaceView(view: View): SurfaceView? {
-        if (view is SurfaceView && view.isAttachedToWindow && view.width > 0 && view.height > 0) return view
-        if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                findSurfaceView(view.getChildAt(i))?.let { return it }
-            }
+    private fun collectSurfaceViews(view: View, result: MutableList<SurfaceView>) {
+        if (view is SurfaceView && view.isAttachedToWindow && view.width > 0 && view.height > 0) {
+            result += view
         }
-        return null
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) collectSurfaceViews(view.getChildAt(i), result)
+        }
     }
 
     private fun drawFallback(root: View): Bitmap? {
