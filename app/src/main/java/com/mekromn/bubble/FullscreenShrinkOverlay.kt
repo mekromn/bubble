@@ -23,9 +23,16 @@ internal data class MorphFrame(val bitmap: Bitmap, val box: WindowBox)
  * There is exactly one moving object: a frozen fullscreen frame. Its bitmap is uploaded once to a
  * hardware layer, then the compositor changes only translation/scale while it travels to the saved
  * floating rectangle. The live floating card is already laid out underneath at its final geometry.
- * It does NOT fade in while the screenshot is still moving: that was the ghost/double-image seen on
- * the Pixel because the floating Gecko viewport has already reflowed to a different shape. Only
- * after the snapshot has landed do we perform a very short stationary dissolve into the live card.
+ *
+ * Two visual rules are deliberately strict here:
+ *  1. The frozen fullscreen frame stays completely stationary and opaque briefly after the Activity
+ *     loses focus. Android can revoke focus before SurfaceFlinger has actually removed the Activity,
+ *     and beginning the shrink in that interval exposes two copies of the page.
+ *  2. There is never an alpha crossfade between the landed screenshot and the reflowed floating
+ *     webpage. Two different text layouts blended together are visible as ghosting even for 60 ms.
+ *     Instead the live card is made fully opaque behind the still-opaque snapshot for one complete
+ *     display frame, then the snapshot is removed on the following vsync. The user sees one image at
+ *     every instant and there is no black gap or double-text frame.
  */
 internal class FullscreenShrinkOverlay(
     context: Context,
@@ -102,11 +109,12 @@ internal class FullscreenShrinkOverlay(
     }
 
     /**
-     * Move the frozen fullscreen frame first. Once it is pixel-aligned with the floating rectangle,
-     * hold that exact geometry for one display frame and dissolve to the already-rendering live card.
-     * `crossfadeStart` is retained for source compatibility; it now only derives the very short
-     * endpoint handoff duration instead of starting a blend while geometry is still changing.
+     * Move only the frozen screenshot. The real destination stays warm and fixed underneath. Once
+     * the screenshot reaches destinationBox, promote the real card behind it for a complete vsync,
+     * then remove the screenshot on the next vsync. `crossfadeStart` remains in the API only so the
+     * handoff caller does not need a compatibility-only change; no actual crossfade is performed.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun morphInto(
         liveDestination: View,
         durationMs: Long = 320L,
@@ -129,8 +137,8 @@ internal class FullscreenShrinkOverlay(
         if (!ValueAnimator.areAnimatorsEnabled()) {
             currentBox = destinationBox
             applyFrame(destinationBox, destinationRadiusPx)
-            frame.alpha = 0f
             liveDestination.alpha = 1f
+            frame.alpha = 0f
             onProgress?.invoke(1f, 1f, destinationBox)
             onEnd()
             return
@@ -168,58 +176,32 @@ internal class FullscreenShrinkOverlay(
                     liveDestination.alpha = LIVE_WARM_ALPHA
                     onProgress?.invoke(1f, 0f, destinationBox)
 
-                    // One real display frame at identical geometry prevents the handoff from racing
-                    // the TextureView resize/paint on 120 Hz Pixels.
+                    // First endpoint vsync: make the final card fully visible *behind* the opaque
+                    // screenshot. The screenshot still covers every pixel, so this cannot ghost.
                     liveDestination.postOnAnimation {
                         if (!attached || !liveDestination.isAttachedToWindow) return@postOnAnimation
-                        startEndpointDissolve(
-                            liveDestination,
-                            handoffDurationMs(crossfadeStart),
-                            onProgress,
-                            onEnd
-                        )
+                        liveDestination.alpha = 1f
+
+                        // Second endpoint vsync: the live TextureView has owned a complete frame at
+                        // final geometry. Remove the snapshot atomically; no blended text and no gap.
+                        liveDestination.postOnAnimation {
+                            if (!attached || !liveDestination.isAttachedToWindow) return@postOnAnimation
+                            frame.alpha = 0f
+                            onProgress?.invoke(1f, 1f, destinationBox)
+                            onEnd()
+                        }
                     }
                 }
             })
         }
         animator = motion
-        motion.start()
-    }
 
-    private fun startEndpointDissolve(
-        liveDestination: View,
-        durationMs: Long,
-        onProgress: ((progress: Float, liveBlend: Float, box: WindowBox) -> Unit)?,
-        onEnd: () -> Unit
-    ) {
-        var cancelled = false
-        val handoff = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = durationMs
-            interpolator = Ui.ease
-            addUpdateListener { value ->
-                val blend = value.animatedValue as Float
-                frame.alpha = 1f - blend
-                liveDestination.alpha = LIVE_WARM_ALPHA + (1f - LIVE_WARM_ALPHA) * blend
-                onProgress?.invoke(1f, blend, destinationBox)
-            }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationCancel(animation: android.animation.Animator) {
-                    cancelled = true
-                    if (animator === animation) animator = null
-                }
-
-                override fun onAnimationEnd(animation: android.animation.Animator) {
-                    if (animator === animation) animator = null
-                    if (cancelled || !attached) return
-                    frame.alpha = 0f
-                    liveDestination.alpha = 1f
-                    onProgress?.invoke(1f, 1f, destinationBox)
-                    onEnd()
-                }
-            })
-        }
-        animator = handoff
-        handoff.start()
+        // Focus loss happens earlier than visual task removal on Android 16. Keep the exact captured
+        // fullscreen image pinned in place long enough for that compositor transaction to settle;
+        // otherwise the first part of the shrink can reveal the still-visible Activity underneath.
+        root.postDelayed({
+            if (attached && animator === motion) motion.start()
+        }, PRE_MOTION_HOLD_MS)
     }
 
     fun detach() {
@@ -297,6 +279,7 @@ internal class FullscreenShrinkOverlay(
 
     companion object {
         private const val LIVE_WARM_ALPHA = .001f
+        private const val PRE_MOTION_HOLD_MS = 96L
 
         private fun displayBox(context: Context): WindowBox {
             val manager = context.getSystemService(WindowManager::class.java)
@@ -309,9 +292,6 @@ internal class FullscreenShrinkOverlay(
                 WindowBox(0, 0, p.x.coerceAtLeast(1), p.y.coerceAtLeast(1))
             }
         }
-
-        private fun handoffDurationMs(crossfadeStart: Float): Long =
-            ((1f - crossfadeStart.coerceIn(.60f, .90f)) * 240f).toLong().coerceIn(64L, 88L)
 
         private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
         private fun lerpInt(a: Int, b: Int, t: Float) = (a + (b - a) * t).toInt()
