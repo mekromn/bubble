@@ -1,19 +1,14 @@
 name: Verify current Bubble changes
 # Emulator time is deliberately scoped to the feature being changed now, not an ever-growing
-# historical regression queue. Previously-proven file transfer, page appearance, pill gestures,
-# readiness colors and the accepted floating -> fullscreen clip reveal remain in source coverage but
-# are not part of this build's emulator gate.
+# historical regression queue. Previously-proven file transfer, page appearance, animations and
+# tab behavior remain in source coverage but are not re-run on every build.
 #
-# Current gate: fullscreen -> floating only. The newest Pixel recording exposed two real-device-only
-# defects that the previous mechanical gate could not see: the geometry morph could start as soon as
-# BrowserActivity lost focus even though its old surface was still visibly present underneath, and the
-# short stationary alpha dissolve still blended two differently-reflowed page layouts into a ghosted
-# double image. The frozen fullscreen frame now remains pinned/opaque through that task-removal gap,
-# stays the only visible moving image for the complete trajectory, then lands at the exact saved card
-# rectangle. At the endpoint the real card is made fully opaque behind the still-opaque screenshot for
-# one complete display frame; the screenshot disappears on the following vsync with no alpha blending.
-# CI validates the handoff mechanics/session continuity/final geometry. Pixel hardware remains the
-# visual-fidelity oracle. Floating -> fullscreen is intentionally unchanged.
+# Current gate: Bubble-owned Archive Picker. Chat/file prompts now route through a native local file
+# browser, can select multiple files even when the webpage ultimately receives one attachment, stream
+# the selected bytes directly into a single ZIP, handle duplicate names, preserve safe relative paths,
+# report progress/cancel, expose external results with a FileProvider, and retain provider browsing as
+# an explicit fallback. The runtime gate exercises the archive engine itself; the Pixel is the UI and
+# provider-integration oracle. This build also makes the active chat visually unmistakable.
 on:
   push:
     branches: [rebuild-v2]
