@@ -64,8 +64,9 @@ class ArchiveRuntimeTest {
                 job = ArchiveJob()
             )
             ZipInputStream(out.inputStream()).use { zip ->
-                val entry = zip.nextEntry ?: fail("Missing ZIP entry") as java.util.zip.ZipEntry
-                assertEquals("Docs/Safe/payload.bin", entry.name)
+                val entry = zip.nextEntry
+                assertNotNull("Missing ZIP entry", entry)
+                assertEquals("Docs/Safe/payload.bin", entry!!.name)
                 assertArrayEquals(file.readBytes(), zip.readBytes())
             }
         } finally { root.deleteRecursively() }
