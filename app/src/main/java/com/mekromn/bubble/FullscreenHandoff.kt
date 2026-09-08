@@ -14,7 +14,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.PixelCopy
+import android.view.SurfaceView
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 import java.util.concurrent.atomic.AtomicBoolean
@@ -30,7 +32,8 @@ import org.mozilla.geckoview.GeckoView
  */
 internal object FullscreenHandoff {
     const val EXTRA_FROM_FLOATING = "bubble.transition.from.floating"
-    private const val GECKO_CAPTURE_TIMEOUT_MS = 260L
+    private const val GECKO_CAPTURE_TIMEOUT_MS = 280L
+    private const val SURFACE_COPY_RETRIES = 3
     private const val SHRINK_WATCHDOG_MS = 1400L
     private val main = Handler(Looper.getMainLooper())
     private val capturePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
@@ -223,13 +226,11 @@ internal object FullscreenHandoff {
 
     /**
      * Capture the exact fullscreen browser while its SurfaceView still belongs to BrowserActivity.
-     *
-     * View.draw() cannot rasterize a SurfaceView, which was the reason build 52 could animate a
-     * perfectly smooth black webpage hole. PixelCopy first copies the real Window surface. Gecko's
-     * compositor capture is then composited over the webpage rectangle as an explicit second source
-     * of truth. On normal hardware that callback returns quickly; retries are bounded so capture can
-     * never strand the UI. The service is not started until this function completes, so both sources
-     * still refer to the same live fullscreen frame.
+     * Window PixelCopy captures native chrome. Gecko's SurfaceView is a separate SurfaceControl, so
+     * it is copied independently with PixelCopy and composited at its exact screen rectangle. Gecko
+     * capturePixels remains a bounded fallback for renderer/backend variants with no discoverable
+     * SurfaceView. BubbleService is not started until this finishes, so nothing can change owners
+     * underneath the capture.
      */
     private fun captureFullscreenFrame(
         activity: Activity,
@@ -290,11 +291,7 @@ internal object FullscreenHandoff {
         if (fallback == null) result(null) else finishBase(fallback)
     }
 
-    /**
-     * GeckoView fullscreen normally renders through SurfaceView. capturePixels() is therefore the
-     * reliable webpage capture independent of the Android View hierarchy. Retry briefly because a
-     * compositor readback can miss one beat even before ownership changes on a software renderer.
-     */
+    /** Prefer direct PixelCopy from Gecko's actual SurfaceView; fall back to Gecko compositor readback. */
     private fun compositeGeckoPixels(
         gecko: GeckoView?,
         owner: View,
@@ -306,6 +303,81 @@ internal object FullscreenHandoff {
             return
         }
 
+        val surface = findSurfaceView(gecko)
+        if (surface != null && Build.VERSION.SDK_INT >= 24) {
+            pixelCopySurface(surface, owner, base, 0) { copied ->
+                if (copied) done(true)
+                else captureGeckoCompositor(gecko, owner, base, done)
+            }
+        } else {
+            captureGeckoCompositor(gecko, owner, base, done)
+        }
+    }
+
+    private fun pixelCopySurface(
+        surface: SurfaceView,
+        owner: View,
+        base: Bitmap,
+        attempt: Int,
+        done: (Boolean) -> Unit
+    ) {
+        if (!surface.isAttachedToWindow || surface.width <= 0 || surface.height <= 0) {
+            done(false)
+            return
+        }
+        val web = try {
+            Bitmap.createBitmap(surface.width, surface.height, Bitmap.Config.ARGB_8888)
+        } catch (_: Throwable) {
+            null
+        }
+        if (web == null) {
+            done(false)
+            return
+        }
+
+        try {
+            PixelCopy.request(surface, web, { code ->
+                if (code == PixelCopy.SUCCESS && !web.isRecycled) {
+                    try {
+                        compositeIntoOwner(surface, owner, base, web)
+                        web.safeRecycle()
+                        done(true)
+                    } catch (_: Throwable) {
+                        web.safeRecycle()
+                        done(false)
+                    }
+                } else {
+                    web.safeRecycle()
+                    if (attempt < SURFACE_COPY_RETRIES && surface.isAttachedToWindow) {
+                        main.postDelayed(
+                            { pixelCopySurface(surface, owner, base, attempt + 1, done) },
+                            16L * (attempt + 1)
+                        )
+                    } else {
+                        done(false)
+                    }
+                }
+            }, main)
+        } catch (_: RuntimeException) {
+            web.safeRecycle()
+            if (attempt < SURFACE_COPY_RETRIES && surface.isAttachedToWindow) {
+                main.postDelayed(
+                    { pixelCopySurface(surface, owner, base, attempt + 1, done) },
+                    16L * (attempt + 1)
+                )
+            } else {
+                done(false)
+            }
+        }
+    }
+
+    /** Gecko compositor fallback for non-SurfaceView backends or PixelCopy source-no-data races. */
+    private fun captureGeckoCompositor(
+        gecko: GeckoView,
+        owner: View,
+        base: Bitmap,
+        done: (Boolean) -> Unit
+    ) {
         val finished = AtomicBoolean(false)
         val deadline = SystemClock.uptimeMillis() + GECKO_CAPTURE_TIMEOUT_MS
         lateinit var timeout: Runnable
@@ -354,17 +426,13 @@ internal object FullscreenHandoff {
                                     main.postDelayed({ attemptCapture(index + 1) }, delay)
                                 } else {
                                     try {
-                                        val ownerLocation = IntArray(2)
-                                        val geckoLocation = IntArray(2)
-                                        owner.getLocationOnScreen(ownerLocation)
-                                        gecko.getLocationOnScreen(geckoLocation)
-                                        val left = geckoLocation[0] - ownerLocation[0]
-                                        val top = geckoLocation[1] - ownerLocation[1]
-                                        val destination = Rect(left, top, left + gecko.width, top + gecko.height)
-                                        Canvas(base).drawBitmap(web, null, destination, capturePaint)
-                                    } catch (_: Throwable) { }
-                                    web.safeRecycle()
-                                    finish(true)
+                                        compositeIntoOwner(gecko, owner, base, web)
+                                        web.safeRecycle()
+                                        finish(true)
+                                    } catch (_: Throwable) {
+                                        web.safeRecycle()
+                                        retryOrFinish(index)
+                                    }
                                 }
                             } else {
                                 retryOrFinish(index)
@@ -378,6 +446,27 @@ internal object FullscreenHandoff {
         }
 
         attemptCapture(0)
+    }
+
+    private fun compositeIntoOwner(sourceView: View, owner: View, base: Bitmap, pixels: Bitmap) {
+        val ownerLocation = IntArray(2)
+        val sourceLocation = IntArray(2)
+        owner.getLocationOnScreen(ownerLocation)
+        sourceView.getLocationOnScreen(sourceLocation)
+        val left = sourceLocation[0] - ownerLocation[0]
+        val top = sourceLocation[1] - ownerLocation[1]
+        val destination = Rect(left, top, left + sourceView.width, top + sourceView.height)
+        Canvas(base).drawBitmap(pixels, null, destination, capturePaint)
+    }
+
+    private fun findSurfaceView(view: View): SurfaceView? {
+        if (view is SurfaceView && view.isAttachedToWindow && view.width > 0 && view.height > 0) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findSurfaceView(view.getChildAt(i))?.let { return it }
+            }
+        }
+        return null
     }
 
     private fun drawFallback(root: View): Bitmap? {
