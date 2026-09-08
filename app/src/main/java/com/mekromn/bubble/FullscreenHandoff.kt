@@ -6,15 +6,19 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.PixelCopy
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import java.util.concurrent.atomic.AtomicBoolean
+import org.mozilla.geckoview.GeckoView
 
 /**
  * Cross-window handoff.
@@ -26,9 +30,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal object FullscreenHandoff {
     const val EXTRA_FROM_FLOATING = "bubble.transition.from.floating"
-    private const val CAPTURE_TIMEOUT_MS = 180L
+    private const val GECKO_CAPTURE_TIMEOUT_MS = 260L
     private const val SHRINK_WATCHDOG_MS = 1400L
     private val main = Handler(Looper.getMainLooper())
+    private val capturePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+        isDither = true
+    }
     private var pendingFullscreenFrame: MorphFrame? = null
     private var shrinkOverlay: FullscreenShrinkOverlay? = null
     private var shrinkWatchdog: Runnable? = null
@@ -215,8 +222,14 @@ internal object FullscreenHandoff {
     }
 
     /**
-     * Build a single fullscreen frame from native chrome plus Gecko's own compositor pixels. This is
-     * faster and more reliable than waiting for a Window screenshot to rediscover a SurfaceView.
+     * Capture the exact fullscreen browser while its SurfaceView still belongs to BrowserActivity.
+     *
+     * View.draw() cannot rasterize a SurfaceView, which was the reason build 52 could animate a
+     * perfectly smooth black webpage hole. PixelCopy first copies the real Window surface. Gecko's
+     * compositor capture is then composited over the webpage rectangle as an explicit second source
+     * of truth. On normal hardware that callback returns quickly; retries are bounded so capture can
+     * never strand the UI. The service is not started until this function completes, so both sources
+     * still refer to the same live fullscreen frame.
      */
     private fun captureFullscreenFrame(
         activity: Activity,
@@ -243,53 +256,140 @@ internal object FullscreenHandoff {
             return
         }
 
-        try {
-            root.draw(Canvas(bitmap))
-        } catch (_: Throwable) {
-            bitmap.safeRecycle()
-            result(null)
-            return
+        fun finishBase(base: Bitmap) {
+            val gecko = (activity as? BrowserActivity)?.geckoView
+            compositeGeckoPixels(gecko, root, base) {
+                result(MorphFrame(base, box))
+            }
         }
 
-        val gecko = (activity as? BrowserActivity)?.geckoView
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                PixelCopy.request(activity.window, bitmap, { code ->
+                    if (code == PixelCopy.SUCCESS) {
+                        finishBase(bitmap)
+                    } else {
+                        bitmap.safeRecycle()
+                        if (attempt < 2) {
+                            main.postDelayed(
+                                { captureFullscreenFrame(activity, root, attempt + 1, result) },
+                                24L
+                            )
+                        } else {
+                            val fallback = drawFallback(root)
+                            if (fallback == null) result(null) else finishBase(fallback)
+                        }
+                    }
+                }, main)
+                return
+            } catch (_: RuntimeException) { }
+        }
+
+        bitmap.safeRecycle()
+        val fallback = drawFallback(root)
+        if (fallback == null) result(null) else finishBase(fallback)
+    }
+
+    /**
+     * GeckoView fullscreen normally renders through SurfaceView. capturePixels() is therefore the
+     * reliable webpage capture independent of the Android View hierarchy. Retry briefly because a
+     * compositor readback can miss one beat even before ownership changes on a software renderer.
+     */
+    private fun compositeGeckoPixels(
+        gecko: GeckoView?,
+        owner: View,
+        base: Bitmap,
+        done: (Boolean) -> Unit
+    ) {
         if (gecko == null || !gecko.isAttachedToWindow || gecko.width <= 0 || gecko.height <= 0) {
-            result(MorphFrame(bitmap, box))
+            done(false)
             return
         }
 
         val finished = AtomicBoolean(false)
+        val deadline = SystemClock.uptimeMillis() + GECKO_CAPTURE_TIMEOUT_MS
         lateinit var timeout: Runnable
-        fun finish() {
+
+        fun finish(success: Boolean) {
             if (!finished.compareAndSet(false, true)) return
             main.removeCallbacks(timeout)
-            result(MorphFrame(bitmap, box))
+            if (Looper.myLooper() === Looper.getMainLooper()) done(success) else main.post { done(success) }
         }
-        timeout = Runnable { finish() }
-        main.postDelayed(timeout, CAPTURE_TIMEOUT_MS)
 
-        try {
-            gecko.capturePixels().accept({ web ->
-                if (finished.get()) {
-                    web?.safeRecycle()
-                    return@accept
-                }
-                if (web != null && !web.isRecycled) {
-                    try {
-                        val ownerLocation = IntArray(2)
-                        val geckoLocation = IntArray(2)
-                        root.getLocationOnScreen(ownerLocation)
-                        gecko.getLocationOnScreen(geckoLocation)
-                        val left = geckoLocation[0] - ownerLocation[0]
-                        val top = geckoLocation[1] - ownerLocation[1]
-                        val destination = Rect(left, top, left + gecko.width, top + gecko.height)
-                        Canvas(bitmap).drawBitmap(web, null, destination, null)
-                    } catch (_: Throwable) { }
-                    web.safeRecycle()
-                }
-                finish()
-            }, { _ -> finish() })
-        } catch (_: RuntimeException) {
-            finish()
+        timeout = Runnable { finish(false) }
+        main.postDelayed(timeout, GECKO_CAPTURE_TIMEOUT_MS)
+
+        fun attempt(index: Int) {
+            if (finished.get()) return
+            if (SystemClock.uptimeMillis() >= deadline || !gecko.isAttachedToWindow) {
+                finish(false)
+                return
+            }
+            try {
+                gecko.capturePixels().accept({ web ->
+                    if (finished.get()) {
+                        web?.safeRecycle()
+                    } else if (web != null && !web.isRecycled) {
+                        val stale = kotlin.math.abs(web.width - gecko.width) > 8 ||
+                            kotlin.math.abs(web.height - gecko.height) > 8
+                        val delay = 20L * (index + 1)
+                        if (
+                            stale && index < 3 && gecko.isAttachedToWindow &&
+                            SystemClock.uptimeMillis() + delay < deadline
+                        ) {
+                            web.safeRecycle()
+                            main.postDelayed({ attempt(index + 1) }, delay)
+                        } else {
+                            try {
+                                val ownerLocation = IntArray(2)
+                                val geckoLocation = IntArray(2)
+                                owner.getLocationOnScreen(ownerLocation)
+                                gecko.getLocationOnScreen(geckoLocation)
+                                val left = geckoLocation[0] - ownerLocation[0]
+                                val top = geckoLocation[1] - ownerLocation[1]
+                                val destination = Rect(left, top, left + gecko.width, top + gecko.height)
+                                Canvas(base).drawBitmap(web, null, destination, capturePaint)
+                            } catch (_: Throwable) { }
+                            web.safeRecycle()
+                            finish(true)
+                        }
+                    } else {
+                        retryOrFinish(index)
+                    }
+                }, { _ -> retryOrFinish(index) })
+            } catch (_: RuntimeException) {
+                retryOrFinish(index)
+            }
+        }
+
+        fun retryOrFinish(index: Int) {
+            if (finished.get()) return
+            val delay = 20L * (index + 1)
+            if (
+                index < 3 && gecko.isAttachedToWindow &&
+                SystemClock.uptimeMillis() + delay < deadline
+            ) {
+                main.postDelayed({ attempt(index + 1) }, delay)
+            } else {
+                finish(false)
+            }
+        }
+
+        attempt(0)
+    }
+
+    private fun drawFallback(root: View): Bitmap? {
+        val bitmap = try {
+            Bitmap.createBitmap(root.width.coerceAtLeast(1), root.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        } catch (_: Throwable) {
+            return null
+        }
+        return try {
+            root.draw(Canvas(bitmap))
+            bitmap
+        } catch (_: Throwable) {
+            bitmap.safeRecycle()
+            null
         }
     }
 
