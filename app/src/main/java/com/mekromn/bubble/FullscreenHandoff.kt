@@ -43,9 +43,50 @@ internal object FullscreenHandoff {
     private var shrinkOverlay: FullscreenShrinkOverlay? = null
     private var shrinkWatchdog: Runnable? = null
 
+    // Compact diagnostics for the currently-developed transition. These do not alter the animation;
+    // they let the Android runtime gate distinguish a bad source capture from a bad overlay handoff.
+    @Volatile private var debugWindowCopyCode = Int.MIN_VALUE
+    @Volatile private var debugSurfaceFound = false
+    @Volatile private var debugSurfaceCopyCode = Int.MIN_VALUE
+    @Volatile private var debugGeckoFallback = false
+    @Volatile private var debugCenterArgb = 0
+    @Volatile private var debugFrameWidth = 0
+    @Volatile private var debugFrameHeight = 0
+    @Volatile private var debugOverlayAttached = false
+    @Volatile private var debugMorphStarted = false
+
+    internal fun debugSummary(): String {
+        val color = debugCenterArgb
+        return "windowCopy=$debugWindowCopyCode surfaceFound=$debugSurfaceFound " +
+            "surfaceCopy=$debugSurfaceCopyCode geckoFallback=$debugGeckoFallback " +
+            "center=${android.graphics.Color.red(color)},${android.graphics.Color.green(color)},${android.graphics.Color.blue(color)} " +
+            "frame=${debugFrameWidth}x${debugFrameHeight} overlayAttached=$debugOverlayAttached morphStarted=$debugMorphStarted"
+    }
+
+    private fun resetDebug() {
+        debugWindowCopyCode = Int.MIN_VALUE
+        debugSurfaceFound = false
+        debugSurfaceCopyCode = Int.MIN_VALUE
+        debugGeckoFallback = false
+        debugCenterArgb = 0
+        debugFrameWidth = 0
+        debugFrameHeight = 0
+        debugOverlayAttached = false
+        debugMorphStarted = false
+    }
+
+    private fun recordFrame(bitmap: Bitmap) {
+        debugFrameWidth = bitmap.width
+        debugFrameHeight = bitmap.height
+        if (!bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
+            debugCenterArgb = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
+        }
+    }
+
     /** Capture the fullscreen browser before BubbleService takes the Gecko surface. */
     fun armFullscreenToFloating(activity: Activity, root: View, ready: (Boolean) -> Unit) {
         cancelPendingFullscreenFrame()
+        resetDebug()
         captureFullscreenFrame(activity, root, 0) { frame ->
             pendingFullscreenFrame = frame
             ready(frame != null)
@@ -118,12 +159,14 @@ internal object FullscreenHandoff {
 
             try {
                 overlay.attach {
+                    debugOverlayAttached = true
                     scheduleShrinkWatchdog(overlay, card)
                     // The frozen frame now covers the exact fullscreen browser, so the Activity can
                     // be moved away without ever exposing its black backing surface.
                     done()
                     waitUntilSourceWindowHidden(activity, root, 0) {
                         if (shrinkOverlay !== overlay) return@waitUntilSourceWindowHidden
+                        debugMorphStarted = true
                         overlay.morphInto(card, durationMs = 340L, crossfadeStart = .70f) {
                             showFloatingCard(card)
                             clearShrinkWatchdog()
@@ -260,6 +303,7 @@ internal object FullscreenHandoff {
         fun finishBase(base: Bitmap) {
             val gecko = (activity as? BrowserActivity)?.geckoView
             compositeGeckoPixels(gecko, root, base) {
+                recordFrame(base)
                 result(MorphFrame(base, box))
             }
         }
@@ -267,6 +311,7 @@ internal object FullscreenHandoff {
         if (Build.VERSION.SDK_INT >= 26) {
             try {
                 PixelCopy.request(activity.window, bitmap, { code ->
+                    debugWindowCopyCode = code
                     if (code == PixelCopy.SUCCESS) {
                         finishBase(bitmap)
                     } else {
@@ -304,6 +349,7 @@ internal object FullscreenHandoff {
         }
 
         val surface = findSurfaceView(gecko)
+        debugSurfaceFound = surface != null
         if (surface != null && Build.VERSION.SDK_INT >= 24) {
             pixelCopySurface(surface, owner, base, 0) { copied ->
                 if (copied) done(true)
@@ -337,6 +383,7 @@ internal object FullscreenHandoff {
 
         try {
             PixelCopy.request(surface, web, { code ->
+                debugSurfaceCopyCode = code
                 if (code == PixelCopy.SUCCESS && !web.isRecycled) {
                     try {
                         compositeIntoOwner(surface, owner, base, web)
@@ -385,6 +432,7 @@ internal object FullscreenHandoff {
 
         fun finish(success: Boolean) {
             if (!finished.compareAndSet(false, true)) return
+            debugGeckoFallback = success
             main.removeCallbacks(timeout)
             if (Looper.myLooper() === Looper.getMainLooper()) done(success) else main.post { done(success) }
         }
