@@ -1,23 +1,15 @@
 name: Verify current Bubble changes
-# Emulator time is deliberately scoped to the features being changed now, not an ever-growing
-# historical regression queue. Previously-proven file-transfer and older appearance regressions
-# remain in source but are no longer part of every build's emulator gate.
+# Emulator time is deliberately scoped to the feature being changed now, not an ever-growing
+# historical regression queue. Previously-proven file transfer, page appearance, pill gestures,
+# readiness colors and the accepted floating -> fullscreen clip reveal remain in source coverage but
+# are not part of this build's emulator gate.
 #
-# Current gate: floating-window chrome/gesture behavior plus the Google Voice mixed-theme Force
-# Dark fix and the true matched fullscreen <-> floating morph. The transition captures native chrome
-# and Gecko compositor pixels before surface ownership changes, puts that exact frame in one shared
-# transparent overlay, and morphs one visible card continuously through position, size, corner radius,
-# content reflow and surface opacity. The floating destination becomes genuinely translucent before
-# overlay removal, so glass/background visibility is part of the same morph. A one-use recent
-# fullscreen visual seed protects immediate reversal from the SurfaceView/TextureView buffer race.
-# Floating ownership is published synchronously while obsolete overlay destruction is deferred one
-# main-loop turn so BrowserActivity can take the same GeckoSession first. Snapshot work is bounded,
-# and floating native chrome capture now suppresses the Gecko TextureView while View.draw runs, then
-# composites Gecko's capture separately; a short focus-settle beat lets the new focusable overlay
-# process WindowManager input before any snapshot work. This avoids redundant TextureView raster work
-# and prevents capture from starving a FocusEvent on slow renderers. Runtime performs a complete
-# fullscreen -> floating -> fullscreen -> floating round trip and checks a real system screenshot near
-# each handoff midpoint. Google Voice mixed-theme Force Dark remains the other current runtime gate.
+# Current gate: fullscreen -> floating only. Bubble freezes the exact fullscreen browser into one
+# screenshot layer before Gecko changes window owners. That single screenshot is stretched from the
+# fullscreen bounds directly into the saved floating-window bounds while the real floating window
+# waits underneath at its final geometry. During the last part of the same motion the screenshot
+# fades out while the live floating window fades in. The reverse floating -> fullscreen transition
+# intentionally remains the previously accepted Android clip-reveal implementation.
 on:
   push:
     branches: [rebuild-v2]
