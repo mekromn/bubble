@@ -63,22 +63,17 @@ internal class ConversationList(context: Context, private val select: (String) -
             lastSelectedForReveal = workspace.selectedId
             pendingReveal = workspace.selectedId
         }
-        val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab -> Row(tab.id, tab.displayName,
-            (if (workspace.profiles.size > 1) "${workspace.profileName(tab.profileId)} · " else "") +
-            (if (tab.pinned) "Pinned · " else "") + when {
-                Policy.isVoice(tab.url) && tab.error != null -> "Google Voice · connection needs attention"
-                Policy.isVoice(tab.url) && tab.unread -> "Google Voice · new alert · protected live"
-                Policy.isVoice(tab.url) -> "Google Voice · protected live"
-                tab.error != null && !tab.manualSuspended -> "Needs attention · tap to open"
-                tab.generating -> "Generating a reply · kept alive"
-                tab.loading -> "Loading · kept alive"
-                tab.unread && (tab.suspended || tab.session == null) -> "New reply · suspended until opened"
-                tab.unread -> "New reply · ready to read"
-                tab.manualSuspended -> "Manually suspended · tap to resume"
-                tab.forceKeepAlive -> "Forced live · ${Policy.host(tab.url)}"
-                tab.suspended || tab.session == null -> "Suspended · tap to resume"
-                else -> "Live · ${Policy.host(tab.url)}${if (tab.muted) " · alerts muted" else ""}"
-            }, tab.id == workspace.selectedId, tab.unread, tab.generating || tab.loading, tab.pinned, TabReadiness.of(tab)) }
+        val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab ->
+            val selected = tab.id == workspace.selectedId
+            val status = TabStatusPolicy.of(tab, selected && workspace.chatVisible)
+            val prefix = buildString {
+                if (workspace.profiles.size > 1) append(workspace.profileName(tab.profileId)).append(" · ")
+                if (tab.pinned) append("Pinned · ")
+            }
+            val suffix = if (tab.muted) " · alerts muted" else ""
+            Row(tab.id, tab.displayName, prefix + status.detail + suffix,
+                selected, tab.unread, status.busy, tab.pinned, status.readiness)
+        }
         if (rows == next) { revealPending(); return }
         rows = next; submit()
     }
@@ -105,14 +100,14 @@ internal class ConversationList(context: Context, private val select: (String) -
     private fun fill(readiness: TabReadiness, selected: Boolean): Int {
         val base = readiness.fill
         // Selection needs to be immediately obvious even in peripheral vision. Keep ordinary tabs
-        // subtle, but make the active tab a dense version of its readiness color.
+        // subtle, but make the active tab a dense version of its current semantic status color.
         return Color.argb(if (selected) 0xd4 else 0x38, Color.red(base), Color.green(base), Color.blue(base))
     }
     private fun edge(readiness: TabReadiness, selected: Boolean): Int = if (selected) readiness.edge else
         Color.argb(0x78, Color.red(readiness.edge), Color.green(readiness.edge), Color.blue(readiness.edge))
 
     private inner class Holder(val row: LinearLayout, val activeMark: View, val dragHandle: GlyphView,
-        val title: TextView, val subtitle: TextView, val closeButton: GlyphView) : ViewHolder(row) {
+        val title: TextView, val statusDot: View, val subtitle: TextView, val closeButton: GlyphView) : ViewHolder(row) {
         var selected: Boolean? = null
         var readiness: TabReadiness? = null
     }
@@ -132,10 +127,15 @@ internal class ConversationList(context: Context, private val select: (String) -
             row.addView(handle, LinearLayout.LayoutParams(d(40), d(44)))
             val text = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL; setPadding(d(10), 0, d(4), 0) }
             val title = Ui.text(c, "", 14f, Ui.TEXT, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
-            val subtitle = Ui.text(c, "", 11f, Ui.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(0, d(5), 0, 0) }
-            text.addView(title); text.addView(subtitle); row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
+            val statusLine = LinearLayout(c).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, d(5), 0, 0) }
+            val dot = View(c).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+            val subtitle = Ui.text(c, "", 11f, Ui.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+            statusLine.addView(dot, LinearLayout.LayoutParams(d(8), d(8)).apply { marginEnd = d(7) })
+            statusLine.addView(subtitle, LinearLayout.LayoutParams(0, -2, 1f))
+            text.addView(title); text.addView(statusLine); row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
             val close = GlyphView(c, "close", "Close conversation")
-            row.addView(close, LinearLayout.LayoutParams(d(48), d(48))); return Holder(row, active, handle, title, subtitle, close)
+            row.addView(close, LinearLayout.LayoutParams(d(48), d(48)))
+            return Holder(row, active, handle, title, dot, subtitle, close)
         }
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val row = getItem(position)
@@ -148,6 +148,7 @@ internal class ConversationList(context: Context, private val select: (String) -
                 holder.row.background = RippleDrawable(ColorStateList.valueOf(GlassPalette.RIPPLE), content, null)
                 holder.activeMark.visibility = if (row.selected) View.VISIBLE else View.INVISIBLE
                 holder.activeMark.background = Ui.shape(context, row.readiness.edge, 3f)
+                holder.statusDot.background = Ui.shape(context, row.readiness.edge, 4f)
                 holder.row.elevation = if (row.selected) d(3).toFloat() else 0f
             }
             if (holder.title.text != row.title) holder.title.text = row.title
