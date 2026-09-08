@@ -5,7 +5,6 @@ set -uo pipefail
 failures=0
 
 reset_between_groups() {
-  # Keep the emulator/image alive but isolate Bubble and the occasionally-stuck Pixel Launcher.
   adb shell am force-stop com.mekromn.bubble.debug >/dev/null 2>&1 || true
   adb shell am force-stop com.google.android.apps.nexuslauncher >/dev/null 2>&1 || true
   adb shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1 || true
@@ -36,11 +35,11 @@ run_group() {
   fi
 }
 
-# Emulator time is intentionally a CURRENT-FEATURE gate, not an ever-growing historical suite.
-# File transfer, page appearance, pill gestures, tab readiness colors and the accepted floating ->
-# fullscreen clip reveal have already been proven and are not re-run here. The only current runtime
-# target is the new screenshot-driven fullscreen -> floating shrink/cross-fade.
-run_group shrink 'com.mekromn.bubble.FullscreenShrinkRuntimeTest'
+# Emulator time is intentionally scoped to NEW work only. The current feature is Bubble's native
+# archive attachment pipeline: streaming multiple files into one ZIP, collision handling and safe
+# relative paths. Previously-proven browser/file-transfer/appearance/animation tests stay in source
+# but are not appended to every build.
+run_group archive 'com.mekromn.bubble.ArchiveRuntimeTest'
 
 adb logcat -d > emulator-logcat.txt
 exit "$failures"
