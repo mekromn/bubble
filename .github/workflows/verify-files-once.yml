@@ -4,14 +4,15 @@ name: Verify current Bubble changes
 # readiness colors and the accepted floating -> fullscreen clip reveal remain in source coverage but
 # are not part of this build's emulator gate.
 #
-# Current gate: fullscreen -> floating only. Bubble freezes the exact fullscreen browser before Gecko
-# changes window owners. Native chrome comes from Window PixelCopy; Gecko's actual fullscreen
-# SurfaceView is discovered in the live GeckoView hierarchy and PixelCopied independently, then
-# composited into the same frame at its exact screen rectangle. Gecko capturePixels remains a bounded
-# fallback. The runtime test now first proves UiAutomation can see the normal painted fixture, then
-# reports source-capture method/center pixel and overlay handoff state if the in-flight screenshot is
-# missing it. This distinguishes a bad capture from an overlay/z-order/timing bug instead of guessing.
-# The reverse floating -> fullscreen direction remains the previously accepted Android clip reveal.
+# Current gate: fullscreen -> floating only. Build 55 proved headless SwiftShader UiAutomation
+# screenshots omit Gecko SurfaceView pixels even before any transition, so system screenshots are not
+# a valid oracle for this renderer. The gate now tests the actual intermediate layer Bubble will show:
+# the frozen fullscreen frame must contain the painted webpage, the dedicated overlay must attach and
+# begin its morph, and the live floating card must finish fully visible. Native chrome comes from
+# Window PixelCopy; Gecko's SurfaceView is PixelCopied independently with capturePixels as a bounded
+# fallback. Morph coordinates are re-anchored to the overlay's real post-layout screen origin so API
+# 36 WindowManager inset/placement differences cannot shift the screenshot endpoint. Floating ->
+# fullscreen intentionally remains the previously accepted Android clip-reveal path.
 on:
   push:
     branches: [rebuild-v2]
