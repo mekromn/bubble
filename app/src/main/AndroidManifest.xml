@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <application android:name=".BubbleApp" android:label="Bubble" android:icon="@mipmap/ic_launcher" android:allowBackup="false" android:fullBackupContent="@xml/backup_rules" android:dataExtractionRules="@xml/data_extraction_rules" android:theme="@style/Theme.Bubble" android:usesCleartextTraffic="true" android:hardwareAccelerated="true" android:enableOnBackInvokedCallback="true" tools:targetApi="33">
         <activity android:name=".BrowserActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:supportsPictureInPicture="true" android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
@@ -12,10 +14,34 @@
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
         </activity>
         <activity android:name=".FloatingFileActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_prompts" android:theme="@style/Theme.Bubble.Prompt" />
+        <activity android:name=".ArchivePickerActivity" android:exported="true" android:label="Bubble Archive Picker" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.archive_picker" android:theme="@style/Theme.Bubble.Prompt">
+            <intent-filter>
+                <action android:name="android.intent.action.GET_CONTENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
         <activity android:name=".SaveDownloadActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <activity android:name=".DownloadsActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_downloads" />
         <activity android:name=".NotificationReturnActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.notification_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <activity android:name=".VoicePermissionActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.notification_prompts" android:theme="@style/Theme.Bubble.Prompt" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.archives"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/archive_paths" />
+        </provider>
         <receiver android:name=".PipTabReceiver" android:exported="false" />
         <receiver android:name=".VoiceNotificationReceiver" android:exported="false" />
         <service android:name=".FileDownloadService" android:exported="false" android:foregroundServiceType="dataSync" tools:targetApi="34" />
