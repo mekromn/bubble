@@ -48,6 +48,9 @@ internal class FullscreenShrinkOverlay(
     private val frame = StretchBitmapView(app, source.bitmap)
     private var attached = false
     private var animator: ValueAnimator? = null
+    private var currentBox = source.box
+    private var rootScreenX = display.x
+    private var rootScreenY = display.y
     private val params = WindowManager.LayoutParams(
         display.width,
         display.height,
@@ -78,6 +81,14 @@ internal class FullscreenShrinkOverlay(
         attached = true
         root.postOnAnimation {
             if (attached) {
+                // TYPE_APPLICATION_OVERLAY can be inset or shifted by WindowManager on individual
+                // Android builds. Anchor all screen-space morph geometry to the *actual* overlay
+                // origin after first layout instead of assuming maximumWindowMetrics starts at 0,0.
+                val location = IntArray(2)
+                root.getLocationOnScreen(location)
+                rootScreenX = location[0]
+                rootScreenY = location[1]
+                applyFrame(currentBox, sourceRadiusPx)
                 RenderPolicy.vote(app, root)
                 onReady()
             }
@@ -93,6 +104,7 @@ internal class FullscreenShrinkOverlay(
         liveDestination: View,
         durationMs: Long = 320L,
         crossfadeStart: Float = .74f,
+        onProgress: ((progress: Float, liveBlend: Float, box: WindowBox) -> Unit)? = null,
         onEnd: () -> Unit
     ) {
         animator?.cancel()
@@ -105,9 +117,11 @@ internal class FullscreenShrinkOverlay(
         liveDestination.translationY = 0f
 
         if (!ValueAnimator.areAnimatorsEnabled()) {
+            currentBox = destinationBox
             applyFrame(destinationBox, destinationRadiusPx)
             frame.alpha = 0f
             liveDestination.alpha = 1f
+            onProgress?.invoke(1f, 1f, destinationBox)
             onEnd()
             return
         }
@@ -119,12 +133,14 @@ internal class FullscreenShrinkOverlay(
             addUpdateListener { value ->
                 val t = value.animatedValue as Float
                 val box = lerpBox(source.box, destinationBox, t)
+                currentBox = box
                 val radius = lerp(sourceRadiusPx, destinationRadiusPx, t)
                 applyFrame(box, radius)
 
                 val blend = smoothstep(crossfadeStart, 1f, t)
                 frame.alpha = 1f - blend
                 liveDestination.alpha = blend
+                onProgress?.invoke(t, blend, box)
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationCancel(animation: android.animation.Animator) {
@@ -135,9 +151,11 @@ internal class FullscreenShrinkOverlay(
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     if (animator === animation) animator = null
                     if (cancelled || !attached) return
+                    currentBox = destinationBox
                     applyFrame(destinationBox, destinationRadiusPx)
                     frame.alpha = 0f
                     liveDestination.alpha = 1f
+                    onProgress?.invoke(1f, 1f, destinationBox)
                     onEnd()
                 }
             })
@@ -159,10 +177,10 @@ internal class FullscreenShrinkOverlay(
 
     private fun applyFrame(box: WindowBox, radiusPx: Float) {
         frame.container = RectF(
-            (box.x - display.x).toFloat(),
-            (box.y - display.y).toFloat(),
-            (box.x - display.x + box.width).toFloat(),
-            (box.y - display.y + box.height).toFloat()
+            (box.x - rootScreenX).toFloat(),
+            (box.y - rootScreenY).toFloat(),
+            (box.x - rootScreenX + box.width).toFloat(),
+            (box.y - rootScreenY + box.height).toFloat()
         )
         frame.cornerRadius = radiusPx
     }
