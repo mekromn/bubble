@@ -4,12 +4,13 @@ name: Verify current Bubble changes
 # readiness colors and the accepted floating -> fullscreen clip reveal remain in source coverage but
 # are not part of this build's emulator gate.
 #
-# Current gate: fullscreen -> floating only. Bubble freezes the exact fullscreen browser into one
-# screenshot layer before Gecko changes window owners. It waits for the floating overlay's first real
-# layout so the destination rectangle is exact, then stretches that one screenshot from fullscreen
-# directly into the saved floating-window bounds. The live floating window stays underneath at its
-# final geometry and cross-fades in only during the last part of the same motion. The reverse floating
-# -> fullscreen transition intentionally remains the previously accepted Android clip-reveal path.
+# Current gate: fullscreen -> floating only. Bubble freezes the exact fullscreen browser before Gecko
+# changes window owners. Window PixelCopy captures the real Activity surface while Gecko capturePixels
+# separately supplies the SurfaceView webpage pixels with bounded retries, preventing a root.draw()
+# screenshot from preserving a black SurfaceView hole. The floating overlay is already at its exact
+# final layout; one screenshot stretches into those saved bounds and cross-fades into the live card
+# only at the end. The reverse floating -> fullscreen direction intentionally remains the previously
+# accepted Android clip-reveal path.
 on:
   push:
     branches: [rebuild-v2]
