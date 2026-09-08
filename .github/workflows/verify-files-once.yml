@@ -1,13 +1,13 @@
 name: Verify current Bubble changes
-# Emulator time is deliberately scoped to the feature being changed now, not an ever-growing
-# historical regression queue. Archive Picker passed build 62 and remains in source coverage.
+# Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
+# Archive Picker passed build 62. The aspect-preserving screenshot morph is still current transition
+# work and remains the Android runtime gate until its Pixel behavior is accepted.
 #
-# Current gate: fullscreen -> floating. The latest Pixel recording showed that the screenshot bridge
-# still looked synthetic because width and height were scaled independently as the fullscreen aspect
-# ratio became the floating-card aspect ratio. Build 63 keeps one uniform compositor scale and changes
-# only the visible crop while following the exact destination rectangle, so text/icons keep their
-# proportions instead of visibly squashing. Endpoint remains a no-alpha, two-vsync handoff to live
-# Gecko. Floating -> fullscreen is intentionally unchanged.
+# This build also upgrades Your Chats from a coarse live/working/ready model to semantic status:
+# attention, generating, page-loading with real progress, reply-ready, protected Voice, active,
+# forced-live, idle/15-minute-hibernation eligibility, and suspended. Unit coverage validates status
+# priority and distinct visual identities; the chooser renders a matching colored status dot plus the
+# already-strong selected-tab fill/edge/active marker.
 on:
   push:
     branches: [rebuild-v2]
