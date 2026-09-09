@@ -81,7 +81,7 @@ internal object TabStatusPolicy {
                 TabStatus(TabReadiness.ACTIVE, "ChatGPT active · ready for input")
 
             Policy.isChat(tab.url) ->
-                TabStatus(TabReadiness.IDLE, "ChatGPT idle · eligible for 15-minute hibernation")
+                TabStatus(TabReadiness.IDLE, "ChatGPT idle · kept resident in background")
 
             selectedVisible ->
                 TabStatus(TabReadiness.ACTIVE, "Active · $host")
