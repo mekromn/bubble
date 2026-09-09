@@ -109,7 +109,10 @@ internal object ChatVaultUi {
         val vault = ChatVaultRegistry.get(c)
         val title = Ui.text(c, "Loading…", 16f, Ui.TEXT, true).apply { setPadding(d(anchor, 8), d(anchor, 6), d(anchor, 8), d(anchor, 8)) }
         panel.body.addView(title)
-        val preview = Ui.text(c, "", 12f, Ui.TEXT).apply { setPadding(d(anchor, 10), d(anchor, 8), d(anchor, 10), d(anchor, 12)); setTextIsSelectable(true) }
+        val preview = Ui.text(c, "", 12f, Ui.TEXT).apply {
+            setPadding(d(anchor, 10), d(anchor, 8), d(anchor, 10), d(anchor, 12))
+            setTextIsSelectable(true)
+        }
         val scroll = ScrollView(c).apply { addView(preview, LinearLayout.LayoutParams(-1, -2)) }
         panel.body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         val controls = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
@@ -123,14 +126,11 @@ internal object ChatVaultUi {
                 return@read
             }
             title.text = "${chat.title} · ${workspace.profileName(chat.profileId)} · ${chat.messages.size} messages"
-            val shown = chat.messages.takeLast(PREVIEW_MESSAGES)
-            val omitted = chat.messages.size - shown.size
             preview.text = buildString {
-                if (omitted > 0) append("$omitted earlier messages are saved locally but omitted from this preview.\n\n")
-                shown.forEachIndexed { index, message ->
+                chat.messages.forEachIndexed { index, message ->
                     append(if (message.role == "user") "USER" else "ASSISTANT")
                     append("\n").append(message.text)
-                    if (index != shown.lastIndex) append("\n\n")
+                    if (index != chat.messages.lastIndex) append("\n\n")
                 }
             }
             controls.removeAllViews()
@@ -176,5 +176,4 @@ internal object ChatVaultUi {
     }
     private fun toast(anchor: View, text: String) = Toast.makeText(anchor.context, text, Toast.LENGTH_LONG).show()
     private fun d(anchor: View, n: Int) = Ui.dp(anchor.context, n.toFloat())
-    private const val PREVIEW_MESSAGES = 24
 }
