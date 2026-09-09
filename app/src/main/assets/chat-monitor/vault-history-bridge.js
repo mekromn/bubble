@@ -118,7 +118,9 @@
   }, false);
 
   // MAIN-world hook may have captured the initial conversation response before this isolated script
-  // was ready. Ask it to replay the latest local capture; no network request is generated.
-  window.dispatchEvent(new CustomEvent(REQUEST));
-  setTimeout(() => window.dispatchEvent(new CustomEvent(REQUEST)), 1200);
+  // or the native Vault index was ready. Replays are local-only and cheap: they ask the hook to emit
+  // the already-cloned latest response again and never cause another ChatGPT network request.
+  for (const delay of [0, 1200, 3500, 8000]) {
+    setTimeout(() => window.dispatchEvent(new CustomEvent(REQUEST)), delay);
+  }
 })();
