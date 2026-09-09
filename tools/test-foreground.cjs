@@ -69,3 +69,4 @@ require('./test-download-bridge.cjs');
 require('./test-monitor.cjs');
 require('./test-vault.cjs');
 require('./test-vault-live-request.cjs');
+require('./test-vault-handoff-attachment.cjs');
