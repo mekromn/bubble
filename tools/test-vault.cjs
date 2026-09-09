@@ -2,9 +2,13 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 
 const source = fs.readFileSync('app/src/main/assets/chat-monitor/vault.js', 'utf8');
+const historyHook = fs.readFileSync('app/src/main/assets/chat-monitor/vault-history-hook.js', 'utf8');
+const historyBridge = fs.readFileSync('app/src/main/assets/chat-monitor/vault-history-bridge.js', 'utf8');
+const composerFix = fs.readFileSync('app/src/main/assets/chat-monitor/vault-composer-fix.js', 'utf8');
 const manifest = JSON.parse(fs.readFileSync('app/src/main/assets/chat-monitor/manifest.json', 'utf8'));
 const native = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVault.kt', 'utf8');
 const bridge = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVaultBridge.kt', 'utf8');
+const snapshotPolicy = fs.readFileSync('app/src/main/java/com/mekromn/bubble/VaultSnapshotPolicy.kt', 'utf8');
 const appearance = fs.readFileSync('app/src/main/java/com/mekromn/bubble/PageAppearance.kt', 'utf8');
 
 const vaultScript = manifest.content_scripts.find(item => item.js.includes('vault.js'));
@@ -60,4 +64,49 @@ assert.match(native, /for \(record in chat\.messages\.drop\(2\)\.asReversed\(\)\
   'Size-aware handoff must scan newest remaining messages first');
 assert.match(native, /tail\.addFirst\(record\)/, 'Newest retained context must be restored in chronological order');
 
-console.log('Continuity Vault exact-origin, profile isolation, local-only storage, chunking, 70k handoff, and no-auto-send guards passed.');
+// Long ChatGPT threads are virtualized. The MAIN-world observer may inspect only responses the page
+// already fetched: it must not generate its own authenticated request, scroll the page, or capture
+// credentials. The isolated bridge then forwards the full active chain into the same local Vault.
+const historyMain = manifest.content_scripts.find(item => item.js.includes('vault-history-hook.js'));
+const historyIsolated = manifest.content_scripts.find(item => item.js.includes('vault-history-bridge.js'));
+assert.ok(historyMain && historyIsolated, 'Full-history observer and isolated bridge must stay registered');
+assert.deepEqual(historyMain.matches, ['https://chatgpt.com/*']);
+assert.equal(historyMain.world, 'MAIN'); assert.equal(historyMain.run_at, 'document_start'); assert.equal(historyMain.all_frames, false);
+assert.deepEqual(historyIsolated.matches, ['https://chatgpt.com/*']);
+assert.notEqual(historyIsolated.world, 'MAIN'); assert.equal(historyIsolated.all_frames, false);
+assert.match(historyHook, /response\.clone\(\)/, 'History observer must inspect a clone without consuming ChatGPT response bodies');
+assert.match(historyHook, /originalFetch\.apply\(this, args\)/, 'History observer must preserve the page fetch call exactly');
+assert.match(historyHook, /xhrSend\.apply\(this, args\)/, 'History observer must preserve page XHR sends exactly');
+assert.match(historyHook, /current_node|currentNode/, 'History observer must preserve the active branch when mapping data is available');
+assert.equal(/\bfetch\s*\(/.test(historyHook), false, 'History observer must never initiate an extra fetch');
+assert.equal(/new\s+XMLHttpRequest\s*\(/.test(historyHook), false, 'History observer must never initiate an extra XHR');
+for (const forbidden of [/document\.cookie/, /\bAuthorization\b/, /\bBearer\b/, /sendNativeMessage/, /\.click\s*\(/, /scrollIntoView|scrollTo|scrollBy/]) {
+  assert.equal(forbidden.test(historyHook), false, `MAIN-world history observer crossed its passive boundary: ${forbidden}`);
+}
+assert.match(historyBridge, /sendNativeMessage\('bubbleVault'/, 'Full history must cross only the dedicated local Vault namespace');
+assert.match(historyBridge, /passive-full-history/, 'Full-history snapshots must be distinguishable in diagnostics');
+assert.match(historyBridge, /__bubble_vault_history_request_v1__/, 'Late isolated injection must be able to replay an already-captured initial response');
+
+// A short DOM tail after refresh must never erase a larger saved transcript, including during a
+// cold-start race before the native index is loaded.
+assert.match(snapshotPolicy, /vaultLoaded && incomingCount >= 1 && incomingCount >= savedCount\.coerceAtLeast\(0\)/,
+  'Vault snapshot policy must be monotonic and index-load gated');
+assert.match(bridge, /VaultSnapshotPolicy\.accepts\(vault\.loaded, savedCount, incomingCount\)/,
+  'Native bridge must apply the monotonic policy before accepting snapshot chunks');
+assert.match(bridge, /ignoredTransfers/, 'Rejected partial transfers must have all later chunks/end ignored');
+
+// Continue-in-new-chat must work across ChatGPT textarea and contenteditable/ProseMirror variants.
+const composerScript = manifest.content_scripts.find(item => item.js.includes('vault-composer-fix.js'));
+assert.ok(composerScript, 'Composer recovery helper must stay registered');
+assert.deepEqual(composerScript.matches, ['https://chatgpt.com/*']); assert.equal(composerScript.all_frames, false);
+assert.match(composerFix, /DataTransfer\(\)/, 'Composer fallback should try the editor paste transaction path');
+assert.match(composerFix, /ClipboardEvent\('paste'/, 'Composer fallback should support ProseMirror paste handling');
+assert.match(composerFix, /execCommand\('insertText'/, 'Composer fallback should retain Gecko contenteditable insertion');
+assert.match(composerFix, /inputType: 'insertFromPaste'/, 'Composer fallback must emit editor-compatible input semantics');
+assert.match(composerFix, /attempts >= 180/, 'Slow New Chat/editor startup must not silently exhaust after a few seconds');
+assert.match(composerFix, /if \(busy \|\| loadedSourceId \|\| routeChatId\(\)/,
+  'Staged handoff insertion must be limited to a fresh New Chat route');
+assert.equal(/send-button|submit-button|aria-label[^\n]*Send/iu.test(composerFix), false, 'Composer fallback must never auto-submit');
+assert.equal(/\.click\s*\(/.test(composerFix), false, 'Composer fallback must never synthesize a click');
+
+console.log('Continuity Vault exact-origin, profile isolation, cumulative full-history capture, robust composer handoff, local-only storage, 70k handoff, and no-auto-send guards passed.');
