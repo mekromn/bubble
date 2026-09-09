@@ -52,11 +52,12 @@ internal class ChatTab(val id: String = UUID.randomUUID().toString(), var url: S
     }
 }
 
-/** Main-thread session owner. Only ChatGPT has automatic idle hibernation because the exact-origin
- * monitor tells us when a response is actually working. A working/loading tab is protected; a
- * reopened ChatGPT renderer always performs a fresh cache-bypassed navigation instead of restoring
- * an old DOM/session snapshot. Google Voice is deliberately resident/high-priority while Bubble is
- * running so its web notification and call/message signaling remains alive. */
+/**
+ * Main-thread session owner. Open ChatGPT tabs remain resident/active unless the user explicitly
+ * suspends one. Background maintenance performs bounded 30-minute activity checks without focusing
+ * or mutating the page; it does not use automatic renderer hibernation. A working/loading tab is
+ * protected, and Google Voice likewise remains resident/high-priority while Bubble is running.
+ */
 internal class Workspace private constructor(private val app: Context, initialUrl: String?) {
     val tabs = ArrayList<ChatTab>()
     val closedTabs = ArrayList<StoredTab>()
@@ -123,14 +124,13 @@ internal class Workspace private constructor(private val app: Context, initialUr
             else if (initialUrl != null) tabs += ChatTab(url = initialUrl, profileId = selected?.profileId ?: ProfilePolicy.DEFAULT_ID).also { selectedId = it.id }
             if (selected == null) selectedId = tabs.first().id
             selected?.let { resumeState(it) }
-            ready = true; ensureSession(selected!!); changed(true)
+            ready = true; ensureSession(selected!!); ChatTabMaintenance.attach(this); changed(true)
             tabs.filter { it.id != selectedId }.forEachIndexed { index, tab -> main.postDelayed({
                 if (tab !in tabs) return@postDelayed
                 when {
                     Policy.isVoice(tab.url) -> { tab.manualSuspended = false; tab.suspended = false; tab.error = null; ensureSession(tab) }
                     tab.manualSuspended -> { tab.suspended = true; changed() }
-                    tab.forceKeepAlive || !Policy.isChat(tab.url) -> ensureSession(tab)
-                    else -> { tab.suspended = true; changed() }
+                    else -> ensureSession(tab)
                 }
             }, 250L + index * 120L) }
         }
@@ -224,7 +224,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         checkMain(); val tab = tabs.firstOrNull { it.id == id } ?: return
         closedTabs.removeAll { it.id == id }; closedTabs.add(0, tab.snapshot().copy(unread = false))
         while (closedTabs.size > 20) closedTabs.removeAt(closedTabs.lastIndex)
-        cancelAutoSuspend(id); tab.session?.let(FloatingFileActivity::cancelForSession)
+        cancelAutoSuspend(id); ChatVaultControls.unbind(id); tab.session?.let(FloatingFileActivity::cancelForSession)
         pendingStarts.remove(id); tabs.remove(tab); detachTab(tab.session)
         tab.session?.close(); tab.session = null; Replies.clear(app, id); VoiceNotifications.clearStatus(app, id); UploadStaging.release(app, id)
         if (tabs.isEmpty()) tabs += ChatTab(profileId = tab.profileId)
@@ -278,24 +278,13 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private fun selectedVisible(tab: ChatTab): Boolean = tab.id == selectedId && (visible || floatingVisible)
     private fun cancelAutoSuspend(id: String) { pendingAutoSuspends.remove(id)?.let(main::removeCallbacks) }
     private fun scheduleAutoSuspend(tab: ChatTab, session: GeckoSession, delayMs: Long = TabSuspendPolicy.AUTO_SUSPEND_DELAY_MS) {
-        if (tab.forceKeepAlive || tab.manualSuspended || tab.generating || tab.loading || selectedVisible(tab) || !Policy.isChat(tab.url)) {
-            cancelAutoSuspend(tab.id); return
-        }
-        val existing = pendingAutoSuspends[tab.id]
-        if (existing != null && delayMs > 0) return
-        if (existing != null) { main.removeCallbacks(existing); pendingAutoSuspends.remove(tab.id) }
-        val task = Runnable {
-            pendingAutoSuspends.remove(tab.id)
-            if (tab !in tabs || tab.session !== session || !session.isOpen) return@Runnable
-            if (!TabSuspendPolicy.automatic(Policy.isChat(tab.url), selectedVisible(tab), tab.generating, tab.loading, tab.forceKeepAlive)) return@Runnable
-            hibernate(tab, session, false)
-        }
-        pendingAutoSuspends[tab.id] = task
-        if (delayMs <= 0) main.post(task) else main.postDelayed(task, delayMs)
+        // Retained for compatibility with older callers/tests. Automatic ChatGPT hibernation is
+        // disabled; only explicit suspend() closes a resident session now.
+        cancelAutoSuspend(tab.id)
     }
     private fun hibernate(tab: ChatTab, session: GeckoSession, manual: Boolean) {
         if (tab !in tabs || tab.session !== session) return
-        cancelAutoSuspend(tab.id); FloatingFileActivity.cancelForSession(session); pendingStarts.remove(tab.id)
+        cancelAutoSuspend(tab.id); ChatVaultControls.unbind(tab.id); FloatingFileActivity.cancelForSession(session); pendingStarts.remove(tab.id)
         detachTab(session)
         runCatching { session.setFocused(false); session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT); session.setActive(false); session.flushSessionState() }
         tab.session = null; tab.loading = false; tab.painted = false; tab.suspended = true
@@ -316,13 +305,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
                 tab.manualSuspended -> {
                     cancelAutoSuspend(tab.id); session.setFocused(false); session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT); session.setActive(false)
                 }
-                tab.forceKeepAlive || !Policy.isChat(tab.url) || selectedVisible(tab) || tab.generating || tab.loading -> {
-                    cancelAutoSuspend(tab.id); tab.suspended = false; session.setActive(true); session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
-                    session.setFocused(!FileUi.busy && chatVisible && tab.id == selectedId && surface.get()?.hasWindowFocus() == true)
-                }
                 else -> {
-                    tab.suspended = false; session.setActive(true); session.setPriorityHint(GeckoSession.PRIORITY_HIGH); session.setFocused(false)
-                    scheduleAutoSuspend(tab, session)
+                    cancelAutoSuspend(tab.id); tab.suspended = false
+                    session.setActive(true); session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+                    session.setFocused(!FileUi.busy && chatVisible && tab.id == selectedId && surface.get()?.hasWindowFocus() == true)
                 }
             }
         } }
@@ -383,6 +369,8 @@ internal class Workspace private constructor(private val app: Context, initialUr
             override fun onPageStart(s: GeckoSession, url: String) {
                 if (tab.session !== s) return
                 cancelAutoSuspend(tab.id); FloatingFileActivity.cancelForSession(s)
+                val oldRun = tab.run
+                if (oldRun.isNotBlank()) ChatTabMaintenance.generationEnded(tab.id, oldRun)
                 if (Policy.isWeb(url)) tab.url = url
                 tab.painted = false; tab.loading = true; tab.progress = 0; tab.error = null; tab.cancelledLoad = false
                 tab.suspended = false; tab.generating = false; tab.run = ""; applyPolicy(); changed(true)
@@ -449,7 +437,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         if (tab.session !== session || tab !in tabs) return
         main.post {
             if (tab.session !== session || tab !in tabs) return@post
-            cancelAutoSuspend(tab.id); FloatingFileActivity.cancelForSession(session)
+            cancelAutoSuspend(tab.id); ChatVaultControls.unbind(tab.id); FloatingFileActivity.cancelForSession(session)
             detachTab(session); pendingStarts.remove(tab.id)
             tab.session = null; tab.loading = false; tab.painted = false; tab.generating = false; runCatching { session.close() }
             if (FreshResumePolicy.requiresFreshNavigation(tab.url)) tab.savedState = null
@@ -486,15 +474,15 @@ internal class Workspace private constructor(private val app: Context, initialUr
                     "started" -> {
                         cancelAutoSuspend(tab.id); tab.suspended = false; tab.generating = true; tab.run = run; applyPolicy(); changed()
                     }
-                    "aborted" -> if (tab.run == run) { tab.generating = false; applyPolicy(); changed() }
+                    "aborted" -> if (tab.run == run) {
+                        tab.generating = false; ChatTabMaintenance.generationEnded(tab.id, run); applyPolicy(); changed()
+                    }
                     "finished" -> {
                         if (!tab.generating || tab.run != run || tab.lastNotice == run) return null
-                        tab.generating = false; tab.lastNotice = run; tab.unread = !(chatVisible && tab.id == selectedId); applyPolicy(); changed()
+                        tab.generating = false; tab.lastNotice = run; tab.unread = !(chatVisible && tab.id == selectedId)
+                        ChatTabMaintenance.generationEnded(tab.id, run); applyPolicy(); changed()
                         checkpoint { _ ->
                             if (tab in tabs && tab.unread && !tab.muted && tab.lastNotice == run) Replies.finished(app, tab.id)
-                            if (tab in tabs && tab.session === session && !selectedVisible(tab) && !tab.forceKeepAlive && !tab.manualSuspended) {
-                                scheduleAutoSuspend(tab, session)
-                            }
                         }
                     }
                 }
