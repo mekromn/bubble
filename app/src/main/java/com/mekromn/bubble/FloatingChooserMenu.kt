@@ -8,7 +8,7 @@ import android.widget.LinearLayout
 /** Compact replacement for the old three-button chooser footer. */
 internal object FloatingChooserMenu {
     fun show(anchor: View, workspace: Workspace, openChat: (String) -> Unit) {
-        val panel = QuickPanel.open(anchor, workspace, "Workspace menu", 245) ?: return
+        val panel = QuickPanel.open(anchor, workspace, "Workspace menu", 300) ?: return
         fun d(n: Int) = Ui.dp(anchor.context, n.toFloat())
         val body = LinearLayout(anchor.context).apply { orientation = LinearLayout.VERTICAL; setPadding(d(8), d(6), d(8), d(8)) }
         panel.body.addView(body, LinearLayout.LayoutParams(-1, -1))
@@ -18,6 +18,7 @@ internal object FloatingChooserMenu {
             setOnClickListener { panel.finish(action) }
         }
         body.addView(row("Chat tools") { QuickMenus.tools(anchor, workspace, openChat) }, LinearLayout.LayoutParams(-1, d(56)))
+        body.addView(row("Continuity Vault · saved chats") { ChatVaultUi.show(anchor, workspace, openChat) }, LinearLayout.LayoutParams(-1, d(56)))
         body.addView(row("Edge access") { AccessMenu.show(anchor, workspace) }, LinearLayout.LayoutParams(-1, d(56)))
         body.addView(row("Reply sound / ChatGPT notifications") { Replies.settings(anchor.context) }, LinearLayout.LayoutParams(-1, d(56)))
     }
