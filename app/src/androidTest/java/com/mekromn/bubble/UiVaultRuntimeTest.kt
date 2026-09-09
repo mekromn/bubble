@@ -115,6 +115,24 @@ class UiVaultRuntimeTest {
         assertTrue(text.contains("latest unfinished request"))
         assertTrue(text.contains("[END PREVIOUS CHAT]"))
         assertTrue(requireNotNull(handoff).complete)
+
+        val exportLatch = CountDownLatch(1)
+        var transcriptExport: ChatTranscriptExport? = null
+        ChatTranscriptExports.beginById(context, vault, id, profileA) {
+            transcriptExport = it
+            exportLatch.countDown()
+        }
+        assertTrue("Staged transcript export callback timed out", exportLatch.await(5, TimeUnit.SECONDS))
+        val export = requireNotNull(transcriptExport)
+        assertEquals(id, export.sourceId)
+        assertTrue(export.filename.endsWith("-transcript.md"))
+        val markdown = export.file.readText()
+        assertTrue(markdown.contains("# ChatGPT conversation transcript"))
+        assertTrue(markdown.contains("- Messages: 4"))
+        assertTrue(markdown.contains("opening question $id"))
+        assertTrue(markdown.contains("latest unfinished request"))
+        ChatTranscriptExports.discard(export)
+
         vault.clearPending(id)
         vault.delete(id)
     }
