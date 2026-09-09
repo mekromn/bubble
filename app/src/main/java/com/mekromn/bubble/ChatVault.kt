@@ -14,6 +14,7 @@ import java.util.concurrent.Executors
 
 internal data class VaultSummary(
     val id: String,
+    val profileId: String,
     val title: String,
     val url: String,
     val updatedAt: Long,
@@ -23,6 +24,7 @@ internal data class VaultSummary(
 internal data class VaultMessage(val role: String, val text: String)
 internal data class VaultChat(
     val id: String,
+    val profileId: String,
     val title: String,
     val url: String,
     val createdAt: Long,
@@ -40,15 +42,14 @@ internal data class VaultHandoff(val text: String, val complete: Boolean, val so
  * arrive from the exact-origin ChatGPT content script in ordered chunks so very long conversations
  * are never forced through one native-message payload. Writes are serialized off the UI thread and
  * committed through AtomicFile. There is no cloud endpoint, credential capture, analytics, or
- * automatic pruning.
+ * automatic pruning. Every entry is also bound to Bubble's isolated browser profile so continuity
+ * from one account/profile is never offered to another profile by the native new-chat workflow.
  */
 internal class ChatVault(private val app: Context, private val onChanged: () -> Unit) {
     private data class Incoming(
         val transfer: String,
         val tabId: String,
         val summary: VaultSummary,
-        val createdAt: Long,
-        val firstSignature: String,
         val totalChunks: Int,
         val expectedChars: Int,
         val file: File,
@@ -88,7 +89,8 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
 
     fun summaries(): List<VaultSummary> = cached
 
-    fun begin(tabId: String, message: JSONObject) {
+    fun begin(tabId: String, profileId: String, message: JSONObject) {
+        if (profileId.isBlank()) return
         val transfer = message.optString("transfer").takeIf { it.length in 8..128 } ?: return
         val chatId = message.optString("chatId").takeIf { it.length in 1..256 } ?: return
         val url = message.optString("url").takeIf(Policy::isChat) ?: return
@@ -97,14 +99,12 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         val chars = message.optInt("chars").takeIf { it in 2..MAX_SNAPSHOT_CHARS } ?: return
         val count = message.optInt("messages").takeIf { it in 1..200_000 } ?: return
         val updated = message.optLong("updatedAt").takeIf { it > 0 } ?: System.currentTimeMillis()
-        val created = message.optLong("createdAt").takeIf { it > 0 } ?: updated
-        val signature = message.optString("firstSignature").take(MAX_SIGNATURE)
-        val summary = VaultSummary(chatId, title, url, updated, count)
+        val summary = VaultSummary(chatId, profileId, title, url, updated, count)
         io.execute {
             root.mkdirs()
             incoming.remove(transfer)?.file?.delete()
             val temp = File(root, ".incoming-${safeTransfer(transfer)}").apply { delete(); createNewFile() }
-            incoming[transfer] = Incoming(transfer, tabId, summary, created, signature, total, chars, temp)
+            incoming[transfer] = Incoming(transfer, tabId, summary, total, chars, temp)
         }
     }
 
@@ -139,25 +139,23 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
                 state.receivedChars != state.expectedChars || !state.file.isFile) {
                 state.file.delete(); return@execute
             }
-            val finalFile = chatFile(state.summary.id)
-            val valid = runCatching {
-                // Validate only the envelope/identity before replacing the prior snapshot. The full
-                // message array remains in the file and is parsed only when a user opens/continues it.
-                val raw = state.file.readText(StandardCharsets.UTF_8)
-                val objectValue = JSONObject(raw)
-                objectValue.optString("id") == state.summary.id &&
-                    objectValue.optJSONArray("messages")?.length() == state.summary.messages
-            }.getOrDefault(false)
-            if (!valid) { state.file.delete(); return@execute }
+            val parsed = runCatching {
+                val objectValue = JSONObject(state.file.readText(StandardCharsets.UTF_8))
+                if (objectValue.optString("id") != state.summary.id ||
+                    objectValue.optJSONArray("messages")?.length() != state.summary.messages) null
+                else objectValue
+            }.getOrNull()
+            if (parsed == null) { state.file.delete(); return@execute }
             runCatching {
-                atomicCopy(state.file, finalFile)
+                // The page cannot choose a Bubble profile. Bind the validated snapshot to the native
+                // tab profile before the atomic commit so restored/indexed data keeps that boundary.
+                parsed.put("profileId", state.summary.profileId)
+                writeAtomic(AtomicFile(chatFile(state.summary.id)), parsed.toString().toByteArray(StandardCharsets.UTF_8))
                 state.file.delete()
                 val next = listOf(state.summary) + cached.filterNot { it.id == state.summary.id }
                 cached = next.sortedByDescending { it.updatedAt }
                 writeIndex(cached)
-                if (pendingId == state.summary.id) {
-                    pendingHandoff = readChat(state.summary.id)?.let(::buildHandoff)
-                }
+                if (pendingId == state.summary.id) pendingHandoff = readChat(state.summary.id)?.let(::buildHandoff)
                 changed()
             }.onFailure { state.file.delete() }
         }
@@ -174,18 +172,22 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         }
     }
 
-    /** Stage the best saved snapshot corresponding to a live Bubble tab URL. */
-    fun stageForUrl(url: String): Boolean {
-        if (!Policy.isChat(url)) return false
+    /** Stage only a saved snapshot belonging to the same isolated Bubble browser profile. */
+    fun stageForUrl(url: String, profileId: String): Boolean {
+        if (!Policy.isChat(url) || profileId.isBlank()) return false
         val routeId = ROUTE_ID.find(url)?.groupValues?.getOrNull(1)
         val match = cached.firstOrNull { summary ->
-            summary.url == url || (routeId != null && (summary.id == routeId || summary.url.contains("/c/$routeId")))
+            summary.profileId == profileId &&
+                (summary.url == url || (routeId != null && (summary.id == routeId || summary.url.contains("/c/$routeId"))))
         } ?: return false
         stage(match.id)
         return true
     }
 
-    fun pendingResponse(): JSONObject? {
+    fun pendingResponse(profileId: String): JSONObject? {
+        val id = pendingId ?: return null
+        val summary = cached.firstOrNull { it.id == id } ?: return null
+        if (summary.profileId != profileId) return null
         val value = pendingHandoff ?: return null
         return JSONObject().put("pending", true).put("sourceId", value.sourceId)
             .put("text", value.text).put("complete", value.complete)
@@ -234,6 +236,7 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         if (messages.isEmpty()) return@runCatching null
         VaultChat(
             objectValue.optString("id").takeIf { it == id } ?: return@runCatching null,
+            objectValue.optString("profileId").ifBlank { ProfilePolicy.DEFAULT_ID },
             objectValue.optString("title").take(512).ifBlank { "Untitled chat" },
             objectValue.optString("url").takeIf(Policy::isChat) ?: Policy.HOME,
             objectValue.optLong("createdAt"), objectValue.optLong("updatedAt"),
@@ -281,17 +284,21 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
                 val item = array.optJSONObject(i) ?: continue
                 val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
                 val url = item.optString("url").takeIf(Policy::isChat) ?: continue
-                add(VaultSummary(id, item.optString("title").take(512).ifBlank { "Untitled chat" }, url,
-                    item.optLong("updatedAt"), item.optInt("messages").coerceAtLeast(0)))
+                add(VaultSummary(
+                    id,
+                    item.optString("profileId").ifBlank { ProfilePolicy.DEFAULT_ID },
+                    item.optString("title").take(512).ifBlank { "Untitled chat" },
+                    url, item.optLong("updatedAt"), item.optInt("messages").coerceAtLeast(0)
+                ))
             }
         }.sortedByDescending { it.updatedAt }
     }.getOrDefault(emptyList())
 
     private fun writeIndex(items: List<VaultSummary>) {
         val array = JSONArray()
-        items.forEach { item -> array.put(JSONObject().put("id", item.id).put("title", item.title).put("url", item.url)
-            .put("updatedAt", item.updatedAt).put("messages", item.messages)) }
-        writeAtomic(indexFile, JSONObject().put("version", 1).put("items", array).toString().toByteArray(StandardCharsets.UTF_8))
+        items.forEach { item -> array.put(JSONObject().put("id", item.id).put("profileId", item.profileId)
+            .put("title", item.title).put("url", item.url).put("updatedAt", item.updatedAt).put("messages", item.messages)) }
+        writeAtomic(indexFile, JSONObject().put("version", 2).put("items", array).toString().toByteArray(StandardCharsets.UTF_8))
     }
 
     private fun readPendingId(): String? = runCatching {
@@ -309,17 +316,6 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
     private fun safeTransfer(value: String): String = value.filter { it.isLetterOrDigit() || it == '-' || it == '_' }.take(128)
 
     private fun abortIncoming(transfer: String) { incoming.remove(transfer)?.file?.delete() }
-
-    private fun atomicCopy(source: File, target: File) {
-        val atomic = AtomicFile(target)
-        val output = atomic.startWrite()
-        try {
-            source.inputStream().buffered().use { input -> input.copyTo(output, 128 * 1024) }
-            atomic.finishWrite(output)
-        } catch (t: Throwable) {
-            atomic.failWrite(output); throw t
-        }
-    }
 
     private fun writeAtomic(file: AtomicFile, bytes: ByteArray) {
         val output = file.startWrite()
