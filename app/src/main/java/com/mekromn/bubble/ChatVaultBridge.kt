@@ -24,12 +24,13 @@ internal object ChatVaultRegistry {
  *
  * It deliberately uses a separate native-app name from reply lifecycle messages. Transcript text is
  * accepted only from the built-in extension, the exact GeckoSession, top-level ChatGPT content
- * script, and exact trusted origin. No generic webpage can reach this storage path.
+ * script, exact trusted origin, and the native Bubble profile that owns the tab. No generic webpage
+ * can choose or cross that profile boundary.
  */
 internal object ChatVaultBridge {
     private const val NATIVE_APP = "bubbleVault"
 
-    fun bind(context: Context, tabId: String, session: GeckoSession, addon: WebExtension) {
+    fun bind(context: Context, tabId: String, profileId: String, session: GeckoSession, addon: WebExtension) {
         val vault = ChatVaultRegistry.get(context)
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
@@ -38,15 +39,15 @@ internal object ChatVaultBridge {
                     !Policy.isChat(sender.url)) return null
                 val payload = message as? JSONObject ?: return null
                 return when (payload.optString("event")) {
-                    "vault-snapshot-begin" -> { vault.begin(tabId, payload); null }
+                    "vault-snapshot-begin" -> { vault.begin(tabId, profileId, payload); null }
                     "vault-snapshot-chunk" -> { vault.chunk(tabId, payload); null }
                     "vault-snapshot-end" -> { vault.end(tabId, payload); null }
                     "vault-stage" -> {
-                        payload.optString("chatId").takeIf { it.isNotBlank() }?.let(vault::stage)
+                        payload.optString("chatId").takeIf { it.isNotBlank() }?.let { vault.stage(it, profileId) }
                         null
                     }
                     "vault-pending-request" -> GeckoResult.fromValue(
-                        vault.pendingResponse() ?: JSONObject().put("pending", false)
+                        vault.pendingResponse(profileId) ?: JSONObject().put("pending", false)
                     )
                     "vault-pending-consumed" -> {
                         vault.clearPending(payload.optString("sourceId").takeIf { it.isNotBlank() })
