@@ -43,7 +43,8 @@ class TabReadinessTest {
         val background = TabStatusPolicy.of(chat, selectedVisible = false, resident = true)
         assertEquals(TabReadiness.ACTIVE, active.readiness)
         assertEquals(TabReadiness.IDLE, background.readiness)
-        assertTrue(background.detail.contains("15-minute"))
+        assertTrue(background.detail.contains("kept resident"))
+        assertFalse(background.detail.contains("15-minute"))
         assertFalse(active.busy)
     }
 
