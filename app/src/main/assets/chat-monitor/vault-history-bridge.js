@@ -1,7 +1,7 @@
 /* Bubble Continuity Vault full-history bridge (isolated world, exact ChatGPT origin).
- * Receives only local CustomEvents from vault-history-hook.js and forwards validated transcript
- * snapshots to Bubble's app-private Vault. No network, credentials, cookies, storage, or page
- * interaction is performed here. */
+ * Receives local full-history CustomEvents and exposes a persistent, per-session native control port
+ * for explicit archive requests and lightweight activity heartbeats. No network, credentials,
+ * cookies, storage, scrolls, clicks, or focus changes are performed here. */
 (() => {
   'use strict';
   if (window !== window.top || location.origin !== 'https://chatgpt.com') return;
@@ -13,6 +13,9 @@
   const MAX_SNAPSHOT_CHARS = 256 * 1024 * 1024;
   const incoming = new Map();
   let lastSignature = '';
+  let lastSnapshot = null;
+  let archiveRequestId = '';
+  let archiveTimeout = 0;
 
   const routeChatId = () => location.pathname.match(/\/c\/([^/?#]+)/u)?.[1] || '';
   const send = async message => {
@@ -66,11 +69,12 @@
   }
 
   async function persist(snapshot) {
-    if (!snapshot) return;
+    if (!snapshot) return { ok: false, reason: 'No complete conversation snapshot is available' };
+    lastSnapshot = snapshot;
     const fingerprint = signature(snapshot);
-    if (fingerprint === lastSignature) return;
+    if (fingerprint === lastSignature) return { ok: true, chatId: snapshot.id, messages: snapshot.messages.length };
     const serialized = JSON.stringify(snapshot);
-    if (!serialized.length || serialized.length > MAX_SNAPSHOT_CHARS) return;
+    if (!serialized.length || serialized.length > MAX_SNAPSHOT_CHARS) return { ok: false, reason: 'Conversation snapshot is too large' };
     const chunks = chunksOf(serialized);
     const transfer = crypto.randomUUID();
     const begin = await send({
@@ -80,16 +84,32 @@
       totalChunks: chunks.length, chars: serialized.length, source: 'passive-full-history'
     });
     if (begin?.accepted !== true) {
-      // Native remembers rejected transfer IDs so legacy senders that ignore the begin response
-      // cannot accidentally stream chunks into the Vault. Close our rejected transfer explicitly.
       await send({ event: 'vault-snapshot-end', transfer });
-      return;
+      // Native intentionally rejects a smaller/equal stale render when it already owns more history.
+      // For an explicit archive request, that is still a successful durable archive.
+      if (begin?.accepted === false) return { ok: true, chatId: snapshot.id, messages: snapshot.messages.length };
+      return { ok: false, reason: 'Native Vault did not accept the snapshot' };
     }
     for (let index = 0; index < chunks.length; index++) {
       await send({ event: 'vault-snapshot-chunk', transfer, index, data: chunks[index] });
     }
     await send({ event: 'vault-snapshot-end', transfer });
     lastSignature = fingerprint;
+    return { ok: true, chatId: snapshot.id, messages: snapshot.messages.length };
+  }
+
+  function finishArchive(result) {
+    if (!archiveRequestId) return;
+    const requestId = archiveRequestId;
+    archiveRequestId = '';
+    clearTimeout(archiveTimeout); archiveTimeout = 0;
+    try {
+      control.postMessage({
+        event: 'archive-full-history-result', requestId,
+        ok: Boolean(result?.ok), chatId: result?.chatId || '', messages: Number(result?.messages || 0),
+        reason: result?.reason || ''
+      });
+    } catch (_) {}
   }
 
   window.addEventListener(EVENT, event => {
@@ -119,14 +139,45 @@
       if (state.next !== state.total) return;
       const text = state.data.join('');
       if (text.length !== state.chars) return;
-      try { void persist(normalizePayload(JSON.parse(text))); } catch (_) {}
+      try {
+        const snapshot = normalizePayload(JSON.parse(text));
+        if (!snapshot) return;
+        lastSnapshot = snapshot;
+        void persist(snapshot).then(result => { if (archiveRequestId) finishArchive(result); });
+      } catch (_) {}
     }
   }, false);
 
-  // MAIN-world hook may have captured the initial conversation response before this isolated script
-  // or the native Vault index was ready. Replays are local-only and cheap: they ask the hook to emit
-  // the already-cloned latest response again and never cause another ChatGPT network request.
-  for (const delay of [0, 1200, 3500, 8000]) {
-    setTimeout(() => window.dispatchEvent(new CustomEvent(REQUEST)), delay);
+  function activityFingerprint() {
+    const turns = [...document.querySelectorAll('main article[data-testid^="conversation-turn-"]')];
+    const last = turns.at(-1);
+    const lastId = last?.getAttribute('data-testid') || last?.getAttribute('data-message-id') || last?.id || '';
+    const busy = Boolean(document.querySelector('button[data-testid="stop-button"],button[aria-label*="Stop generating" i],[data-is-streaming="true"]'));
+    return {
+      fingerprint: `${routeChatId()}|${turns.length}|${lastId}|${busy ? 1 : 0}`.slice(0, 512),
+      busy
+    };
   }
+
+  const control = browser.runtime.connectNative('bubbleVault');
+  control.onMessage.addListener(message => {
+    const requestId = typeof message?.requestId === 'string' ? message.requestId : '';
+    if (!requestId) return;
+    if (message.event === 'heartbeat') {
+      const state = activityFingerprint();
+      try { control.postMessage({ event: 'heartbeat-result', requestId, ok: true, fingerprint: state.fingerprint, busy: state.busy }); } catch (_) {}
+      return;
+    }
+    if (message.event === 'archive-full-history') {
+      archiveRequestId = requestId;
+      clearTimeout(archiveTimeout);
+      archiveTimeout = setTimeout(() => finishArchive({ ok: false, reason: 'No complete history response was captured in this tab' }), 12000);
+      if (lastSnapshot) void persist(lastSnapshot).then(finishArchive);
+      else window.dispatchEvent(new CustomEvent(REQUEST));
+    }
+  });
+
+  // MAIN-world hook may have captured the initial conversation response before this isolated script
+  // or native Vault index was ready. These local replays never cause another ChatGPT request.
+  for (const delay of [0, 1200, 3500, 8000]) setTimeout(() => window.dispatchEvent(new CustomEvent(REQUEST)), delay);
 })();
