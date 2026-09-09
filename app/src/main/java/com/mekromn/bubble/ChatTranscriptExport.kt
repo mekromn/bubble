@@ -44,37 +44,56 @@ internal object ChatTranscriptExports {
     fun begin(context: Context, vault: ChatVault, url: String, profileId: String,
         callback: (ChatTranscriptExport?) -> Unit) {
         initialize(context)
-        val summary = match(vault.summaries(), url, profileId)
-        if (summary == null) { callback(null); return }
-        vault.read(summary.id) { chat ->
-            if (chat == null || chat.profileId != profileId) { callback(null); return@read }
-            io.execute {
-                val transfer = UUID.randomUUID().toString()
-                val dir = File(root(context), transfer).apply { mkdirs() }
-                val filename = transcriptName(chat.title)
-                val file = File(dir, filename)
-                val success = runCatching {
-                    file.outputStream().bufferedWriter(StandardCharsets.UTF_8).use { out ->
-                        out.appendLine("# ChatGPT conversation transcript")
-                        out.appendLine()
-                        out.appendLine("- Title: ${chat.title.replace('\n', ' ')}")
-                        out.appendLine("- Conversation: ${chat.url}")
-                        out.appendLine("- Messages: ${chat.messages.size}")
-                        out.appendLine()
-                        chat.messages.forEachIndexed { index, message ->
-                            out.append("## ").append((index + 1).toString()).append(" · ")
-                                .append(if (message.role == "user") "USER" else "ASSISTANT").appendLine()
-                            out.appendLine()
-                            out.appendLine(message.text)
-                            out.appendLine()
-                        }
-                    }
-                    file.isFile && file.length() > 0
-                }.getOrDefault(false)
-                val result = if (success) ChatTranscriptExport(transfer, chat.id, filename, file, file.length()) else null
-                if (!success) dir.deleteRecursively()
-                main.post { callback(result) }
+        if (!Policy.isChat(url) || profileId.isBlank()) { callback(null); return }
+        val routeId = ROUTE.find(url)?.groupValues?.getOrNull(1)
+        val summaryId = match(vault.summaries(), url, profileId)?.id
+        val id = routeId ?: summaryId
+        if (id == null) { callback(null); return }
+
+        // vault.read() is serialized on ChatVault's IO lane. If the page flushed its newest rendered
+        // snapshot immediately before requesting this export, that queued commit is guaranteed to
+        // complete before this read runs, so the transcript includes the request turn itself.
+        vault.read(id) { direct ->
+            if (direct != null && direct.profileId == profileId) {
+                build(context, direct, callback)
+                return@read
             }
+            val fallback = match(vault.summaries(), url, profileId)
+            if (fallback == null || fallback.id == id) { callback(null); return@read }
+            vault.read(fallback.id) { chat ->
+                if (chat == null || chat.profileId != profileId) callback(null)
+                else build(context, chat, callback)
+            }
+        }
+    }
+
+    private fun build(context: Context, chat: VaultChat, callback: (ChatTranscriptExport?) -> Unit) {
+        io.execute {
+            val transfer = UUID.randomUUID().toString()
+            val dir = File(root(context), transfer).apply { mkdirs() }
+            val filename = transcriptName(chat.title)
+            val file = File(dir, filename)
+            val success = runCatching {
+                file.outputStream().bufferedWriter(StandardCharsets.UTF_8).use { out ->
+                    out.appendLine("# ChatGPT conversation transcript")
+                    out.appendLine()
+                    out.appendLine("- Title: ${chat.title.replace('\n', ' ')}")
+                    out.appendLine("- Conversation: ${chat.url}")
+                    out.appendLine("- Messages: ${chat.messages.size}")
+                    out.appendLine()
+                    chat.messages.forEachIndexed { index, message ->
+                        out.append("## ").append((index + 1).toString()).append(" · ")
+                            .append(if (message.role == "user") "USER" else "ASSISTANT").appendLine()
+                        out.appendLine()
+                        out.appendLine(message.text)
+                        out.appendLine()
+                    }
+                }
+                file.isFile && file.length() > 0
+            }.getOrDefault(false)
+            val result = if (success) ChatTranscriptExport(transfer, chat.id, filename, file, file.length()) else null
+            if (!success) dir.deleteRecursively()
+            main.post { callback(result) }
         }
     }
 
@@ -109,7 +128,6 @@ internal object ChatTranscriptExports {
     internal data class JSONObjectChunk(val base64: String, val next: Long, val done: Boolean)
 
     private fun match(items: List<VaultSummary>, url: String, profileId: String): VaultSummary? {
-        if (!Policy.isChat(url) || profileId.isBlank()) return null
         val route = ROUTE.find(url)?.groupValues?.getOrNull(1)
         return items.firstOrNull { item ->
             item.profileId == profileId &&
