@@ -1,9 +1,13 @@
 package com.mekromn.bubble
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.provider.Settings
+import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -40,6 +44,11 @@ class FullscreenShrinkRuntimeTest {
 
         try {
             prepareOverlayAccess()
+            assertTrue("Test setup failed to grant overlay access", Settings.canDrawOverlays(context))
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                assertEquals("Test setup failed to grant notifications", PackageManager.PERMISSION_GRANTED,
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS))
+            }
             val url = "http://127.0.0.1:${server.localPort}/shrink"
             ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)).use { scenario ->
                 await { main { Workspace.peek()?.ready == true } }
@@ -56,8 +65,27 @@ class FullscreenShrinkRuntimeTest {
                             Workspace.peek()?.selected?.painted == true
                     }
                 }
+                // ActivityScenario can report a painted Gecko frame one choreography turn before
+                // BrowserActivity's root itself is marked laid out. The real collapse gesture cannot
+                // occur before a visible UI exists, so make the synthetic runtime gesture honor the
+                // same prerequisite instead of racing FullscreenHandoff's source capture.
+                await {
+                    var ready = false
+                    scenario.onActivity { activity ->
+                        val root = browserRoot(activity)
+                        ready = root.isAttachedToWindow && root.isLaidOut && root.width > 0 && root.height > 0 &&
+                            activity.geckoView.isAttachedToWindow && activity.geckoView.isLaidOut &&
+                            activity.geckoView.width > 0 && activity.geckoView.height > 0
+                    }
+                    ready
+                }
 
-                scenario.onActivity { it.collapse(FloatingMode.CHAT) }
+                scenario.onActivity { activity ->
+                    val root = browserRoot(activity)
+                    root.postOnAnimation {
+                        if (!activity.isFinishing) activity.collapse(FloatingMode.CHAT)
+                    }
+                }
                 await { main { BubbleService.active?.window?.mode == FloatingMode.CHAT } }
 
                 // SwiftShader's headless SurfaceView/capturePixels path does not expose Gecko's
@@ -100,10 +128,15 @@ class FullscreenShrinkRuntimeTest {
     private fun prepareOverlayAccess() {
         shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
         shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+        val end = SystemClock.elapsedRealtime() + 5000
+        while (!Settings.canDrawOverlays(context) && SystemClock.elapsedRealtime() < end) Thread.sleep(50)
         automation.serviceInfo = automation.serviceInfo.apply {
             flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
     }
+
+    private fun browserRoot(activity: BrowserActivity): View =
+        BrowserActivity::class.java.getDeclaredField("root").apply { isAccessible = true }.get(activity) as View
 
     private fun main(test: () -> Boolean): Boolean {
         var result = false
