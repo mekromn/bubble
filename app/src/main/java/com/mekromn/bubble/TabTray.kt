@@ -54,6 +54,14 @@ internal class TabTray(
         val labels = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL; setPadding(d(8), 0, 0, 0) }
         labels.addView(Ui.text(c, "Your chats", 23f, Ui.TEXT, true))
         count.setPadding(0, d(4), 0, 0); labels.addView(count); header.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
+        val vault = Ui.text(c, "Vault", 12f, Ui.ACCENT, true).apply {
+            gravity = Gravity.CENTER; contentDescription = "Open local Continuity Vault"; isClickable = true; isFocusable = true
+            background = Ui.ripple(c, Ui.SURFACE_HIGH, 14f)
+            setOnClickListener {
+                Workspace.peek()?.let { workspace -> ChatVaultUi.show(this, workspace, workspace::select) }
+            }
+        }
+        header.addView(vault, LinearLayout.LayoutParams(d(64), d(44)).apply { marginEnd = d(4) })
         header.addView(GlyphView(c, "close", "Close Your chats").apply { setOnClickListener { closeTray() } }, LinearLayout.LayoutParams(d(48), d(48)))
         root.addView(header, LinearLayout.LayoutParams(-1, d(60)))
         val search = EditText(c).apply {
