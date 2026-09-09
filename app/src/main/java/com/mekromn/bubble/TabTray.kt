@@ -77,7 +77,18 @@ internal class TabTray(
         root.addView(search, LinearLayout.LayoutParams(-1, d(48)).apply { setMargins(d(8), d(10), d(8), d(8)) })
         root.addView(conversations, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(Ui.text(c, "＋  New ChatGPT chat", 15f, Ui.TEXT, true).apply {
-            gravity = Gravity.CENTER; background = Ui.ripple(c, Ui.SURFACE_HIGH, 24f); setOnClickListener { newChat() }
+            gravity = Gravity.CENTER; background = Ui.ripple(c, Ui.SURFACE_HIGH, 24f)
+            setOnClickListener {
+                // Match the supplied extension's New Chat continuity even when the user starts the
+                // chat from Bubble's native switcher instead of ChatGPT's webpage control.
+                Workspace.peek()?.let { workspace ->
+                    val current = workspace.selected
+                    if (current != null && Policy.isChat(current.url)) {
+                        ChatVaultRegistry.get(c).stageForUrl(current.url, current.profileId)
+                    }
+                }
+                newChat()
+            }
         }, LinearLayout.LayoutParams(-1, d(50)).apply { setMargins(d(8), d(8), d(8), 0) })
         setContentView(root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
