@@ -39,7 +39,9 @@ assert.match(source, /vault-snapshot-end/);
 assert.match(source, /HANDOFF_MARKER/);
 assert.match(source, /setComposerText\(composer, 'go'\)/, 'Fresh standalone Go continuation should load lowercase go');
 assert.equal(/send-button|submit-button|aria-label[^\n]*Send/iu.test(source), false, 'Vault must never auto-submit the composer');
-assert.match(native, /No cloud endpoint, credential capture, analytics, or\s*\n \* automatic pruning/);
+assert.equal(native.includes('There is no cloud endpoint, credential capture, analytics, or'), true,
+  'Native Vault must explicitly remain free of cloud/credential/analytics behavior');
+assert.equal(native.includes('automatic pruning.'), true, 'Native Vault must explicitly retain saved chats until user deletion');
 assert.match(native, /first two \+ most recent/i, 'Size-aware handoff must keep opening and newest context');
 
 console.log('Continuity Vault origin, local-only storage, chunking, 70k handoff, and no-auto-send guards passed.');
