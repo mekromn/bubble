@@ -14,6 +14,8 @@
   const MAX_EXPORT_BYTES = 256 * 1024 * 1024;
   const CHUNK_CHARS = 48000;
   const HANDOFF_MARKER = '[CONTINUITY HANDOFF — PREVIOUS CHAT]';
+  const TEXT_FALLBACK_REQUEST = '__bubble_vault_text_fallback_request_v1__';
+  const TEXT_FALLBACK_RESULT = '__bubble_vault_text_fallback_result_v1__';
   const STOP = 'button[data-testid="stop-button"],button[aria-label*="Stop generating" i],button[aria-label*="Stop streaming" i],button[aria-label="Stop" i]';
 
   let visibleMessages = [];
@@ -241,7 +243,7 @@
   }
 
   async function waitAttachmentReady(name) {
-    const end = performance.now() + 120_000;
+    const end = performance.now() + 45_000;
     let stableSince = 0;
     while (performance.now() < end) {
       if (filenameVisible(name)) {
@@ -255,6 +257,33 @@
 
   function attachmentPrompt(filename) {
     return `${HANDOFF_MARKER}\nThe complete previous ChatGPT conversation is attached as "${filename}". Read the entire attachment before responding. Treat it as authoritative prior conversation context: preserve its decisions, constraints, terminology, experiments, failures, and unfinished work. Continue from the latest unfinished point without asking me to repeat context already present in the attachment.`;
+  }
+
+  async function robustTextFallback(text) {
+    if (typeof text !== 'string' || !text.includes(HANDOFF_MARKER) || text.length > MAX_HANDOFF_CHARS + 1024) return false;
+    const requestId = crypto.randomUUID();
+    return await new Promise(resolve => {
+      let timeout = 0;
+      const finish = ok => {
+        window.removeEventListener(TEXT_FALLBACK_RESULT, onResult, false);
+        clearTimeout(timeout);
+        resolve(Boolean(ok));
+      };
+      const onResult = event => {
+        if (typeof event.detail !== 'string' || event.detail.length > 1024) return;
+        try {
+          const result = JSON.parse(event.detail);
+          if (result?.requestId === requestId) finish(result.ok === true);
+        } catch (_) {}
+      };
+      window.addEventListener(TEXT_FALLBACK_RESULT, onResult, false);
+      timeout = setTimeout(() => finish(false), 5000);
+      try {
+        window.dispatchEvent(new CustomEvent(TEXT_FALLBACK_REQUEST, {
+          detail: JSON.stringify({requestId, text})
+        }));
+      } catch (_) { finish(false); }
+    });
   }
 
   function schedulePendingRequest(delay = 500) {
@@ -290,12 +319,15 @@
     } catch (_) {}
     if (transfer) await send({event: 'vault-transcript-cancel', transfer});
 
-    // Emergency compatibility fallback: if ChatGPT changes/removes its live upload input, retain the
-    // old size-aware local composer handoff rather than losing continuity completely.
+    // Emergency compatibility fallback: vault.js explicitly invokes the robust ProseMirror helper
+    // only after attachment fails. The helper never requests pending state itself, so it cannot race
+    // this attachment-first path.
     if (typeof response.text !== 'string' || !response.text.includes(HANDOFF_MARKER)) {
       return schedulePendingRequest(650);
     }
-    if (await setComposerText(composer, response.text)) {
+    let inserted = await robustTextFallback(response.text);
+    if (!inserted && !composerValue(composer).trim()) inserted = await setComposerText(composer, response.text);
+    if (inserted) {
       loadedSourceId = sourceId;
       await send({ event: 'vault-handoff-loaded', sourceId: loadedSourceId, complete: Boolean(response.complete), attached: false });
     } else schedulePendingRequest(650);
