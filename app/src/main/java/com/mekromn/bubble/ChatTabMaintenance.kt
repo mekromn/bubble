@@ -120,10 +120,15 @@ internal object ChatTabMaintenance {
         onWorkspaceChanged()
     }
 
+    /**
+     * Full-sync every open ChatGPT tab. A user-manually-suspended tab is temporarily resumed only
+     * for this explicit archive-all command, then returned to manual suspension when its archive
+     * attempt completes. Tabs are processed serially to keep network and Vault IO bounded.
+     */
     fun archiveAll(workspace: Workspace, callback: (ArchiveAllChatsResult) -> Unit) {
         check(Looper.myLooper() == Looper.getMainLooper())
         attach(workspace)
-        val targets = workspace.tabs.filter { Policy.isChat(it.url) }
+        val targets = workspace.tabs.filter { Policy.isChat(it.url) }.toList()
         if (targets.isEmpty()) { callback(ArchiveAllChatsResult(0, 0, 0, 0)); return }
         var archived = 0
         var failed = 0
@@ -135,20 +140,43 @@ internal object ChatTabMaintenance {
                 callback(ArchiveAllChatsResult(targets.size, archived, failed, messages)); return
             }
             val tab = targets[index++]
-            if (tab.manualSuspended) { failed++; next(); return }
+            if (tab !in workspace.tabs) { failed++; next(); return }
+            val restoreManualSuspend = tab.manualSuspended
+            if (restoreManualSuspend) {
+                tab.manualSuspended = false
+                tab.suspended = false
+                if (tab.error == TabSuspendPolicy.MANUAL_MESSAGE) tab.error = null
+            }
             if (tab.session == null) workspace.ensureSession(tab)
             archiveWhenReady(tab, 0) { result ->
                 if (result.success) { archived++; messages += result.messages } else failed++
-                next()
+                if (restoreManualSuspend && tab in workspace.tabs) restoreManual(workspace, tab, 0) { next() }
+                else next()
             }
         }
         next()
     }
 
+    private fun restoreManual(workspace: Workspace, tab: ChatTab, attempt: Int, done: () -> Unit) {
+        if (tab !in workspace.tabs) { done(); return }
+        if (!tab.loading && !tab.generating) {
+            workspace.suspend(tab.id)
+            done()
+            return
+        }
+        if (attempt >= 30) {
+            if (tab.loading) workspace.stopLoading(tab.id)
+            if (!tab.generating) workspace.suspend(tab.id)
+            done()
+            return
+        }
+        main.postDelayed({ restoreManual(workspace, tab, attempt + 1, done) }, 500L)
+    }
+
     private fun archiveWhenReady(tab: ChatTab, attempt: Int, done: (ChatArchiveResult) -> Unit) {
         if (tab.session == null || !tab.session!!.isOpen) { done(ChatArchiveResult(false, reason = "Chat tab is not running")); return }
         if (ChatVaultControls.ready(tab.id)) { ChatVaultControls.archive(tab.id, done); return }
-        if (attempt >= 20) { done(ChatArchiveResult(false, reason = "Chat archive bridge did not become ready")); return }
+        if (attempt >= 60) { done(ChatArchiveResult(false, reason = "Chat archive bridge did not become ready")); return }
         main.postDelayed({ archiveWhenReady(tab, attempt + 1, done) }, 500L)
     }
 
