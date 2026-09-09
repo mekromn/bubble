@@ -14,10 +14,10 @@ internal data class ChatHeartbeatResult(val success: Boolean, val fingerprint: S
 /**
  * App-to-content-script control plane for an exact running ChatGPT GeckoSession.
  *
- * One native Port belongs to one logical Bubble tab/session. It lets explicit native actions ask a
- * background ChatGPT tab to replay its already-captured full-history response or return a lightweight
- * activity fingerprint without selecting/focusing the tab, scrolling it, or issuing another network
- * request. All callbacks are main-thread and bounded by a timeout.
+ * One native Port belongs to one logical Bubble tab/session. It lets explicit native actions request
+ * a same-origin full-history archive or return a lightweight local activity fingerprint without
+ * selecting/focusing the tab, scrolling it, or fabricating user input. All callbacks are main-thread
+ * and bounded by a timeout.
  */
 internal object ChatVaultControls {
     private data class Channel(
@@ -86,6 +86,7 @@ internal object ChatVaultControls {
             override fun onDisconnect(source: WebExtension.Port) {
                 if (channels[tabId]?.port === source) channels.remove(tabId)
                 failForTab(tabId, "Chat tab disconnected")
+                ChatTabMaintenance.channelClosed(tabId)
             }
         })
     }
@@ -94,6 +95,7 @@ internal object ChatVaultControls {
         check(Looper.myLooper() == Looper.getMainLooper())
         channels.remove(tabId)?.port?.disconnect()
         failForTab(tabId, "Chat tab is not running")
+        ChatTabMaintenance.channelClosed(tabId)
     }
 
     fun archive(tabId: String, callback: (ChatArchiveResult) -> Unit) {
@@ -105,7 +107,7 @@ internal object ChatVaultControls {
             request.archive?.invoke(ChatArchiveResult(false, reason = "Full-history archive timed out"))
         }
         pending[requestId] = Pending(Kind.ARCHIVE, tabId, channel.profileId, callback, null, timeout)
-        main.postDelayed(timeout, 30_000L)
+        main.postDelayed(timeout, 45_000L)
         send(channel, requestId, "archive-full-history", timeout, callback)
     }
 
