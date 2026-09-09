@@ -44,7 +44,7 @@ internal object PageAppearance {
     private fun response(context: Context, tabId: String) =
         JSONObject().put("mode", mode(context, tabId).wire)
 
-    fun bind(context: Context, tabId: String, session: GeckoSession, addon: WebExtension) {
+    fun bind(context: Context, tabId: String, profileId: String, session: GeckoSession, addon: WebExtension) {
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
                 // This delegate is already scoped to this exact GeckoSession + built-in extension.
@@ -70,8 +70,9 @@ internal object PageAppearance {
             }
         }, NATIVE_APP)
         // Same built-in extension, separate native-app namespace. This keeps transcript-bearing
-        // Continuity Vault messages isolated from appearance/reply/download control paths.
-        ChatVaultBridge.bind(context, tabId, session, addon)
+        // Continuity Vault messages isolated from appearance/reply/download control paths and binds
+        // them to the native profile that owns this logical tab.
+        ChatVaultBridge.bind(context, tabId, profileId, session, addon)
     }
 
     fun controls(anchor: View, workspace: Workspace, tabId: String) {
