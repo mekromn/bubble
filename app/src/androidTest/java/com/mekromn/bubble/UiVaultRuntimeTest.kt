@@ -1,7 +1,6 @@
 package com.mekromn.bubble
 
 import android.content.Intent
-import android.net.Uri
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -10,7 +9,6 @@ import android.view.WindowManager
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import java.net.ServerSocket
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -24,8 +22,12 @@ import org.junit.runner.RunWith
 /** Focused runtime proof for the September 8 UI/share/Vault pass. */
 @RunWith(AndroidJUnit4::class)
 class UiVaultRuntimeTest {
-    @Test fun tabIconSwipeUpOpensFullscreenGlassYourChatsAndRefreshTracksLoading() = withPage { scenario ->
-        waitFor(scenario) { activity -> findControl(activity.window.decorView, "Workspace tabs") != null }
+    @Test fun tabIconSwipeUpOpensFullscreenGlassYourChatsAndRefreshTracksLoading() = withBrowser { scenario ->
+        waitFor(scenario) { activity ->
+            findControl(activity.window.decorView, "Workspace tabs")?.let {
+                it.isAttachedToWindow && it.isLaidOut && it.width > 0 && it.height > 0
+            } == true
+        }
         scenario.onActivity { activity ->
             val tabs = requireNotNull(findControl(activity.window.decorView, "Workspace tabs"))
             val x = tabs.width / 2f
@@ -128,8 +130,12 @@ class UiVaultRuntimeTest {
         BrowserActivity::class.java.getDeclaredField("tray").apply { isAccessible = true }.get(activity) as? TabTray
     }.getOrNull()
 
-    private fun waitFor(scenario: ActivityScenario<BrowserActivity>, predicate: (BrowserActivity) -> Boolean) {
-        val end = SystemClock.elapsedRealtime() + 20_000
+    private fun waitFor(
+        scenario: ActivityScenario<BrowserActivity>,
+        timeoutMs: Long = 20_000,
+        predicate: (BrowserActivity) -> Boolean
+    ) {
+        val end = SystemClock.elapsedRealtime() + timeoutMs
         var success = false
         while (!success && SystemClock.elapsedRealtime() < end) {
             scenario.onActivity { success = predicate(it) }
@@ -138,27 +144,22 @@ class UiVaultRuntimeTest {
         assertTrue("UI/Vault runtime condition timed out", success)
     }
 
-    private fun withPage(test: (ActivityScenario<BrowserActivity>) -> Unit) {
-        val server = ServerSocket(0)
-        val html = """<!doctype html><meta name="viewport" content="width=device-width"><title>UI-VAULT</title><style>body{background:#18202a;color:white}</style><main>Bubble UI fixture</main>""".toByteArray()
-        val worker = Thread {
-            while (!server.isClosed) try {
-                server.accept().use { socket ->
-                    socket.soTimeout = 5000
-                    val reader = socket.getInputStream().bufferedReader()
-                    while (!reader.readLine().isNullOrEmpty()) Unit
-                    socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray())
-                    socket.getOutputStream().write(html)
-                }
-            } catch (_: Exception) { if (server.isClosed) break }
-        }.apply { isDaemon = true; start() }
+    /**
+     * This test exercises native toolbar gesture, dialog-window glass configuration, and refresh
+     * animation state. None of those assertions depends on a network page reaching first paint.
+     * Waiting for a synthetic Gecko page here made this first runtime class race cold Gecko startup
+     * on SwiftShader. Launch the real BrowserActivity and wait only for the native workspace/control
+     * surface that the test actually touches.
+     */
+    private fun withBrowser(test: (ActivityScenario<BrowserActivity>) -> Unit) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        try {
-            ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)
-                .setData(Uri.parse("http://127.0.0.1:${server.localPort}/"))).use { scenario ->
-                waitFor(scenario) { it.painted && !it.workspace.selected!!.loading }
-                test(scenario)
+        ActivityScenario.launch<BrowserActivity>(Intent(context, BrowserActivity::class.java)).use { scenario ->
+            waitFor(scenario, 45_000) { activity ->
+                if (!activity.workspace.ready) return@waitFor false
+                val control = findControl(activity.window.decorView, "Workspace tabs") ?: return@waitFor false
+                control.isAttachedToWindow && control.isLaidOut && control.width > 0 && control.height > 0
             }
-        } finally { server.close(); worker.join(1000) }
+            test(scenario)
+        }
     }
 }
