@@ -7,7 +7,8 @@ name: Verify current Bubble changes
 # sync, Archive-all-open-chats, long-press New Chat continuity cloning, any-running-tab transcript
 # command automation, the continuity-first companion skill contract, two-check 30-minute idle tab
 # maintenance, the output-driven 30-minute generation-stall watchdog, and the GitHub download-tab
-# fix. Existing focused UI/Vault/archive/dialog/transition gates remain.
+# fix. The monitor harness also validates Vault progress/full-sync events before Gradle begins.
+# Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
     branches: [rebuild-v2]
