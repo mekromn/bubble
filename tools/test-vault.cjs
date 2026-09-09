@@ -42,6 +42,9 @@ assert.equal(/send-button|submit-button|aria-label[^\n]*Send/iu.test(source), fa
 assert.equal(native.includes('There is no cloud endpoint, credential capture, analytics, or'), true,
   'Native Vault must explicitly remain free of cloud/credential/analytics behavior');
 assert.equal(native.includes('automatic pruning.'), true, 'Native Vault must explicitly retain saved chats until user deletion');
-assert.match(native, /first two \+ most recent/i, 'Size-aware handoff must keep opening and newest context');
+assert.match(native, /val first = chat\.messages\.take\(2\)/, 'Size-aware handoff must preserve the opening two messages');
+assert.match(native, /for \(record in chat\.messages\.drop\(2\)\.asReversed\(\)\)/,
+  'Size-aware handoff must scan newest remaining messages first');
+assert.match(native, /tail\.addFirst\(record\)/, 'Newest retained context must be restored in chronological order');
 
 console.log('Continuity Vault origin, local-only storage, chunking, 70k handoff, and no-auto-send guards passed.');
