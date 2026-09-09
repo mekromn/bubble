@@ -1,13 +1,17 @@
 /* Bubble Continuity Vault: exact ChatGPT origin, top frame, local native storage only.
  * Reads rendered user/assistant turns because the user explicitly enabled a local chat archive.
  * No cookies, bearer tokens, account identifiers, prompts-in-progress, or network requests are read.
- * Continuity text may be loaded into an empty composer after an explicit New Chat action, but this
- * script NEVER clicks Send or fabricates a trusted user gesture. */
+ *
+ * Explicit staged continuity prefers a complete Markdown transcript attachment in a fresh ChatGPT
+ * composer. The older size-aware text handoff remains only as a fallback if the live page exposes
+ * no usable upload control. This script never submits the composer or fabricates a trusted click.
+ */
 (() => {
   'use strict';
   if (window !== window.top || location.origin !== 'https://chatgpt.com') return;
 
-  const MAX_HANDOFF_CHARS = 70000; // Kept in sync with native ChatVault for release-contract tests.
+  const MAX_HANDOFF_CHARS = 70000; // Kept in sync with native ChatVault for fallback release-contract tests.
+  const MAX_EXPORT_BYTES = 256 * 1024 * 1024;
   const CHUNK_CHARS = 48000;
   const HANDOFF_MARKER = '[CONTINUITY HANDOFF — PREVIOUS CHAT]';
   const STOP = 'button[data-testid="stop-button"],button[aria-label*="Stop generating" i],button[aria-label*="Stop streaming" i],button[aria-label="Stop" i]';
@@ -29,6 +33,7 @@
     try { return await browser.runtime.sendNativeMessage('bubbleVault', message); }
     catch (_) { return null; }
   };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function messageRole(article) {
     const role = article.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role')?.toLowerCase();
@@ -156,14 +161,14 @@
       setter ? setter.call(input, text) : (input.value = text);
       input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await sleep(100);
       return composerValue(input).includes(text.slice(0, Math.min(64, text.length)));
     }
     try {
       selectComposerContents(input);
       document.execCommand('insertText', false, text);
     } catch (_) {}
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await sleep(100);
     if (composerValue(input).includes(text.slice(0, Math.min(64, text.length)))) return true;
     try {
       const fragment = document.createDocumentFragment();
@@ -176,8 +181,80 @@
       input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     } catch (_) { return false; }
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await sleep(120);
     return composerValue(input).includes(text.slice(0, Math.min(64, text.length)));
+  }
+
+  function fileInput() {
+    if ([...document.querySelectorAll('input[type="file"]')].some(input => input.files?.length)) return null;
+    return [...document.querySelectorAll('input[type="file"]')]
+      .find(input => !input.disabled && (!input.files || input.files.length === 0)) || null;
+  }
+
+  function decodeBase64(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  async function readTranscript(meta) {
+    if (!meta?.available || typeof meta.transfer !== 'string' || typeof meta.filename !== 'string') return null;
+    const total = Number(meta.bytes);
+    if (!Number.isFinite(total) || total <= 0 || total > MAX_EXPORT_BYTES) return null;
+    const parts = [];
+    let offset = 0;
+    while (offset < total) {
+      const chunk = await send({event: 'vault-transcript-chunk', transfer: meta.transfer, offset});
+      if (!chunk?.ok || typeof chunk.data !== 'string') return null;
+      const bytes = decodeBase64(chunk.data);
+      const next = Number(chunk.next);
+      if (!Number.isFinite(next) || next <= offset || next > total || bytes.length !== next - offset) return null;
+      parts.push(bytes); offset = next;
+      if (chunk.done && offset !== total) return null;
+    }
+    return new File(parts, meta.filename, {type: 'text/markdown;charset=utf-8', lastModified: Date.now()});
+  }
+
+  async function injectFile(file) {
+    let input = fileInput();
+    const end = performance.now() + 20_000;
+    while (!input && performance.now() < end) { await sleep(250); input = fileInput(); }
+    if (!input) return false;
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
+      setter ? setter.call(input, transfer.files) : (input.files = transfer.files);
+      input.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
+      input.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
+      return input.files?.length === 1 && input.files[0]?.name === file.name;
+    } catch (_) { return false; }
+  }
+
+  function filenameVisible(name) {
+    for (const node of document.querySelectorAll('button,[role="button"],[aria-label],span,div')) {
+      const text = (node.textContent || '').trim();
+      if (text === name || node.getAttribute?.('aria-label')?.includes(name)) return true;
+    }
+    return false;
+  }
+
+  async function waitAttachmentReady(name) {
+    const end = performance.now() + 120_000;
+    let stableSince = 0;
+    while (performance.now() < end) {
+      if (filenameVisible(name)) {
+        if (!stableSince) stableSince = performance.now();
+        if (performance.now() - stableSince >= 900) return true;
+      } else stableSince = 0;
+      await sleep(300);
+    }
+    return false;
+  }
+
+  function attachmentPrompt(filename) {
+    return `${HANDOFF_MARKER}\nThe complete previous ChatGPT conversation is attached as "${filename}". Read the entire attachment before responding. Treat it as authoritative prior conversation context: preserve its decisions, constraints, terminology, experiments, failures, and unfinished work. Continue from the latest unfinished point without asking me to repeat context already present in the attachment.`;
   }
 
   function schedulePendingRequest(delay = 500) {
@@ -192,12 +269,35 @@
     if (!composer || composerValue(composer).trim()) return schedulePendingRequest(500);
     pendingAttempts++;
     const response = await send({ event: 'vault-pending-request' });
-    if (!response?.pending || typeof response.text !== 'string' || !response.text.includes(HANDOFF_MARKER)) {
+    const sourceId = typeof response?.sourceId === 'string' ? response.sourceId : '';
+    if (!response?.pending || !sourceId) return schedulePendingRequest(650);
+
+    // Primary path: attach the complete native Vault transcript. This removes the 70k composer
+    // budget from normal continuity, so very large chats hand off without dropping middle turns.
+    let transfer = '';
+    try {
+      const meta = await send({event: 'vault-pending-transcript-begin', sourceId});
+      transfer = typeof meta?.transfer === 'string' ? meta.transfer : '';
+      const file = await readTranscript(meta);
+      if (file && await injectFile(file) && await waitAttachmentReady(file.name) &&
+          await setComposerText(composer, attachmentPrompt(file.name))) {
+        loadedSourceId = sourceId;
+        if (transfer) await send({event: 'vault-transcript-complete', transfer});
+        await send({ event: 'vault-handoff-loaded', sourceId: loadedSourceId, complete: true,
+          attached: true, filename: file.name });
+        return;
+      }
+    } catch (_) {}
+    if (transfer) await send({event: 'vault-transcript-cancel', transfer});
+
+    // Emergency compatibility fallback: if ChatGPT changes/removes its live upload input, retain the
+    // old size-aware local composer handoff rather than losing continuity completely.
+    if (typeof response.text !== 'string' || !response.text.includes(HANDOFF_MARKER)) {
       return schedulePendingRequest(650);
     }
     if (await setComposerText(composer, response.text)) {
-      loadedSourceId = String(response.sourceId || '');
-      await send({ event: 'vault-handoff-loaded', sourceId: loadedSourceId, complete: Boolean(response.complete) });
+      loadedSourceId = sourceId;
+      await send({ event: 'vault-handoff-loaded', sourceId: loadedSourceId, complete: Boolean(response.complete), attached: false });
     } else schedulePendingRequest(650);
   }
 
