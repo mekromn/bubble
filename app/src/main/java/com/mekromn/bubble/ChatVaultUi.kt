@@ -109,11 +109,15 @@ internal object ChatVaultUi {
             }
             controls.removeAllViews()
             controls.addView(action(anchor, "Continue in a new ChatGPT chat") {
+                // ChatVault serializes all disk work on one executor. Queue staging first, then queue
+                // handoff construction; the callback below cannot run until the pending handoff has
+                // been committed. That removes the old race where the New Chat page could start
+                // asking for continuity before native staging existed.
+                vault.stage(id, chat.profileId)
                 vault.handoff(id) { handoff ->
                     if (handoff == null) toast(anchor, "Could not build the local continuity handoff.")
                     else {
                         copy(c, "Continuity handoff", handoff.text)
-                        vault.stage(id)
                         panel.dismiss()
                         val tab = workspace.create(Policy.HOME, chat.profileId)
                         choose(tab.id)
