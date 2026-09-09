@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.util.function.Consumer
@@ -78,16 +79,30 @@ internal class TabTray(
         root.addView(conversations, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(Ui.text(c, "＋  New ChatGPT chat", 15f, Ui.TEXT, true).apply {
             gravity = Gravity.CENTER; background = Ui.ripple(c, Ui.SURFACE_HIGH, 24f)
-            setOnClickListener {
-                // Match the supplied extension's New Chat continuity even when the user starts the
-                // chat from Bubble's native switcher instead of ChatGPT's webpage control.
-                Workspace.peek()?.let { workspace ->
-                    val current = workspace.selected
-                    if (current != null && Policy.isChat(current.url)) {
-                        ChatVaultRegistry.get(c).stageForUrl(current.url, current.profileId)
+            contentDescription = "New ChatGPT chat. Long press to continue the current chat in a new tab."
+            tooltipText = "New chat · hold to continue current chat"
+            setOnClickListener { newChat() }
+            setOnLongClickListener {
+                val workspace = Workspace.peek()
+                val current = workspace?.selected
+                if (workspace == null || current == null || !Policy.isChat(current.url)) {
+                    newChat(); return@setOnLongClickListener true
+                }
+                val vaultStore = ChatVaultRegistry.get(c)
+                fun stageAndOpen() {
+                    vaultStore.stageForUrlAndThen(current.url, current.profileId) { staged ->
+                        if (!staged) {
+                            Toast.makeText(c, "The current chat is not archived yet. Use Vault · Archive all open chats now, then try again.", Toast.LENGTH_LONG).show()
+                            return@stageForUrlAndThen
+                        }
+                        newChat()
+                        Toast.makeText(c, "Current chat copied into a fresh ChatGPT continuity tab.", Toast.LENGTH_SHORT).show()
                     }
                 }
-                newChat()
+                if (ChatVaultControls.ready(current.id)) {
+                    ChatVaultControls.archive(current.id) { stageAndOpen() }
+                } else stageAndOpen()
+                true
             }
         }, LinearLayout.LayoutParams(-1, d(50)).apply { setMargins(d(8), d(8), d(8), 0) })
         setContentView(root)
