@@ -3,9 +3,9 @@ name: Verify current Bubble changes
 # Archive Picker passed build 62. The aspect-preserving screenshot morph is still current transition
 # work and remains the Android runtime gate until its Pixel behavior is accepted.
 #
-# This verification also covers the September 8 UI pass: Android-16 Archive Picker insets and
-# full-width rows, swipe-up access to Your chats, the fullscreen compositor-blurred Your chats
-# dialog, loading-driven refresh rotation, and Bubble's remembered last share-target shortcut.
+# This verification covers the September 8 UI/share pass plus the readiness-policy test seam fix:
+# Android-16 Archive Picker insets/full-width rows, swipe-up Your chats, fullscreen compositor blur,
+# loading-driven refresh rotation, remembered last share target, and JVM-safe readiness tests.
 on:
   push:
     branches: [rebuild-v2]
