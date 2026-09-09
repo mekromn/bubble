@@ -114,9 +114,12 @@ assert.match(composerFix, /DataTransfer\(\)/);
 assert.match(composerFix, /ClipboardEvent\('paste'/);
 assert.match(composerFix, /execCommand\('insertText'/);
 assert.match(composerFix, /inputType: 'insertFromPaste'/);
-assert.match(composerFix, /attempts >= 180/);
-assert.match(composerFix, /if \(busy \|\| loadedSourceId \|\| routeChatId\(\)/);
-assert.equal(/send-button|submit-button|aria-label[^\n]*Send/iu.test(composerFix), false);
+assert.match(composerFix, /__bubble_vault_text_fallback_request_v1__/,
+  'Composer helper must be invoked explicitly by the attachment owner');
+assert.match(composerFix, /window\.addEventListener\(REQUEST/);
+assert.equal(composerFix.includes("event: 'vault-pending-request'"), false,
+  'Composer helper must not independently request pending continuity and race attachment');
+assert.equal(/sendNativeMessage|send-button|submit-button|aria-label[^\n]*Send/iu.test(composerFix), false);
 assert.equal(/\.click\s*\(/.test(composerFix), false);
 
 assert.match(tabTray, /setOnClickListener \{ newChat\(\) \}/);
@@ -152,4 +155,4 @@ assert.match(skill, /Bias toward consulting the transcript when continuity matte
 assert.match(skill, /avoid needless repeated requests/i);
 assert.match(skill, /logic and idea retention/i);
 
-console.log('Continuity Vault cumulative merge, CRX-derived full-history sync, archive-all, background maintenance, transcript command, continuation UX, and companion skill guards passed.');
+console.log('Continuity Vault cumulative merge, CRX-derived full-history sync, archive-all, background maintenance, transcript command, attachment-first continuation UX, and companion skill guards passed.');
