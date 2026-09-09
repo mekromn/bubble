@@ -31,9 +31,12 @@ internal data class TabStatus(
  * Turns raw Gecko/ChatGPT state into user-facing tab status. The ordering is intentional:
  * problems and active work beat unread state, unread beats suspension, and explicit keep-alive
  * beats ordinary idle/background classification.
+ *
+ * `resident` defaults to the real GeckoSession state. It is an explicit argument so JVM policy
+ * tests can model a resident tab without constructing Gecko's Android/native session runtime.
  */
 internal object TabStatusPolicy {
-    fun of(tab: ChatTab, selectedVisible: Boolean): TabStatus {
+    fun of(tab: ChatTab, selectedVisible: Boolean, resident: Boolean = tab.session != null): TabStatus {
         val host = Policy.host(tab.url).ifBlank { "page" }
         return when {
             Policy.isVoice(tab.url) && tab.error != null ->
@@ -55,7 +58,7 @@ internal object TabStatusPolicy {
             Policy.isVoice(tab.url) && tab.unread ->
                 TabStatus(TabReadiness.READY, "Google Voice · new alert · protected live")
 
-            tab.unread && (tab.suspended || tab.session == null) ->
+            tab.unread && (tab.suspended || !resident) ->
                 TabStatus(TabReadiness.READY, "Reply ready · hibernated after completion · tap to open")
 
             tab.unread ->
@@ -67,7 +70,7 @@ internal object TabStatusPolicy {
             tab.manualSuspended ->
                 TabStatus(TabReadiness.SUSPENDED, "Manually suspended · tap to resume")
 
-            tab.suspended || tab.session == null ->
+            tab.suspended || !resident ->
                 TabStatus(TabReadiness.SUSPENDED,
                     if (Policy.isChat(tab.url)) "ChatGPT hibernated · tap to resume" else "Suspended · tap to resume")
 
