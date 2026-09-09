@@ -44,6 +44,7 @@
         </provider>
         <receiver android:name=".PipTabReceiver" android:exported="false" />
         <receiver android:name=".VoiceNotificationReceiver" android:exported="false" />
+        <receiver android:name=".ShareTargetReceiver" android:exported="false" />
         <service android:name=".FileDownloadService" android:exported="false" android:foregroundServiceType="dataSync" tools:targetApi="34" />
         <service android:name=".BubbleService" android:exported="false" android:foregroundServiceType="specialUse" tools:targetApi="34">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated floating browser workspace, with a visible draggable bubble and explicit hide action." />
