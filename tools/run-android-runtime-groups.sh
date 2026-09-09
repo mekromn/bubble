@@ -35,10 +35,10 @@ run_group() {
   fi
 }
 
-# Emulator time follows the feature being actively changed. Archive Picker passed the previous gate,
-# so this build only re-runs the fullscreen -> floating shrink handoff after replacing non-uniform
-# screenshot stretching with aspect-preserving compositor scale + crop.
-run_group shrink 'com.mekromn.bubble.FullscreenShrinkRuntimeTest'
+# Current-feature gate for Bubble 0.7.4. This deliberately includes the new UI/Vault runtime proof,
+# the archive engine used by the repaired picker, the tray/lifecycle regressions affected by moving
+# Your chats into a blurred Dialog window, and the still-current fullscreen->floating handoff test.
+run_group current 'com.mekromn.bubble.UiVaultRuntimeTest,com.mekromn.bubble.ArchiveRuntimeTest,com.mekromn.bubble.RebuildRegressionTest,com.mekromn.bubble.FullscreenShrinkRuntimeTest'
 
 adb logcat -d > emulator-logcat.txt
 exit "$failures"
