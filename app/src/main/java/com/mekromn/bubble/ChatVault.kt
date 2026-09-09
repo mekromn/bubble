@@ -50,6 +50,7 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         val transfer: String,
         val tabId: String,
         val summary: VaultSummary,
+        val source: String,
         val totalChunks: Int,
         val expectedChars: Int,
         val file: File,
@@ -99,12 +100,13 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         val chars = message.optInt("chars").takeIf { it in 2..MAX_SNAPSHOT_CHARS } ?: return
         val count = message.optInt("messages").takeIf { it in 1..200_000 } ?: return
         val updated = message.optLong("updatedAt").takeIf { it > 0 } ?: System.currentTimeMillis()
+        val source = message.optString("source").take(64)
         val summary = VaultSummary(chatId, profileId, title, url, updated, count)
         io.execute {
             root.mkdirs()
             incoming.remove(transfer)?.file?.delete()
             val temp = File(root, ".incoming-${safeTransfer(transfer)}").apply { delete(); createNewFile() }
-            incoming[transfer] = Incoming(transfer, tabId, summary, total, chars, temp)
+            incoming[transfer] = Incoming(transfer, tabId, summary, source, total, chars, temp)
         }
     }
 
@@ -147,15 +149,32 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
             }.getOrNull()
             if (parsed == null) { state.file.delete(); return@execute }
             runCatching {
+                val incomingMessages = messagesFrom(parsed)
+                if (incomingMessages.isEmpty()) error("No valid transcript messages")
+                val existing = readChat(state.summary.id)
+                val authoritative = state.source in AUTHORITATIVE_SOURCES
+                val merged = VaultTranscriptMerge.merge(existing?.messages.orEmpty(), incomingMessages, authoritative)
+                if (merged.isEmpty()) error("Merged transcript is empty")
+
                 // The page cannot choose a Bubble profile. Bind the validated snapshot to the native
                 // tab profile before the atomic commit so restored/indexed data keeps that boundary.
                 parsed.put("profileId", state.summary.profileId)
+                parsed.put("messages", messagesJson(merged))
+                val updatedAt = maxOf(state.summary.updatedAt, parsed.optLong("updatedAt"), existing?.updatedAt ?: 0L)
+                parsed.put("updatedAt", updatedAt)
+                if (existing != null) {
+                    if (parsed.optLong("createdAt") <= 0L && existing.createdAt > 0L) parsed.put("createdAt", existing.createdAt)
+                    if (parsed.optString("firstSignature").isBlank() && existing.firstSignature.isNotBlank()) {
+                        parsed.put("firstSignature", existing.firstSignature)
+                    }
+                }
+                val finalSummary = state.summary.copy(updatedAt = updatedAt, messages = merged.size)
                 writeAtomic(AtomicFile(chatFile(state.summary.id)), parsed.toString().toByteArray(StandardCharsets.UTF_8))
                 state.file.delete()
-                val next = listOf(state.summary) + cached.filterNot { it.id == state.summary.id }
+                val next = listOf(finalSummary) + cached.filterNot { it.id == finalSummary.id }
                 cached = next.sortedByDescending { it.updatedAt }
                 writeIndex(cached)
-                if (pendingId == state.summary.id) pendingHandoff = readChat(state.summary.id)?.let(::buildHandoff)
+                if (pendingId == finalSummary.id) pendingHandoff = readChat(finalSummary.id)?.let(::buildHandoff)
                 changed()
             }.onFailure { state.file.delete() }
         }
@@ -166,23 +185,31 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         io.execute {
             val chat = readChat(id) ?: return@execute
             if (requiredProfileId != null && chat.profileId != requiredProfileId) return@execute
-            val handoff = buildHandoff(chat)
-            pendingId = id; pendingHandoff = handoff
-            writePendingId(id)
-            changed()
+            stageChat(chat)
         }
     }
 
     /** Stage only a saved snapshot belonging to the same isolated Bubble browser profile. */
     fun stageForUrl(url: String, profileId: String): Boolean {
         if (!Policy.isChat(url) || profileId.isBlank()) return false
-        val routeId = ROUTE_ID.find(url)?.groupValues?.getOrNull(1)
-        val match = cached.firstOrNull { summary ->
-            summary.profileId == profileId &&
-                (summary.url == url || (routeId != null && (summary.id == routeId || summary.url.contains("/c/$routeId"))))
-        } ?: return false
+        val match = matchForUrl(url, profileId) ?: return false
         stage(match.id, profileId)
         return true
+    }
+
+    /** Stage first, then invoke the callback on main. Used when opening a fresh continuation tab. */
+    fun stageForUrlAndThen(url: String, profileId: String, callback: (Boolean) -> Unit) {
+        if (!Policy.isChat(url) || profileId.isBlank()) { main.post { callback(false) }; return }
+        io.execute {
+            val match = matchForUrl(url, profileId)
+            val chat = match?.let { readChat(it.id) }
+            if (chat == null || chat.profileId != profileId) {
+                main.post { callback(false) }
+                return@execute
+            }
+            val success = runCatching { stageChat(chat); true }.getOrDefault(false)
+            main.post { callback(success) }
+        }
     }
 
     fun pendingResponse(profileId: String): JSONObject? {
@@ -224,16 +251,40 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         }
     }
 
+    private fun stageChat(chat: VaultChat) {
+        val handoff = buildHandoff(chat)
+        pendingId = chat.id; pendingHandoff = handoff
+        writePendingId(chat.id)
+        changed()
+    }
+
+    private fun matchForUrl(url: String, profileId: String): VaultSummary? {
+        val routeId = ROUTE_ID.find(url)?.groupValues?.getOrNull(1)
+        return cached.firstOrNull { summary ->
+            summary.profileId == profileId &&
+                (summary.url == url || (routeId != null && (summary.id == routeId || summary.url.contains("/c/$routeId"))))
+        }
+    }
+
+    private fun messagesFrom(objectValue: JSONObject): List<VaultMessage> {
+        val messagesJson = objectValue.optJSONArray("messages") ?: return emptyList()
+        return buildList(messagesJson.length()) {
+            for (i in 0 until messagesJson.length()) {
+                val item = messagesJson.optJSONObject(i) ?: continue
+                val role = item.optString("role")
+                val text = item.optString("text")
+                if ((role == "user" || role == "assistant") && text.isNotBlank()) add(VaultMessage(role, text))
+            }
+        }
+    }
+
+    private fun messagesJson(messages: List<VaultMessage>): JSONArray = JSONArray().apply {
+        messages.forEach { put(JSONObject().put("role", it.role).put("text", it.text)) }
+    }
+
     private fun readChat(id: String): VaultChat? = runCatching {
         val objectValue = JSONObject(chatFile(id).readText(StandardCharsets.UTF_8))
-        val messagesJson = objectValue.getJSONArray("messages")
-        val messages = ArrayList<VaultMessage>(messagesJson.length())
-        for (i in 0 until messagesJson.length()) {
-            val item = messagesJson.optJSONObject(i) ?: continue
-            val role = item.optString("role")
-            val text = item.optString("text")
-            if ((role == "user" || role == "assistant") && text.isNotBlank()) messages += VaultMessage(role, text)
-        }
+        val messages = messagesFrom(objectValue)
         if (messages.isEmpty()) return@runCatching null
         VaultChat(
             objectValue.optString("id").takeIf { it == id } ?: return@runCatching null,
@@ -332,6 +383,7 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         private const val CHUNK_CHARS = 48_000
         private const val MAX_SNAPSHOT_CHARS = 256 * 1024 * 1024
         private const val MAX_SIGNATURE = 512
+        private val AUTHORITATIVE_SOURCES = setOf("full-history", "passive-full-history", "explicit-full-history")
         private val ROUTE_ID = Regex("/c/([^/?#]+)")
     }
 }
