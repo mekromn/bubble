@@ -5,6 +5,7 @@ const source = fs.readFileSync('app/src/main/assets/chat-monitor/vault.js', 'utf
 const manifest = JSON.parse(fs.readFileSync('app/src/main/assets/chat-monitor/manifest.json', 'utf8'));
 const native = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVault.kt', 'utf8');
 const bridge = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVaultBridge.kt', 'utf8');
+const appearance = fs.readFileSync('app/src/main/java/com/mekromn/bubble/PageAppearance.kt', 'utf8');
 
 const vaultScript = manifest.content_scripts.find(item => item.js.includes('vault.js'));
 assert.ok(vaultScript, 'Vault content script must stay registered');
@@ -15,9 +16,21 @@ assert.equal(source.includes('window !== window.top'), true, 'Runtime top-frame 
 
 assert.match(source, /sendNativeMessage\('bubbleVault'/, 'Vault must use its dedicated native app namespace');
 assert.match(bridge, /NATIVE_APP = "bubbleVault"/, 'Native bridge namespace must match the page bridge');
-assert.match(bridge, /!Policy\.isChat\(sender\.url\)/, 'Native bridge must revalidate exact ChatGPT origin');
 assert.match(bridge, /sender\.session !== session/, 'Native bridge must stay bound to the exact GeckoSession');
 assert.match(bridge, /!sender\.isTopLevel/, 'Native bridge must reject child frames');
+assert.match(bridge, /!Policy\.isChat\(sender\.url\)/, 'Native bridge must revalidate exact ChatGPT origin');
+assert.match(appearance, /Workspace\.peek\(\)\?\.tabs\?\.firstOrNull \{ it\.id == tabId \}\?\.profileId/,
+  'Vault profile identity must come from the durable native tab, not webpage data');
+assert.match(bridge, /vault\.begin\(tabId, profileId, payload\)/,
+  'Every saved snapshot must be bound to the owning Bubble profile');
+assert.match(bridge, /vault\.stage\(it, profileId\)/,
+  'Page-triggered staging must require the owning Bubble profile');
+assert.match(bridge, /vault\.pendingResponse\(profileId\)/,
+  'Pending continuity must be filtered by the requesting Bubble profile');
+assert.match(native, /summary\.profileId == profileId/,
+  'Native URL staging must not cross Bubble profile boundaries');
+assert.match(native, /if \(summary\.profileId != profileId\) return null/,
+  'Pending handoff delivery must reject another Bubble profile');
 
 for (const forbidden of [
   /\bfetch\s*\(/,
@@ -47,4 +60,4 @@ assert.match(native, /for \(record in chat\.messages\.drop\(2\)\.asReversed\(\)\
   'Size-aware handoff must scan newest remaining messages first');
 assert.match(native, /tail\.addFirst\(record\)/, 'Newest retained context must be restored in chronological order');
 
-console.log('Continuity Vault origin, local-only storage, chunking, 70k handoff, and no-auto-send guards passed.');
+console.log('Continuity Vault exact-origin, profile isolation, local-only storage, chunking, 70k handoff, and no-auto-send guards passed.');
