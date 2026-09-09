@@ -1,13 +1,13 @@
 name: Verify current Bubble changes
 # Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
-# Archive Picker passed build 62. The aspect-preserving screenshot morph is still current transition
-# work and remains the Android runtime gate until its Pixel behavior is accepted.
+# Archive Picker passed build 62. The aspect-preserving screenshot morph remains the current
+# transition regression gate.
 #
-# Bubble 0.7.6 verification: retain all 0.7.5 cumulative Vault/history/continuity behavior, and fix
-# trusted target=_blank GitHub release/archive asset activations before Gecko creates a child tab.
-# Exact GitHub download endpoints are routed through the opener session so onExternalResponse owns
-# the original file response and the active document remains selected; ordinary GitHub pages/raw
-# source keep normal tab behavior. Existing focused UI/Vault/archive/dialog/transition gates remain.
+# Current verification covers cumulative Continuity Vault merging, explicit same-origin full-history
+# sync, Archive-all-open-chats, long-press New Chat continuity cloning, any-running-tab transcript
+# command automation, the continuity-first companion skill contract, two-check 30-minute idle tab
+# maintenance, the output-driven 30-minute generation-stall watchdog, and the GitHub download-tab
+# fix. Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
     branches: [rebuild-v2]
