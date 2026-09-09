@@ -21,9 +21,25 @@ assert.match(page, /event: 'vault-pending-transcript-begin'/,
 assert.match(page, /new File\(/,
   'Fresh page must reconstruct a real Markdown File');
 assert.match(page, /new DataTransfer\(\)/,
-  'Fresh page must attach the transcript through ChatGPT’s real file input');
-assert.match(page, /input\[type="file"\]/,
-  'Fresh page must use the live ChatGPT upload control');
+  'Fresh page must attach the transcript through ChatGPT’s live upload machinery');
+assert.match(page, /document\.querySelector\('input#upload-files'\)/,
+  'Continuity must prefer ChatGPT’s generic upload-files input rather than the first arbitrary file input');
+assert.match(page, /upload-\(\?:photos\|camera\)|upload-\(\?:photos\|camera\)/,
+  'Photo and camera upload controls must be explicitly excluded from Markdown continuity attachment');
+assert.match(page, /function isGeneralFileInput\(/,
+  'File-input filtering must remain explicit');
+assert.match(page, /function injectByDrop\(/,
+  'Composer drag/drop must remain a bounded fallback if the generic hidden input moves');
+assert.match(page, /new DragEvent\(/,
+  'Drag/drop fallback must carry the actual File object');
+assert.match(page, /function injectByPaste\(/,
+  'Composer paste must remain the final attachment fallback before text continuity');
+assert.match(page, /new ClipboardEvent\('paste'/,
+  'Paste fallback must carry the File object through the composer');
+assert.equal(page.includes('20_000'), false,
+  'Fresh handoff must not stall for 20 seconds waiting for an arbitrary file input');
+assert.equal(page.includes('45_000'), false,
+  'Fresh handoff must not stall for 45 seconds waiting for an attachment chip');
 assert.match(page, /attachmentPrompt\(file\.name\)/,
   'A concise continuity instruction must accompany the full attachment');
 assert.match(page, /event: 'vault-transcript-complete'/,
@@ -33,7 +49,7 @@ const fallbackAt = page.indexOf("typeof response.text !== 'string'");
 assert.ok(attachmentAt >= 0 && fallbackAt > attachmentAt,
   'Complete transcript attachment must be primary; size-limited text may only be fallback');
 assert.equal(/requestSubmit|\.click\s*\(/.test(page), false,
-  'New-chat handoff may prepare the composer but must not auto-send it');
+  'New-chat handoff may prepare the composer but must not auto-send or synthesize a click');
 
 assert.equal(/PREVIEW_MESSAGES|takeLast\s*\(|omitted from this preview/.test(vaultUi), false,
   'Vault saved-chat viewer must not hide older messages behind an arbitrary preview cutoff');
@@ -43,4 +59,4 @@ assert.equal(readiness.includes('eligible for 15-minute hibernation'), false,
   'Resident ChatGPT tabs must not advertise the removed 15-minute auto-hibernation policy');
 assert.match(readiness, /ChatGPT idle · kept resident in background/);
 
-console.log('Full staged-chat Markdown attachment, complete Vault viewer, and resident idle-status guards passed.');
+console.log('Generic-file staged-chat attachment, complete Vault viewer, and resident idle-status guards passed.');
