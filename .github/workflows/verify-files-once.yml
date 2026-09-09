@@ -3,10 +3,10 @@ name: Verify current Bubble changes
 # Archive Picker passed build 62. The aspect-preserving screenshot morph is still current transition
 # work and remains the Android runtime gate until its Pixel behavior is accepted.
 #
-# Bubble 0.7.5 final current-head verification: cumulative ChatGPT Vault snapshots that cannot shrink
-# on virtualized refresh, passive exact-origin full-history capture from responses ChatGPT already
+# Bubble 0.7.5 final verification: cumulative ChatGPT Vault snapshots that cannot shrink on
+# virtualized refresh, passive exact-origin full-history capture from responses ChatGPT already
 # fetched (no extra authenticated request, cookies/tokens, scrolls or clicks), native accepted/rejected
-# transfer handshake with cold-start replay after the Vault index loads, guaranteed stage-before-open
+# transfer handshake with cold-start replay and rejected-transfer cleanup, guaranteed stage-before-open
 # continuation ordering, robust textarea/contenteditable/ProseMirror composer insertion with Send left
 # user-controlled, plus the current UI/Vault, archive, dialog-tray and fullscreen-to-floating gates.
 on:
