@@ -161,10 +161,11 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
         }
     }
 
-    fun stage(id: String) {
+    fun stage(id: String, requiredProfileId: String? = null) {
         if (id.isBlank()) return
         io.execute {
             val chat = readChat(id) ?: return@execute
+            if (requiredProfileId != null && chat.profileId != requiredProfileId) return@execute
             val handoff = buildHandoff(chat)
             pendingId = id; pendingHandoff = handoff
             writePendingId(id)
@@ -180,7 +181,7 @@ internal class ChatVault(private val app: Context, private val onChanged: () -> 
             summary.profileId == profileId &&
                 (summary.url == url || (routeId != null && (summary.id == routeId || summary.url.contains("/c/$routeId"))))
         } ?: return false
-        stage(match.id)
+        stage(match.id, profileId)
         return true
     }
 
