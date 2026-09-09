@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
 const source = fs.readFileSync('app/src/main/assets/chat-monitor/vault.js', 'utf8');
@@ -9,7 +10,12 @@ const manifest = JSON.parse(fs.readFileSync('app/src/main/assets/chat-monitor/ma
 const native = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVault.kt', 'utf8');
 const bridge = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVaultBridge.kt', 'utf8');
 const snapshotPolicy = fs.readFileSync('app/src/main/java/com/mekromn/bubble/VaultSnapshotPolicy.kt', 'utf8');
+const vaultUi = fs.readFileSync('app/src/main/java/com/mekromn/bubble/ChatVaultUi.kt', 'utf8');
 const appearance = fs.readFileSync('app/src/main/java/com/mekromn/bubble/PageAppearance.kt', 'utf8');
+
+for (const [name, script] of Object.entries({source, historyHook, historyBridge, composerFix})) {
+  assert.doesNotThrow(() => new vm.Script(script, {filename: name}), `${name} must remain valid JavaScript`);
+}
 
 const vaultScript = manifest.content_scripts.find(item => item.js.includes('vault.js'));
 assert.ok(vaultScript, 'Vault content script must stay registered');
@@ -85,7 +91,7 @@ for (const forbidden of [/document\.cookie/, /\bAuthorization\b/, /\bBearer\b/, 
 }
 assert.match(historyBridge, /sendNativeMessage\('bubbleVault'/, 'Full history must cross only the dedicated local Vault namespace');
 assert.match(historyBridge, /passive-full-history/, 'Full-history snapshots must be distinguishable in diagnostics');
-assert.match(historyBridge, /__bubble_vault_history_request_v1__/, 'Late isolated injection must be able to replay an already-captured initial response');
+assert.match(historyBridge, /\[0, 1200, 3500, 8000\]/, 'Initial full-history capture must replay across native index cold start without extra network');
 
 // A short DOM tail after refresh must never erase a larger saved transcript, including during a
 // cold-start race before the native index is loaded.
@@ -95,7 +101,14 @@ assert.match(bridge, /VaultSnapshotPolicy\.accepts\(vault\.loaded, savedCount, i
   'Native bridge must apply the monotonic policy before accepting snapshot chunks');
 assert.match(bridge, /ignoredTransfers/, 'Rejected partial transfers must have all later chunks/end ignored');
 
-// Continue-in-new-chat must work across ChatGPT textarea and contenteditable/ProseMirror variants.
+// Continue-in-new-chat must stage first, then wait for the serialized handoff task before opening
+// the tab. The page fallback supports ChatGPT textarea and contenteditable/ProseMirror variants.
+const continueStart = vaultUi.indexOf('Continue in a new ChatGPT chat');
+const stageAt = vaultUi.indexOf('vault.stage(id, chat.profileId)', continueStart);
+const handoffAt = vaultUi.indexOf('vault.handoff(id)', continueStart);
+const createAt = vaultUi.indexOf('workspace.create(Policy.HOME, chat.profileId)', continueStart);
+assert.ok(continueStart >= 0 && stageAt > continueStart && handoffAt > stageAt && createAt > handoffAt,
+  'Continuation must stage first and open the new tab only from the later handoff callback');
 const composerScript = manifest.content_scripts.find(item => item.js.includes('vault-composer-fix.js'));
 assert.ok(composerScript, 'Composer recovery helper must stay registered');
 assert.deepEqual(composerScript.matches, ['https://chatgpt.com/*']); assert.equal(composerScript.all_frames, false);
@@ -109,4 +122,4 @@ assert.match(composerFix, /if \(busy \|\| loadedSourceId \|\| routeChatId\(\)/,
 assert.equal(/send-button|submit-button|aria-label[^\n]*Send/iu.test(composerFix), false, 'Composer fallback must never auto-submit');
 assert.equal(/\.click\s*\(/.test(composerFix), false, 'Composer fallback must never synthesize a click');
 
-console.log('Continuity Vault exact-origin, profile isolation, cumulative full-history capture, robust composer handoff, local-only storage, 70k handoff, and no-auto-send guards passed.');
+console.log('Continuity Vault exact-origin, profile isolation, cumulative full-history capture, robust staged composer handoff, local-only storage, 70k handoff, and no-auto-send guards passed.');
