@@ -69,6 +69,9 @@ internal object PageAppearance {
                 port.disconnect()
             }
         }, NATIVE_APP)
+        // Same built-in extension, separate native-app namespace. This keeps transcript-bearing
+        // Continuity Vault messages isolated from appearance/reply/download control paths.
+        ChatVaultBridge.bind(context, tabId, session, addon)
     }
 
     fun controls(anchor: View, workspace: Workspace, tabId: String) {
