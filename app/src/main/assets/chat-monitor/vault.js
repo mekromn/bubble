@@ -26,7 +26,7 @@
   let goLoadedFingerprint = '';
 
   const send = async message => {
-    try { return await browser.runtime.sendNativeMessage('bubble', message); }
+    try { return await browser.runtime.sendNativeMessage('bubbleVault', message); }
     catch (_) { return null; }
   };
 
