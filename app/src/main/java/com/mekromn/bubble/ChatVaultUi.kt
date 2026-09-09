@@ -135,17 +135,16 @@ internal object ChatVaultUi {
             }
             controls.removeAllViews()
             controls.addView(action(anchor, "Continue in a new ChatGPT chat") {
+                // stage() and handoff() share the Vault's serialized IO lane. handoff() acts as the
+                // completion barrier here; the fresh page then requests the staged full .md export.
                 vault.stage(id, chat.profileId)
                 vault.handoff(id) { handoff ->
-                    if (handoff == null) toast(anchor, "Could not build the local continuity handoff.")
+                    if (handoff == null) toast(anchor, "Could not stage the local continuity chat.")
                     else {
-                        copy(c, "Continuity handoff", handoff.text)
                         panel.dismiss()
                         val tab = workspace.create(Policy.HOME, chat.profileId)
                         choose(tab.id)
-                        toast(anchor, if (handoff.complete)
-                            "Previous chat staged locally in ${workspace.profileName(chat.profileId)}. The handoff will load into the new composer; press Send when ready."
-                        else "Size-aware handoff staged locally in ${workspace.profileName(chat.profileId)}. The full transcript stays in the Vault; press Send when ready.")
+                        toast(anchor, "Previous chat staged in ${workspace.profileName(chat.profileId)}. Its full transcript will attach in the new composer; press Send when ready.")
                     }
                 }
             })
