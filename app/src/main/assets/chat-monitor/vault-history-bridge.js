@@ -79,7 +79,12 @@
       firstSignature: snapshot.firstSignature, messages: snapshot.messages.length,
       totalChunks: chunks.length, chars: serialized.length, source: 'passive-full-history'
     });
-    if (begin?.accepted !== true) return;
+    if (begin?.accepted !== true) {
+      // Native remembers rejected transfer IDs so legacy senders that ignore the begin response
+      // cannot accidentally stream chunks into the Vault. Close our rejected transfer explicitly.
+      await send({ event: 'vault-snapshot-end', transfer });
+      return;
+    }
     for (let index = 0; index < chunks.length; index++) {
       await send({ event: 'vault-snapshot-chunk', transfer, index, data: chunks[index] });
     }
