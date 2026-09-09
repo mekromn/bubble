@@ -98,12 +98,12 @@ class BrowserActivity : Activity() {
         if (started && workspace.ready && !FileUi.busy && !externalFlow && !handoff && !enteringPip && !isInPictureInPictureMode && Settings.canDrawOverlays(this)) collapse(FloatingMode.BUBBLE, alreadyLeaving = true)
     }
     override fun onStop() {
-        started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed)
+        started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed); tray?.closeNow()
         if (workspace.host.get() === this) { workspace.visible = false; workspace.covered = false; workspace.detachSurface(geckoView); workspace.flush() }
         meter.stop(); FullscreenHandoff.reset(root); super.onStop()
     }
     override fun onDestroy() {
-        QuickPanel.dismissFor(root)
+        QuickPanel.dismissFor(root); tray?.closeNow()
         if (::workspace.isInitialized) { workspace.detachSurface(geckoView); if (workspace.host.get() === this) workspace.host.clear() }
         super.onDestroy()
     }
@@ -112,7 +112,7 @@ class BrowserActivity : Activity() {
     private fun handleBack() {
         when {
             workspace.quickMenuVisible -> QuickPanel.dismissFor(root)
-            tray?.visibility == View.VISIBLE -> showTabs(false)
+            tray?.isShowing == true -> showTabs(false)
             address.hasFocus() -> { address.clearFocus(); hideKeyboard() }
             !Settings.canDrawOverlays(this) -> AlertDialog.Builder(this).setTitle("Minimize to a bubble?").setMessage("Enable floating mode to keep your chats available after Home or Back.")
                 .setPositiveButton("Enable") { _, _ -> collapse(FloatingMode.BUBBLE) }.setNegativeButton("Leave without bubble") { _, _ -> externalFlow = true; moveTaskToBack(true) }.show()
@@ -150,12 +150,12 @@ class BrowserActivity : Activity() {
             if (address.text.toString() != display) address.setText(display)
         }
         val backAlpha = if (tab.back) 1f else .55f; if (back.alpha != backAlpha) back.alpha = backAlpha
-        tabs.count = workspace.tabs.size; tabs.contentDescription = "Workspace tabs, ${workspace.tabs.size} open"
+        tabs.count = workspace.tabs.size; tabs.contentDescription = "Workspace tabs, ${workspace.tabs.size} open. Swipe up for Your chats."
         progress.visibility = if (tab.loading && !isInPictureInPictureMode) View.VISIBLE else View.INVISIBLE; progress.progress = tab.progress
         error.visibility = if (tab.error != null && !isInPictureInPictureMode) View.VISIBLE else View.GONE
         val message = tab.error?.plus("\n\nTap to retry").orEmpty(); if (error.text.toString() != message) error.text = message
         if (tab.unread && workspace.chatVisible) { tab.unread = false; Replies.clear(this, tab.id); workspace.changed(true) }
-        tray?.takeIf { it.visibility == View.VISIBLE }?.refresh(workspace)
+        tray?.takeIf { it.isShowing }?.refresh(workspace)
         workspace.notice?.let { if (notice != it) { notice = it; toast(it) } }
     }
     private fun buildUi() {
@@ -193,13 +193,16 @@ class BrowserActivity : Activity() {
         }
         bar.addView(address, LinearLayout.LayoutParams(0, d(44), 1f))
         bar.addView(control("reload", "Refresh page") { refreshPage() }.apply { tooltipText = "Refresh page" }, LinearLayout.LayoutParams(d(44), d(48)))
-        bar.addView(control("share", "Share page") { shareCurrentPage() }.apply { tooltipText = "Share page" }, LinearLayout.LayoutParams(d(44), d(48)))
+        bar.addView(control("share", "Share page") { shareCurrentPage() }.apply {
+            tooltipText = "Share page · hold for last shared app"
+            setOnLongClickListener { shareCurrentPage(preferLast = true); true }
+        }, LinearLayout.LayoutParams(d(44), d(48)))
         // Requested order: floating-window control before the tab counter.
         bar.addView(control("float", "Open interactive floating chat", true) { collapse(FloatingMode.CHAT) }.apply {
             tooltipText = "Floating chat · hold to hide in notification"; setOnLongClickListener { hideToNotification(); true }
         }, LinearLayout.LayoutParams(d(48), d(48)))
         tabs = control("tabs", "Workspace tabs") { showTabs(true) }.apply {
-            tooltipText = "Workspace · hold for quick tabs"
+            tooltipText = "Workspace · swipe up for Your chats · hold for quick tabs"
             setOnLongClickListener { if (::workspace.isInitialized && workspace.ready) QuickMenus.tabs(this, workspace); true }
         }
         bar.addView(tabs, LinearLayout.LayoutParams(d(48), d(48)))
@@ -220,7 +223,7 @@ class BrowserActivity : Activity() {
     private fun control(glyph: String, label: String, accent: Boolean = false, action: () -> Unit) = GlyphView(this, glyph, label, accent).apply { setOnClickListener { if (::workspace.isInitialized && workspace.ready) action() } }
     private fun switchTabFromToolbarSwipe(action: ToolbarSwipe) {
         if (action != ToolbarSwipe.NEXT_TAB && action != ToolbarSwipe.PREVIOUS_TAB) return
-        if (!started || handoff || tabSwipeAnimating || workspace.tabs.size < 2 || tray?.visibility == View.VISIBLE || workspace.quickMenuVisible) return
+        if (!started || handoff || tabSwipeAnimating || workspace.tabs.size < 2 || tray?.isShowing == true || workspace.quickMenuVisible) return
         hideKeyboard(); address.clearFocus(); root.requestFocus()
         val backwards = action == ToolbarSwipe.PREVIOUS_TAB
         if (!ValueAnimator.areAnimatorsEnabled()) { workspace.cycle(backwards); return }
@@ -242,20 +245,23 @@ class BrowserActivity : Activity() {
         val session = selectedSession
         if (session != null && session.isOpen) session.reload() else workspace.retry()
     }
-    private fun shareCurrentPage() {
+    private fun shareCurrentPage(preferLast: Boolean = false) {
         if (currentUrl.isBlank()) return
         externalFlow = true
         val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, currentUrl) }
-        try { startActivity(Intent.createChooser(send, "Share page")) }
+        if (preferLast && ShareTargets.shareLast(this, send)) return
+        try { startActivity(ShareTargets.chooser(this, send, "Share page")) }
         catch (_: RuntimeException) { externalFlow = false; toast("No app is available to share this page.") }
     }
     internal fun showTabs(show: Boolean) {
         QuickPanel.dismissFor(root); hideKeyboard(); address.clearFocus(); root.requestFocus(); workspace.covered = show
         if (show && tray == null) {
             tray = TabTray(this, { workspace.select(it); showTabs(false) }, workspace::close, { workspace.create(); showTabs(false) }, { showTabs(false) })
-            root.addView(tray, FrameLayout.LayoutParams(-1, -1))
         }
-        tray?.let { if (show) it.refresh(workspace); Ui.show(it, show) }
+        tray?.let {
+            if (show) { it.refresh(workspace); it.present() }
+            else it.conceal()
+        }
     }
     private fun menu() {
         val current = workspace.selected
