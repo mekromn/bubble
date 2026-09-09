@@ -51,12 +51,10 @@ internal object ChatVaultBridge {
                         val savedCount = vault.summaries().firstOrNull {
                             it.id == chatId && it.profileId == profileId
                         }?.messages ?: 0
-                        if (transfer.isNotBlank() && !VaultSnapshotPolicy.accepts(vault.loaded, savedCount, incomingCount)) {
-                            ignoredTransfers += transfer
-                        } else {
-                            vault.begin(tabId, profileId, payload)
-                        }
-                        null
+                        val accepted = transfer.isNotBlank() &&
+                            VaultSnapshotPolicy.accepts(vault.loaded, savedCount, incomingCount)
+                        if (!accepted) ignoredTransfers += transfer else vault.begin(tabId, profileId, payload)
+                        GeckoResult.fromValue(JSONObject().put("accepted", accepted))
                     }
                     "vault-snapshot-chunk" -> {
                         val transfer = payload.optString("transfer")
