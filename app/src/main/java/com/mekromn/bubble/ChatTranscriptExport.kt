@@ -67,6 +67,17 @@ internal object ChatTranscriptExports {
         }
     }
 
+    /** Export one explicitly staged source chat. Used by fresh-chat continuity attachment handoff. */
+    fun beginById(context: Context, vault: ChatVault, sourceId: String, profileId: String,
+        callback: (ChatTranscriptExport?) -> Unit) {
+        initialize(context)
+        if (sourceId.isBlank() || profileId.isBlank()) { callback(null); return }
+        vault.read(sourceId) { chat ->
+            if (chat == null || chat.profileId != profileId) callback(null)
+            else build(context, chat, callback)
+        }
+    }
+
     private fun build(context: Context, chat: VaultChat, callback: (ChatTranscriptExport?) -> Unit) {
         io.execute {
             val transfer = UUID.randomUUID().toString()
