@@ -61,22 +61,29 @@ class RebuildRegressionTest {
     }
 
     @Test fun reversingNativeTrayAnimationNeverHidesItOrRetainsHardwareLayer() = withPage { scenario ->
-        var tray: TabTray? = null
-        scenario.onActivity { activity ->
-            activity.showTabs(true)
-            tray = findTray(activity.window.decorView)
+        scenario.onActivity { it.showTabs(true) }
+        waitFor(scenario) { activity ->
+            val tray = tabTray(activity)
+            val decor = tray?.window?.decorView
+            tray?.isShowing == true && decor?.isShown == true && decor.alpha >= 0.99f && decor.layerType == View.LAYER_TYPE_NONE
         }
-        assertNotNull(tray)
-        waitFor(scenario) { tray!!.isShown && tray!!.alpha >= 0.99f && tray!!.layerType == View.LAYER_TYPE_NONE }
         scenario.onActivity { it.showTabs(false) }
         Thread.sleep(40)
         scenario.onActivity { it.showTabs(true) }
-        waitFor(scenario) { tray!!.isShown && tray!!.alpha >= 0.99f && tray!!.translationY == 0f && tray!!.layerType == View.LAYER_TYPE_NONE }
-        scenario.onActivity {
-            assertEquals("Never cache the Gecko compositor as a UI animation layer", View.LAYER_TYPE_NONE, it.geckoView.layerType)
-            it.showTabs(false)
+        waitFor(scenario) { activity ->
+            val tray = tabTray(activity)
+            val decor = tray?.window?.decorView
+            tray?.isShowing == true && decor?.isShown == true && decor.alpha >= 0.99f && decor.translationY == 0f &&
+                decor.layerType == View.LAYER_TYPE_NONE
         }
-        waitFor(scenario) { tray!!.visibility == View.GONE && tray!!.layerType == View.LAYER_TYPE_NONE }
+        scenario.onActivity { activity ->
+            assertEquals("Never cache the Gecko compositor as a UI animation layer", View.LAYER_TYPE_NONE, activity.geckoView.layerType)
+            activity.showTabs(false)
+        }
+        waitFor(scenario) { activity ->
+            val tray = tabTray(activity)
+            tray == null || !tray.isShowing
+        }
     }
 
     @Test fun compactBrowserBarHasRefreshShareAndFloatingBeforeTabs() = withPage { scenario ->
@@ -108,11 +115,11 @@ class RebuildRegressionTest {
         if (view is ViewGroup) for (i in 0 until view.childCount) findControl(view.getChildAt(i), description)?.let { return it }
         return null
     }
-    private fun findTray(view: View): TabTray? {
-        if (view is TabTray) return view
-        if (view is ViewGroup) for (i in 0 until view.childCount) findTray(view.getChildAt(i))?.let { return it }
-        return null
-    }
+
+    private fun tabTray(activity: BrowserActivity): TabTray? = runCatching {
+        BrowserActivity::class.java.getDeclaredField("tray").apply { isAccessible = true }.get(activity) as? TabTray
+    }.getOrNull()
+
     private fun waitFor(scenario: ActivityScenario<BrowserActivity>, predicate: (BrowserActivity) -> Boolean) {
         val end = SystemClock.elapsedRealtime() + 30_000
         var success = false
