@@ -110,12 +110,23 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
     }
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (glyph == "reload" && !listeningForLoading) {
-            Workspace.peek()?.let { workspace ->
-                listeningForLoading = true
-                workspace.listen(loadingListener)
+        if (glyph == "reload") {
+            bindLoadingListener()
+            // BrowserActivity builds chrome before it resolves the process Workspace. Re-check on
+            // the next main-loop turn so an early View attachment cannot permanently miss loading
+            // state and leave the refresh glyph static.
+            post {
+                if (!isAttachedToWindow || glyph != "reload") return@post
+                bindLoadingListener()
+                syncReloadMotion()
             }
-            syncReloadMotion()
+        }
+    }
+    private fun bindLoadingListener() {
+        if (glyph != "reload" || listeningForLoading) return
+        Workspace.peek()?.let { workspace ->
+            listeningForLoading = true
+            workspace.listen(loadingListener)
         }
     }
     override fun onDetachedFromWindow() {
@@ -128,6 +139,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
     }
     private fun syncReloadMotion() {
         if (glyph != "reload") return
+        bindLoadingListener()
         val loading = Workspace.peek()?.selected?.loading == true
         if (loading && ValueAnimator.areAnimatorsEnabled() && isAttachedToWindow) {
             if (reloadSpin?.isRunning == true) return
