@@ -67,3 +67,4 @@ console.log('Google Voice receives real visibility/focus so background notificat
 console.log('Glass guard: shape-clipped Window background blur only; screen-wide blur-behind is forbidden.');
 require('./test-download-bridge.cjs');
 require('./test-monitor.cjs');
+require('./test-vault.cjs');
