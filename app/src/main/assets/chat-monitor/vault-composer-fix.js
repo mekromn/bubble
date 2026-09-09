@@ -1,24 +1,21 @@
-/* Bubble Continuity Vault composer fallback (isolated world, exact ChatGPT origin).
+/* Bubble Continuity Vault composer fallback helper (isolated world, exact ChatGPT origin).
  *
- * A staged local handoff is inserted only into an empty composer on ChatGPT's New Chat route.
- * This deliberately never clicks Send and never fabricates a trusted user gesture. It exists as a
- * robust editor-compatible fallback for ChatGPT's contenteditable/ProseMirror composer variants.
+ * The primary staged-continuity owner is vault.js, which first attaches the complete previous-chat
+ * Markdown transcript. This helper no longer requests pending handoffs on its own, so it cannot race
+ * the attachment path. vault.js invokes it explicitly only after attachment fails and only for the
+ * legacy size-aware text fallback. It never clicks or submits anything.
  */
 (() => {
   'use strict';
   if (window !== window.top || location.origin !== 'https://chatgpt.com') return;
 
   const HANDOFF_MARKER = '[CONTINUITY HANDOFF — PREVIOUS CHAT]';
-  let loadedSourceId = '';
-  let timer = 0;
+  const REQUEST = '__bubble_vault_text_fallback_request_v1__';
+  const RESULT = '__bubble_vault_text_fallback_result_v1__';
   let busy = false;
-  let attempts = 0;
 
-  const send = async message => {
-    try { return await browser.runtime.sendNativeMessage('bubbleVault', message); }
-    catch (_) { return null; }
-  };
   const routeChatId = () => location.pathname.match(/\/c\/([^/?#]+)/u)?.[1] || '';
+  const settle = delay => new Promise(resolve => setTimeout(resolve, delay));
 
   function findComposer() {
     const selectors = [
@@ -62,8 +59,6 @@
     } catch (_) {}
   }
 
-  const settle = delay => new Promise(resolve => setTimeout(resolve, delay));
-
   async function insertTextarea(input, text) {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     setter ? setter.call(input, text) : (input.value = text);
@@ -76,8 +71,6 @@
   async function insertContentEditable(input, text) {
     focusCaret(input);
 
-    // ProseMirror handles paste through its editor transaction path on many ChatGPT builds. A local
-    // DataTransfer carries only the handoff text; nothing is read from the system clipboard.
     try {
       const transfer = new DataTransfer();
       transfer.setData('text/plain', text);
@@ -88,8 +81,6 @@
       if (hasHandoff(input)) return true;
     } catch (_) {}
 
-    // Gecko still supports insertText for focused contenteditable editors. This updates editor state
-    // more faithfully than assigning innerHTML directly.
     try {
       focusCaret(input);
       document.execCommand('insertText', false, text);
@@ -97,8 +88,6 @@
       if (hasHandoff(input)) return true;
     } catch (_) {}
 
-    // Some editor revisions consume beforeinput themselves. Give the editor that opportunity before
-    // the final DOM-compatible fallback.
     try {
       focusCaret(input);
       input.dispatchEvent(new InputEvent('beforeinput', {
@@ -108,8 +97,6 @@
       if (hasHandoff(input)) return true;
     } catch (_) {}
 
-    // Last resort: reproduce the paragraph structure ChatGPT's contenteditable expects, then emit the
-    // same input/change signals a real edit would produce. Send remains entirely user-controlled.
     try {
       const fragment = document.createDocumentFragment();
       for (const line of text.replace(/\r/gu, '').split('\n')) {
@@ -134,55 +121,24 @@
     return insertContentEditable(input, text);
   }
 
-  function schedule(delay = 300) {
-    clearTimeout(timer);
-    timer = setTimeout(() => { void tryLoad(); }, delay);
-  }
-
-  async function tryLoad() {
-    if (busy || loadedSourceId || routeChatId() || attempts >= 180) return;
-    const composer = findComposer();
-    if (!composer || composerValue(composer).trim()) return schedule(400);
-    busy = true;
-    attempts++;
+  function reply(requestId, ok) {
     try {
-      const response = await send({ event: 'vault-pending-request' });
-      if (!response?.pending || typeof response.text !== 'string' || !response.text.includes(HANDOFF_MARKER)) {
-        return schedule(500);
-      }
-      // Re-check after native IO: the user may have started typing while the request was in flight.
-      if (!composer.isConnected || composerValue(composer).trim()) return schedule(500);
-      if (await insert(composer, response.text)) {
-        loadedSourceId = String(response.sourceId || '');
-        await send({
-          event: 'vault-handoff-loaded', sourceId: loadedSourceId,
-          complete: Boolean(response.complete), insertion: 'editor-fallback'
-        });
-      } else schedule(550);
-    } finally { busy = false; }
+      window.dispatchEvent(new CustomEvent(RESULT, {
+        detail: JSON.stringify({requestId, ok: Boolean(ok)})
+      }));
+    } catch (_) {}
   }
 
-  function maybeConsume() {
-    if (!loadedSourceId) return;
-    const userNodes = document.querySelectorAll('main article [data-message-author-role="user"],main article[data-testid*="user" i]');
-    for (const node of userNodes) {
-      const article = node.closest?.('article') || node;
-      const text = (article.innerText || article.textContent || '').replace(/\u00a0/gu, ' ');
-      if (!text.includes(HANDOFF_MARKER)) continue;
-      const sourceId = loadedSourceId;
-      loadedSourceId = '';
-      void send({ event: 'vault-pending-consumed', sourceId });
-      return;
-    }
-  }
-
-  const observer = new MutationObserver(() => {
-    maybeConsume();
-    if (!loadedSourceId && !routeChatId()) schedule(150);
-  });
-  observer.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
-  window.addEventListener('pageshow', () => schedule(100), { passive: true });
-  window.addEventListener('popstate', () => schedule(150), { passive: true });
-  window.addEventListener('pagehide', () => clearTimeout(timer), { passive: true });
-  schedule(100);
+  window.addEventListener(REQUEST, event => {
+    if (busy || routeChatId() || typeof event.detail !== 'string' || event.detail.length > 80_000) return;
+    let payload;
+    try { payload = JSON.parse(event.detail); } catch (_) { return; }
+    const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+    const text = typeof payload?.text === 'string' ? payload.text : '';
+    if (!requestId || !text.includes(HANDOFF_MARKER)) { reply(requestId, false); return; }
+    const composer = findComposer();
+    if (!composer || composerValue(composer).trim()) { reply(requestId, false); return; }
+    busy = true;
+    void insert(composer, text).then(ok => reply(requestId, ok), () => reply(requestId, false)).finally(() => { busy = false; });
+  }, false);
 })();
