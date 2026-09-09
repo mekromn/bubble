@@ -1,14 +1,14 @@
 /* Bubble agent transcript command.
  *
  * Exact completed assistant messages GET_CHAT_TRANSCIPT (legacy spelling requested by the user) or
- * GET_CHAT_TRANSCRIPT ask Bubble to upload this same conversation's native Continuity Vault as a
- * Markdown attachment and send it back in the same ChatGPT tab. This runs independently in every
- * resident ChatGPT GeckoSession; the tab does not need to be selected or visible.
+ * GET_CHAT_TRANSCRIPT ask Bubble to full-sync, upload, and submit this same conversation's native
+ * Continuity Vault as a Markdown attachment. This runs independently in every resident ChatGPT
+ * GeckoSession; the tab does not need to be selected or visible.
  *
- * Native provides transcript bytes in bounded chunks. No cookie/token/account data is read here and
- * no second conversation fetch is made. The automation refuses to overwrite a non-empty draft or
- * an existing pending file selection. A completed command fingerprint is persisted natively so a
- * page refresh cannot resend the same turn. */
+ * Native provides transcript bytes in bounded chunks. No cookie/token/account data is read here.
+ * The automation refuses to overwrite a non-empty draft or existing pending file selection. A
+ * completed command fingerprint is persisted natively so refresh cannot resend the same turn.
+ */
 (() => {
   'use strict';
   if (window !== window.top || location.origin !== 'https://chatgpt.com') return;
@@ -168,12 +168,10 @@
 
   async function submit() {
     const button = sendButton();
-    if (!button) return false;
-    const form = button.closest('form');
-    try {
-      if (form?.requestSubmit) form.requestSubmit(button);
-      else button.click();
-    } catch (_) { return false; }
+    const form = button?.closest('form');
+    if (!button || !form?.requestSubmit) return false;
+    try { form.requestSubmit(button); }
+    catch (_) { return false; }
     const end = performance.now() + 15_000;
     while (performance.now() < end) {
       const composer = findComposer();
@@ -189,16 +187,16 @@
     processing = true;
     let transfer = '';
     try {
-      // Give vault.js time to commit the just-finished assistant turn. Native transcript reads are
-      // serialized behind any already-queued Vault snapshot commit.
-      await sleep(1200);
+      await sleep(900);
       if (streaming() || commandOf(assistantNodes().at(-1)) !== command) return;
       const composer = findComposer();
       if (!composer || composerValue(composer).trim()) return scheduleRetry();
       const existing = [...document.querySelectorAll('input[type="file"]')].some(input => input.files?.length);
       if (existing) return scheduleRetry();
 
-      const meta = await native({event: 'vault-transcript-begin', fingerprint: fp});
+      // Native first asks this exact tab to perform a complete same-origin Vault sync, then exports
+      // the committed result. The command therefore never knowingly uploads a virtualized tail.
+      const meta = await native({event: 'vault-transcript-begin', fingerprint: fp, sync: true});
       if (meta?.duplicate) { localCompleted = fp; return; }
       if (!meta?.available) return scheduleRetry();
       transfer = String(meta.transfer || '');
