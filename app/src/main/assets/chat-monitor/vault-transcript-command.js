@@ -92,9 +92,25 @@
     return composerValue(input).includes(text);
   }
 
-  function fileInput() {
-    return [...document.querySelectorAll('input[type="file"]')]
-      .find(input => !input.disabled && (!input.files || input.files.length === 0)) || null;
+  function isGeneralFileInput(input) {
+    if (!input || input.disabled || input.files?.length) return false;
+    const identity = `${input.id || ''} ${input.getAttribute('data-testid') || ''} ${input.getAttribute('aria-label') || ''}`.toLowerCase();
+    if (/upload-(?:photos|camera)|photo|camera/u.test(identity)) return false;
+    const accept = String(input.accept || '').trim().toLowerCase();
+    if (!accept) return true;
+    const tokens = accept.split(',').map(value => value.trim()).filter(Boolean);
+    if (!tokens.length) return true;
+    return !tokens.every(value => /^(?:image|video|audio)\//u.test(value) || /^(?:image|video|audio)\/\*$/u.test(value));
+  }
+
+  function fileInputs() {
+    const all = [...document.querySelectorAll('input[type="file"]')].filter(isGeneralFileInput);
+    const preferred = [
+      document.querySelector('input#upload-files'),
+      document.querySelector('input[data-testid="file-upload"]'),
+      document.querySelector('input[data-testid="composer-file-input"]')
+    ].filter(isGeneralFileInput);
+    return [...new Set([...preferred, ...all])];
   }
 
   function decodeBase64(value) {
@@ -122,28 +138,79 @@
     return new File(parts, meta.filename, {type: 'text/markdown;charset=utf-8', lastModified: Date.now()});
   }
 
-  async function injectFile(file) {
-    let input = fileInput();
-    const end = performance.now() + 15_000;
-    while (!input && performance.now() < end) { await sleep(250); input = fileInput(); }
-    if (!input) return false;
-    try {
-      const transfer = new DataTransfer();
-      transfer.items.add(file);
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
-      setter ? setter.call(input, transfer.files) : (input.files = transfer.files);
-      input.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
-      input.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
-      return input.files?.length === 1 && input.files[0]?.name === file.name;
-    } catch (_) { return false; }
-  }
-
   function filenameVisible(name) {
     for (const node of document.querySelectorAll('button,[role="button"],[aria-label],span,div')) {
       const text = (node.textContent || '').trim();
       if (text === name || node.getAttribute?.('aria-label')?.includes(name)) return true;
     }
     return false;
+  }
+
+  async function waitForFilename(name, timeoutMs = 2200) {
+    const end = performance.now() + timeoutMs;
+    while (performance.now() < end) {
+      if (filenameVisible(name)) return true;
+      await sleep(120);
+    }
+    return filenameVisible(name);
+  }
+
+  function assignFiles(input, files) {
+    try {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
+      if (!setter) return false;
+      setter.call(input, files);
+      input.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
+      input.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
+      return true;
+    } catch (_) { return false; }
+  }
+
+  async function injectIntoInput(input, file) {
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      if (!assignFiles(input, transfer.files)) return false;
+      if (await waitForFilename(file.name)) return true;
+      const empty = new DataTransfer();
+      assignFiles(input, empty.files);
+    } catch (_) {}
+    return false;
+  }
+
+  async function injectByDrop(file) {
+    const composer = findComposer();
+    if (!composer) return false;
+    const target = composer.closest('form') || composer;
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      for (const type of ['dragenter', 'dragover', 'drop']) {
+        target.dispatchEvent(new DragEvent(type, {bubbles: true, cancelable: true, composed: true, dataTransfer: transfer}));
+      }
+      return await waitForFilename(file.name);
+    } catch (_) { return false; }
+  }
+
+  async function injectByPaste(file) {
+    const composer = findComposer();
+    if (!composer) return false;
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      composer.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, composed: true, clipboardData: transfer
+      }));
+      return await waitForFilename(file.name);
+    } catch (_) { return false; }
+  }
+
+  async function injectFile(file) {
+    for (const input of fileInputs()) {
+      if (await injectIntoInput(input, file)) return true;
+    }
+    if (await injectByDrop(file)) return true;
+    return injectByPaste(file);
   }
 
   function sendButton() {
