@@ -7,8 +7,9 @@ name: Verify current Bubble changes
 # sync, Archive-all-open-chats, long-press New Chat continuity cloning, any-running-tab transcript
 # command automation, the continuity-first companion skill contract, two-check 30-minute idle tab
 # maintenance, the output-driven 30-minute generation-stall watchdog, and the GitHub download-tab
-# fix. Full-history sync now learns and replays the exact successful live ChatGPT conversation GET
-# before using the legacy hard-coded endpoint fallback. The monitor harness validates this boundary.
+# fix. Full-history sync now follows the supplied Continuity Vault CRX flow: capture ChatGPT's live
+# backend Bearer token in MAIN world and reuse it for the active conversation, with auth-session only
+# as fallback. Credentials never cross to the isolated/native Vault bridge.
 # Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
