@@ -1,20 +1,25 @@
 /* Bubble Continuity Vault full-history observer (MAIN world, exact ChatGPT origin).
  *
- * This does not make a network request. It only clones same-origin responses ChatGPT itself already
- * fetched for the active /c/<id> route, extracts user/assistant conversation content, and emits it
- * through a local chunked CustomEvent. It never reads request headers, cookies, storage, bearer
- * tokens, account identifiers, composer drafts, or form data, and it never clicks or scrolls.
+ * Passive mode clones conversation JSON ChatGPT already fetched. Explicit/manual/automatic full-sync
+ * mode performs a same-origin GET for only the active /c/<id> conversation. Authentication remains
+ * inside the ChatGPT page world: Bubble never receives, stores, logs, or exports cookies/session
+ * tokens. No scrolls, clicks, composer access, or page-form data are used.
  */
 (() => {
   'use strict';
   if (window !== window.top || location.origin !== 'https://chatgpt.com') return;
 
   const EVENT = '__bubble_vault_history_v1__';
-  const REQUEST = '__bubble_vault_history_request_v1__';
+  const REPLAY_REQUEST = '__bubble_vault_history_request_v1__';
+  const FULL_REQUEST = '__bubble_vault_full_sync_request_v1__';
   const CHUNK = 40000;
   const MAX_TEXT = 256 * 1024 * 1024;
   const MAX_DEPTH = 7;
   let latest = null;
+  let sessionToken = '';
+  let fullSyncBusy = false;
+  let fullSyncQueued = false;
+  let lastRoute = '';
 
   const routeChatId = () => location.pathname.match(/\/c\/([^/?#]+)/u)?.[1] || '';
 
@@ -121,10 +126,11 @@
     return null;
   }
 
-  function emitPayload(payload) {
-    if (!payload?.records?.length || payload.id !== routeChatId()) return;
-    const serialized = JSON.stringify(payload);
-    if (!serialized.length || serialized.length > MAX_TEXT) return;
+  function emitPayload(payload, source = 'passive-full-history') {
+    if (!payload?.records?.length || payload.id !== routeChatId()) return false;
+    const value = {...payload, source};
+    const serialized = JSON.stringify(value);
+    if (!serialized.length || serialized.length > MAX_TEXT) return false;
     latest = serialized;
     const transfer = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const total = Math.ceil(serialized.length / CHUNK);
@@ -133,19 +139,29 @@
       window.dispatchEvent(new CustomEvent(EVENT, { detail: JSON.stringify({ kind: 'chunk', transfer, index, data: serialized.slice(index * CHUNK, (index + 1) * CHUNK) }) }));
     }
     window.dispatchEvent(new CustomEvent(EVENT, { detail: JSON.stringify({ kind: 'end', transfer }) }));
+    return true;
+  }
+
+  function emitSyncFailure(reason) {
+    try {
+      window.dispatchEvent(new CustomEvent(EVENT, {detail: JSON.stringify({kind: 'sync-failed', reason: String(reason || 'Full history unavailable').slice(0, 512)})}));
+    } catch (_) {}
   }
 
   function replayLatest() {
-    if (!latest) return;
-    try { emitPayload(JSON.parse(latest)); } catch (_) {}
+    if (!latest) return false;
+    try {
+      const parsed = JSON.parse(latest);
+      return emitPayload(parsed, parsed.source || 'passive-full-history');
+    } catch (_) { return false; }
   }
 
-  function inspectObject(value, responseUrl) {
+  function inspectObject(value, responseUrl, source = 'passive-full-history') {
     const active = routeChatId();
-    if (!active) return;
+    if (!active) return false;
     const found = findConversation(value, responseUrl);
-    if (!found || found.id !== active || !found.records.length) return;
-    emitPayload({ id: found.id, title: found.title, records: found.records, capturedAt: Date.now() });
+    if (!found || found.id !== active || !found.records.length) return false;
+    return emitPayload({ id: found.id, title: found.title, records: found.records, capturedAt: Date.now() }, source);
   }
 
   async function inspectResponse(response) {
@@ -158,11 +174,66 @@
       const clone = response.clone();
       const text = await clone.text();
       if (!text || text.length > MAX_TEXT) return;
-      inspectObject(JSON.parse(text), url.href);
+      inspectObject(JSON.parse(text), url.href, 'passive-full-history');
     } catch (_) {}
   }
 
   const originalFetch = window.fetch;
+
+  async function getSessionToken() {
+    if (sessionToken) return sessionToken;
+    try {
+      const response = await originalFetch.call(window, '/api/auth/session', {
+        method: 'GET', credentials: 'include', cache: 'no-store', headers: {accept: 'application/json'}
+      });
+      if (!response.ok) return '';
+      const data = await response.json();
+      const token = typeof data?.accessToken === 'string' ? data.accessToken : '';
+      if (token.length < 16 || token.length > 16384) return '';
+      sessionToken = token;
+      return token;
+    } catch (_) { return ''; }
+  }
+
+  async function requestConversation(id, token = '') {
+    const headers = {accept: 'application/json'};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return originalFetch.call(window, `/backend-api/conversation/${encodeURIComponent(id)}`, {
+      method: 'GET', credentials: 'include', cache: 'no-store', headers
+    });
+  }
+
+  async function requestFullHistory() {
+    const id = routeChatId();
+    if (!id || typeof originalFetch !== 'function') return false;
+    if (fullSyncBusy) { fullSyncQueued = true; return false; }
+    fullSyncBusy = true;
+    let success = false;
+    try {
+      let response = await requestConversation(id);
+      if (response.status === 401 || response.status === 403) {
+        const token = await getSessionToken();
+        if (token) response = await requestConversation(id, token);
+      }
+      if (!response.ok) throw new Error(`conversation-${response.status}`);
+      const type = String(response.headers?.get?.('content-type') || '').toLowerCase();
+      if (!type.includes('json')) throw new Error('conversation-not-json');
+      const text = await response.text();
+      if (!text || text.length > MAX_TEXT) throw new Error('conversation-size');
+      success = inspectObject(JSON.parse(text), response.url || location.href, 'full-history');
+      if (!success) throw new Error('conversation-parse');
+    } catch (error) {
+      emitSyncFailure(error?.message || 'Full history unavailable');
+    } finally {
+      fullSyncBusy = false;
+      if (fullSyncQueued) {
+        fullSyncQueued = false;
+        setTimeout(() => { void requestFullHistory(); }, 250);
+      }
+    }
+    return success;
+  }
+
   if (typeof originalFetch === 'function') {
     window.fetch = function(...args) {
       const result = originalFetch.apply(this, args);
@@ -184,16 +255,39 @@
         const responseUrl = xhrUrls.get(this) || this.responseURL || '';
         const url = new URL(responseUrl, location.href);
         if (url.origin !== location.origin || !routeChatId() || this.status < 200 || this.status >= 300) return;
-        if (this.responseType === 'json') inspectObject(this.response, url.href);
+        if (this.responseType === 'json') inspectObject(this.response, url.href, 'passive-full-history');
         else if (this.responseType === '' || this.responseType === 'text') {
           const type = String(this.getResponseHeader('content-type') || '').toLowerCase();
           const text = String(this.responseText || '');
-          if (type.includes('json') && text && text.length <= MAX_TEXT) inspectObject(JSON.parse(text), url.href);
+          if (type.includes('json') && text && text.length <= MAX_TEXT) inspectObject(JSON.parse(text), url.href, 'passive-full-history');
         }
       } catch (_) {}
     }, { once: true });
     return xhrSend.apply(this, args);
   };
 
-  window.addEventListener(REQUEST, replayLatest, false);
+  function routeChanged() {
+    const current = routeChatId();
+    if (current === lastRoute) return;
+    lastRoute = current;
+    latest = null;
+    if (current) setTimeout(() => { void requestFullHistory(); }, 700);
+  }
+
+  for (const method of ['pushState', 'replaceState']) {
+    const original = history[method];
+    if (typeof original !== 'function') continue;
+    history[method] = function(...args) {
+      const result = original.apply(this, args);
+      queueMicrotask(routeChanged);
+      return result;
+    };
+  }
+  window.addEventListener('popstate', routeChanged, {passive: true});
+  window.addEventListener('pageshow', routeChanged, {passive: true});
+  window.addEventListener(REPLAY_REQUEST, replayLatest, false);
+  window.addEventListener(FULL_REQUEST, () => { void requestFullHistory(); }, false);
+
+  lastRoute = routeChatId();
+  if (lastRoute) setTimeout(() => { void requestFullHistory(); }, 1400);
 })();
