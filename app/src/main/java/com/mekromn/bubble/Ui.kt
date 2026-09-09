@@ -1,5 +1,6 @@
 package com.mekromn.bubble
 
+import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.content.res.ColorStateList
@@ -9,9 +10,14 @@ import android.graphics.Path
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.TextView
+import kotlin.math.abs
 
 /** Neutral black glass. Native translucent gradients/highlights, no screen capture or blur loop. */
 internal object Ui {
@@ -83,6 +89,14 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
     private val path = Path()
     private val iconSize = Ui.dp(c, 24f).toFloat()
     private var countLabel = "0"
+    private var reloadSpin: ObjectAnimator? = null
+    private var listeningForLoading = false
+    private val loadingListener: () -> Unit = { syncReloadMotion() }
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
+    private var swipeUpArmed = false
+    private var swipeSuperCancelled = false
+    private val swipeSlop = ViewConfiguration.get(c).scaledTouchSlop * 1.35f
     var count: Int = 0
         set(value) { if (field != value) { field = value; countLabel = if (value > 99) "99+" else value.toString(); invalidate() } }
     init {
@@ -90,12 +104,91 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
         background = Ui.ripple(c, if (accented) Ui.SURFACE_HIGH else android.graphics.Color.TRANSPARENT, 16f)
         minimumWidth = Ui.dp(c, 48f); minimumHeight = Ui.dp(c, 48f); tooltipText = label
     }
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (glyph == "reload" && !listeningForLoading) {
+            Workspace.peek()?.let { workspace ->
+                listeningForLoading = true
+                workspace.listen(loadingListener)
+            }
+            syncReloadMotion()
+        }
+    }
+    override fun onDetachedFromWindow() {
+        if (listeningForLoading) {
+            Workspace.peek()?.unlisten(loadingListener)
+            listeningForLoading = false
+        }
+        stopReloadMotion(reset = false)
+        super.onDetachedFromWindow()
+    }
+    private fun syncReloadMotion() {
+        if (glyph != "reload") return
+        val loading = Workspace.peek()?.selected?.loading == true
+        if (loading && ValueAnimator.areAnimatorsEnabled() && isAttachedToWindow) {
+            if (reloadSpin?.isRunning == true) return
+            reloadSpin?.cancel()
+            reloadSpin = ObjectAnimator.ofFloat(this, ROTATION, rotation, rotation + 360f).apply {
+                duration = 720L
+                repeatCount = ValueAnimator.INFINITE
+                interpolator = LinearInterpolator()
+                start()
+            }
+        } else stopReloadMotion(reset = true)
+    }
+    private fun stopReloadMotion(reset: Boolean) {
+        reloadSpin?.cancel(); reloadSpin = null
+        if (!reset) return
+        animate().cancel()
+        if (ValueAnimator.areAnimatorsEnabled() && isLaidOut && rotation != 0f) {
+            animate().rotation(0f).setDuration(120L).setInterpolator(Ui.ease).start()
+        } else rotation = 0f
+    }
     override fun drawableStateChanged() {
         super.drawableStateChanged()
         if (isLaidOut && ValueAnimator.areAnimatorsEnabled()) {
             animate().scaleX(if (isPressed) .9f else 1f).scaleY(if (isPressed) .9f else 1f)
                 .setDuration(if (isPressed) 85L else 165L).setInterpolator(Ui.ease).start()
         }
+    }
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val browser = context as? BrowserActivity
+        if (glyph != "tabs" || browser == null) return super.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeStartX = event.x; swipeStartY = event.y; swipeUpArmed = false; swipeSuperCancelled = false
+                return super.onTouchEvent(event)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.x - swipeStartX
+                val dy = event.y - swipeStartY
+                if (!swipeUpArmed && -dy > swipeSlop && -dy > abs(dx) * 1.15f) {
+                    swipeUpArmed = true
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                    super.onTouchEvent(cancel); cancel.recycle(); swipeSuperCancelled = true
+                }
+                if (swipeUpArmed) {
+                    translationY = dy.coerceIn(-Ui.dp(context, 12f).toFloat(), 0f)
+                    alpha = .72f
+                    return true
+                }
+                return super.onTouchEvent(event)
+            }
+            MotionEvent.ACTION_UP -> {
+                if (swipeUpArmed) {
+                    swipeUpArmed = false; translationY = 0f; alpha = 1f
+                    browser.showTabs(true)
+                    return true
+                }
+                return super.onTouchEvent(event)
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                swipeUpArmed = false; translationY = 0f; alpha = 1f
+                return if (swipeSuperCancelled) true else super.onTouchEvent(event)
+            }
+        }
+        return super.onTouchEvent(event)
     }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
