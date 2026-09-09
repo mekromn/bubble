@@ -2,7 +2,9 @@ package com.mekromn.bubble
 
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -17,6 +19,7 @@ import android.view.ViewConfiguration
 import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.TextView
+import android.widget.Toast
 import kotlin.math.abs
 
 /** Neutral black glass. Native translucent gradients/highlights, no screen capture or blur loop. */
@@ -103,6 +106,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
         contentDescription = label; isFocusable = true; isClickable = true; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         background = Ui.ripple(c, if (accented) Ui.SURFACE_HIGH else android.graphics.Color.TRANSPARENT, 16f)
         minimumWidth = Ui.dp(c, 48f); minimumHeight = Ui.dp(c, 48f); tooltipText = label
+        if (glyph == "share") setOnLongClickListener { shareToLastTarget(); true }
     }
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -128,7 +132,7 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
         if (loading && ValueAnimator.areAnimatorsEnabled() && isAttachedToWindow) {
             if (reloadSpin?.isRunning == true) return
             reloadSpin?.cancel()
-            reloadSpin = ObjectAnimator.ofFloat(this, ROTATION, rotation, rotation + 360f).apply {
+            reloadSpin = ObjectAnimator.ofFloat(this, View.ROTATION, rotation, rotation + 360f).apply {
                 duration = 720L
                 repeatCount = ValueAnimator.INFINITE
                 interpolator = LinearInterpolator()
@@ -143,6 +147,16 @@ internal class GlyphView(c: Context, var glyph: String, label: String, private v
         if (ValueAnimator.areAnimatorsEnabled() && isLaidOut && rotation != 0f) {
             animate().rotation(0f).setDuration(120L).setInterpolator(Ui.ease).start()
         } else rotation = 0f
+    }
+    private fun shareToLastTarget() {
+        val url = Workspace.peek()?.selected?.url.orEmpty()
+        if (url.isBlank()) return
+        val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, url) }
+        if (ShareTargets.shareLast(context, send)) return
+        val chooser = ShareTargets.chooser(context, send, "Share page")
+        if (context !is Activity) chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try { context.startActivity(chooser) }
+        catch (_: RuntimeException) { Toast.makeText(context, "No app is available to share this page.", Toast.LENGTH_LONG).show() }
     }
     override fun drawableStateChanged() {
         super.drawableStateChanged()
