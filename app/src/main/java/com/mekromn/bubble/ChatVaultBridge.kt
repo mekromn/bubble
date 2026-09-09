@@ -41,6 +41,7 @@ internal object ChatVaultBridge {
                     port.disconnect(); return
                 }
                 ChatVaultControls.bind(context, vault, tabId, profileId, session, port)
+                ChatTabMaintenance.channelReady(tabId)
             }
 
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
@@ -51,12 +52,8 @@ internal object ChatVaultBridge {
                 return when (payload.optString("event")) {
                     "vault-snapshot-begin" -> {
                         val transfer = payload.optString("transfer")
-                        val chatId = payload.optString("chatId")
                         val incomingCount = payload.optInt("messages", -1)
-                        val savedCount = vault.summaries().firstOrNull {
-                            it.id == chatId && it.profileId == profileId
-                        }?.messages ?: 0
-                        val accepted = transfer.isNotBlank() && VaultSnapshotPolicy.accepts(vault.loaded, savedCount, incomingCount)
+                        val accepted = transfer.isNotBlank() && VaultSnapshotPolicy.accepts(vault.loaded, incomingCount)
                         if (!accepted) ignoredTransfers += transfer else vault.begin(tabId, profileId, payload)
                         GeckoResult.fromValue(JSONObject().put("accepted", accepted))
                     }
@@ -84,6 +81,21 @@ internal object ChatVaultBridge {
                     "vault-agent-go-loaded" -> {
                         Toast.makeText(context.applicationContext, "Assistant requested another turn · go is loaded; press Send when ready", Toast.LENGTH_LONG).show(); null
                     }
+                    "vault-generation-started" -> {
+                        val run = payload.optString("run").takeIf { it.length in 1..128 } ?: return null
+                        ChatTabMaintenance.generationStarted(tabId, run, payload.optString("turn").take(256))
+                        null
+                    }
+                    "vault-generation-progress" -> {
+                        val run = payload.optString("run").takeIf { it.length in 1..128 } ?: return null
+                        val fingerprint = payload.optString("fingerprint").takeIf { it.length in 1..512 } ?: return null
+                        ChatTabMaintenance.generationProgress(tabId, run, payload.optString("turn").take(256), fingerprint)
+                        null
+                    }
+                    "vault-generation-ended" -> {
+                        ChatTabMaintenance.generationEnded(tabId, payload.optString("run").take(128))
+                        null
+                    }
                     "vault-transcript-begin" -> {
                         val fingerprint = payload.optString("fingerprint").takeIf { it.length in 8..512 }
                             ?: return GeckoResult.fromValue(JSONObject().put("available", false).put("reason", "bad-fingerprint"))
@@ -91,17 +103,28 @@ internal object ChatVaultBridge {
                             return GeckoResult.fromValue(JSONObject().put("available", false).put("duplicate", true))
                         }
                         val result = GeckoResult<Any>()
-                        ChatTranscriptExports.begin(context, vault, sender.url, profileId) { export ->
-                            if (export == null) {
-                                activeTranscriptFingerprints.remove(fingerprint)
-                                result.complete(JSONObject().put("available", false).put("reason", "vault-unavailable"))
-                            } else {
-                                transcriptExports[export.transfer] = ActiveExport(export, fingerprint)
-                                result.complete(JSONObject().put("available", true).put("transfer", export.transfer)
-                                    .put("sourceId", export.sourceId).put("filename", export.filename)
-                                    .put("bytes", export.bytes).put("chunkBytes", TRANSCRIPT_CHUNK_BYTES))
+                        fun buildExport() {
+                            ChatTranscriptExports.begin(context, vault, sender.url, profileId) { export ->
+                                if (export == null) {
+                                    activeTranscriptFingerprints.remove(fingerprint)
+                                    result.complete(JSONObject().put("available", false).put("reason", "vault-unavailable"))
+                                } else {
+                                    transcriptExports[export.transfer] = ActiveExport(export, fingerprint)
+                                    result.complete(JSONObject().put("available", true).put("transfer", export.transfer)
+                                        .put("sourceId", export.sourceId).put("filename", export.filename)
+                                        .put("bytes", export.bytes).put("chunkBytes", TRANSCRIPT_CHUNK_BYTES))
+                                }
                             }
                         }
+                        if (payload.optBoolean("sync")) {
+                            ChatVaultControls.archive(tabId) { archive ->
+                                if (!archive.success) {
+                                    activeTranscriptFingerprints.remove(fingerprint)
+                                    result.complete(JSONObject().put("available", false)
+                                        .put("reason", "full-sync-failed: ${archive.reason}"))
+                                } else buildExport()
+                            }
+                        } else buildExport()
                         result
                     }
                     "vault-transcript-chunk" -> {
