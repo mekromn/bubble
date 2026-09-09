@@ -73,12 +73,13 @@
     if (!serialized.length || serialized.length > MAX_SNAPSHOT_CHARS) return;
     const chunks = chunksOf(serialized);
     const transfer = crypto.randomUUID();
-    await send({
+    const begin = await send({
       event: 'vault-snapshot-begin', transfer, chatId: snapshot.id, title: snapshot.title,
       url: snapshot.url, createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt,
       firstSignature: snapshot.firstSignature, messages: snapshot.messages.length,
       totalChunks: chunks.length, chars: serialized.length, source: 'passive-full-history'
     });
+    if (begin?.accepted !== true) return;
     for (let index = 0; index < chunks.length; index++) {
       await send({ event: 'vault-snapshot-chunk', transfer, index, data: chunks[index] });
     }
