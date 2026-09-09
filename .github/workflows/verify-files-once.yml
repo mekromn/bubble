@@ -5,9 +5,10 @@ name: Verify current Bubble changes
 #
 # Final Bubble 0.7.4 current-head verification: Android-16 Archive Picker insets/full-width rows,
 # swipe-up Your chats, fullscreen compositor blur, reliable loading-driven refresh rotation,
-# remembered last share target, profile-isolated local saved-chat indexing/search, 70k continuity
-# handoffs, exact-origin chunked Gecko messaging, no credential/cloud export path, focused UI/Vault
-# runtime tests, archive runtime, dialog tray regressions, and fullscreen-to-floating handoff.
+# remembered last share target, profile-isolated local saved-chat indexing/search, native Your-chats
+# New Chat staging, 70k continuity handoffs, exact-origin chunked Gecko messaging, no credential/cloud
+# export path, focused UI/Vault runtime tests, archive runtime, dialog tray regressions, and the
+# fullscreen-to-floating handoff with a laid-out synthetic source gesture.
 on:
   push:
     branches: [rebuild-v2]
