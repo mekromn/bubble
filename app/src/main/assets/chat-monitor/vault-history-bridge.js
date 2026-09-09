@@ -1,13 +1,15 @@
 /* Bubble Continuity Vault full-history bridge (isolated world, exact ChatGPT origin).
- * Receives local full-history CustomEvents and exposes a persistent, per-session native control port
- * for explicit archive requests and lightweight activity heartbeats. No network, credentials,
- * cookies, storage, scrolls, clicks, or focus changes are performed here. */
+ * Receives local transcript CustomEvents and exposes a persistent per-session native control port.
+ * Network/authentication stays in the MAIN-world hook; this isolated bridge sees transcript records
+ * only. Heartbeats never focus, scroll, click, reload, or edit page content.
+ */
 (() => {
   'use strict';
   if (window !== window.top || location.origin !== 'https://chatgpt.com') return;
 
   const EVENT = '__bubble_vault_history_v1__';
-  const REQUEST = '__bubble_vault_history_request_v1__';
+  const REPLAY_REQUEST = '__bubble_vault_history_request_v1__';
+  const FULL_REQUEST = '__bubble_vault_full_sync_request_v1__';
   const CHUNK_CHARS = 48000;
   const MAX_EVENT_CHARS = 43000;
   const MAX_SNAPSHOT_CHARS = 256 * 1024 * 1024;
@@ -41,9 +43,9 @@
     if (!value || typeof value !== 'object') return null;
     const id = typeof value.id === 'string' ? value.id : '';
     if (!id || id !== routeChatId()) return null;
-    const source = Array.isArray(value.records) ? value.records : [];
+    const sourceItems = Array.isArray(value.records) ? value.records : [];
     const records = [];
-    for (const item of source) {
+    for (const item of sourceItems) {
       const role = item?.role === 'user' || item?.role === 'assistant' ? item.role : '';
       const text = typeof item?.text === 'string' ? item.text.replace(/\u00a0/gu, ' ').trim() : '';
       if (role && text) records.push({ role, text });
@@ -51,6 +53,7 @@
     }
     if (!records.length) return null;
     const firstSignature = `${records[0].role}:${records[0].text.slice(0, 240)}`;
+    const source = value.source === 'full-history' ? 'full-history' : 'passive-full-history';
     return {
       id,
       title: (typeof value.title === 'string' ? value.title : document.title)
@@ -59,13 +62,14 @@
       createdAt: Date.now(),
       updatedAt: Date.now(),
       firstSignature,
+      source,
       messages: records,
     };
   }
 
   function signature(snapshot) {
     const last = snapshot.messages.at(-1);
-    return `${snapshot.id}|${snapshot.messages.length}|${last?.role || ''}|${last?.text.length || 0}|${last?.text.slice(-320) || ''}`;
+    return `${snapshot.source}|${snapshot.id}|${snapshot.messages.length}|${last?.role || ''}|${last?.text.length || 0}|${last?.text.slice(-320) || ''}`;
   }
 
   async function persist(snapshot) {
@@ -81,14 +85,11 @@
       event: 'vault-snapshot-begin', transfer, chatId: snapshot.id, title: snapshot.title,
       url: snapshot.url, createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt,
       firstSignature: snapshot.firstSignature, messages: snapshot.messages.length,
-      totalChunks: chunks.length, chars: serialized.length, source: 'passive-full-history'
+      totalChunks: chunks.length, chars: serialized.length, source: snapshot.source
     });
     if (begin?.accepted !== true) {
       await send({ event: 'vault-snapshot-end', transfer });
-      // Native intentionally rejects a smaller/equal stale render when it already owns more history.
-      // For an explicit archive request, that is still a successful durable archive.
-      if (begin?.accepted === false) return { ok: true, chatId: snapshot.id, messages: snapshot.messages.length };
-      return { ok: false, reason: 'Native Vault did not accept the snapshot' };
+      return { ok: false, reason: 'Native Vault is not ready for this snapshot' };
     }
     for (let index = 0; index < chunks.length; index++) {
       await send({ event: 'vault-snapshot-chunk', transfer, index, data: chunks[index] });
@@ -116,6 +117,12 @@
     if (typeof event.detail !== 'string' || event.detail.length > MAX_EVENT_CHARS) return;
     let message;
     try { message = JSON.parse(event.detail); } catch (_) { return; }
+
+    if (message.kind === 'sync-failed') {
+      if (archiveRequestId) finishArchive({ok: false, reason: message.reason || 'Full history unavailable'});
+      return;
+    }
+
     const transfer = typeof message.transfer === 'string' && message.transfer.length <= 128 ? message.transfer : '';
     if (!transfer) return;
     if (message.kind === 'begin') {
@@ -143,7 +150,7 @@
         const snapshot = normalizePayload(JSON.parse(text));
         if (!snapshot) return;
         lastSnapshot = snapshot;
-        void persist(snapshot).then(result => { if (archiveRequestId) finishArchive(result); });
+        void persist(snapshot).then(result => { if (archiveRequestId && snapshot.source === 'full-history') finishArchive(result); });
       } catch (_) {}
     }
   }, false);
@@ -171,13 +178,11 @@
     if (message.event === 'archive-full-history') {
       archiveRequestId = requestId;
       clearTimeout(archiveTimeout);
-      archiveTimeout = setTimeout(() => finishArchive({ ok: false, reason: 'No complete history response was captured in this tab' }), 12000);
-      if (lastSnapshot) void persist(lastSnapshot).then(finishArchive);
-      else window.dispatchEvent(new CustomEvent(REQUEST));
+      archiveTimeout = setTimeout(() => finishArchive({ ok: false, reason: 'Full-history request timed out' }), 40000);
+      window.dispatchEvent(new CustomEvent(FULL_REQUEST));
     }
   });
 
-  // MAIN-world hook may have captured the initial conversation response before this isolated script
-  // or native Vault index was ready. These local replays never cause another ChatGPT request.
-  for (const delay of [0, 1200, 3500, 8000]) setTimeout(() => window.dispatchEvent(new CustomEvent(REQUEST)), delay);
+  // Local replay retries cover the short native-index cold-start window without another request.
+  for (const delay of [0, 1200, 3500, 8000]) setTimeout(() => window.dispatchEvent(new CustomEvent(REPLAY_REQUEST)), delay);
 })();
