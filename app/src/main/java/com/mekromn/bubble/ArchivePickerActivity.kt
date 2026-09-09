@@ -25,6 +25,8 @@ import android.widget.ArrayAdapter
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -72,6 +74,7 @@ class ArchivePickerActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         ArchiveCache.cleanup(this)
         sortMode = runCatching { SortMode.valueOf(prefs.getString("sort", SortMode.MODIFIED.name)!!) }.getOrDefault(SortMode.MODIFIED)
         grid = prefs.getBoolean("grid", false)
@@ -104,8 +107,9 @@ class ArchivePickerActivity : Activity() {
         top.addView(breadcrumb, LinearLayout.LayoutParams(0, d(52), 1f))
         sortButton = button("Sort", "Sort") { cycleSort() }
         gridButton = button("Grid", "Grid or list") { toggleGrid() }
-        top.addView(sortButton, LinearLayout.LayoutParams(d(64), d(48)))
-        top.addView(gridButton, LinearLayout.LayoutParams(d(64), d(48)))
+        // "Modified" needs materially more room than the old 64dp slot on phone portrait.
+        top.addView(sortButton, LinearLayout.LayoutParams(d(88), d(48)))
+        top.addView(gridButton, LinearLayout.LayoutParams(d(68), d(48)))
         root.addView(top, LinearLayout.LayoutParams(-1, -2))
 
         accessState = Ui.text(this, "", 12f, Ui.MUTED).apply { setPadding(d(10), d(7), d(10), d(7)) }
@@ -162,6 +166,18 @@ class ArchivePickerActivity : Activity() {
         bottom.addView(action, LinearLayout.LayoutParams(0, d(50), 1f).apply { marginStart = d(6) })
         root.addView(bottom, LinearLayout.LayoutParams(-1, -2))
         setContentView(root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(
+                d(8) + safe.left,
+                d(8) + safe.top,
+                d(8) + safe.right,
+                d(8) + maxOf(safe.bottom, keyboard.bottom)
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
     }
 
     private fun actionLabel() = when {
@@ -426,6 +442,9 @@ class ArchivePickerActivity : Activity() {
             val box = LinearLayout(parent.context).apply {
                 orientation = if (grid) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL; setPadding(d(9), d(7), d(9), d(7)); minimumHeight = d(if (grid) 92 else 58)
+                layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(0, d(2), 0, d(2))
+                }
             }
             val mark = TextView(parent.context).apply { textSize = 21f; gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD }
             val name = Ui.text(parent.context, "", if (grid) 11f else 13f, Ui.TEXT, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
