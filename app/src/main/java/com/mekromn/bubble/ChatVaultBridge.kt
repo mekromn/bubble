@@ -51,7 +51,7 @@ internal object ChatVaultBridge {
                         val savedCount = vault.summaries().firstOrNull {
                             it.id == chatId && it.profileId == profileId
                         }?.messages ?: 0
-                        if (transfer.isNotBlank() && incomingCount in 0 until savedCount) {
+                        if (transfer.isNotBlank() && !VaultSnapshotPolicy.accepts(vault.loaded, savedCount, incomingCount)) {
                             ignoredTransfers += transfer
                         } else {
                             vault.begin(tabId, profileId, payload)
