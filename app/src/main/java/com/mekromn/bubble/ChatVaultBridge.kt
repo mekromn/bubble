@@ -23,7 +23,7 @@ internal object ChatVaultRegistry {
 internal object ChatVaultBridge {
     private const val NATIVE_APP = "bubbleVault"
     private const val TRANSCRIPT_CHUNK_BYTES = 32 * 1024
-    private data class ActiveExport(val export: ChatTranscriptExport, val fingerprint: String)
+    private data class ActiveExport(val export: ChatTranscriptExport, val fingerprint: String?)
 
     fun bind(context: Context, tabId: String, profileId: String, session: GeckoSession, addon: WebExtension) {
         val vault = ChatVaultRegistry.get(context)
@@ -72,10 +72,31 @@ internal object ChatVaultBridge {
                         null
                     }
                     "vault-pending-request" -> GeckoResult.fromValue(vault.pendingResponse(profileId) ?: JSONObject().put("pending", false))
+                    "vault-pending-transcript-begin" -> {
+                        val sourceId = payload.optString("sourceId").takeIf { it.isNotBlank() }
+                            ?: return GeckoResult.fromValue(JSONObject().put("available", false).put("reason", "bad-source"))
+                        val pending = vault.pendingResponse(profileId)
+                        if (pending?.optString("sourceId") != sourceId) {
+                            return GeckoResult.fromValue(JSONObject().put("available", false).put("reason", "not-pending"))
+                        }
+                        val result = GeckoResult<Any>()
+                        ChatTranscriptExports.beginById(context, vault, sourceId, profileId) { export ->
+                            if (export == null) result.complete(JSONObject().put("available", false).put("reason", "vault-unavailable"))
+                            else {
+                                transcriptExports[export.transfer] = ActiveExport(export, null)
+                                result.complete(JSONObject().put("available", true).put("transfer", export.transfer)
+                                    .put("sourceId", export.sourceId).put("filename", export.filename)
+                                    .put("bytes", export.bytes).put("chunkBytes", TRANSCRIPT_CHUNK_BYTES))
+                            }
+                        }
+                        result
+                    }
                     "vault-pending-consumed" -> { vault.clearPending(payload.optString("sourceId").takeIf { it.isNotBlank() }); null }
                     "vault-handoff-loaded" -> {
+                        val attached = payload.optBoolean("attached")
                         Toast.makeText(context.applicationContext,
-                            if (payload.optBoolean("complete")) "Previous chat loaded locally · press Send when ready"
+                            if (attached) "Previous chat transcript attached · press Send when ready"
+                            else if (payload.optBoolean("complete")) "Previous chat loaded locally · press Send when ready"
                             else "Size-aware previous-chat handoff loaded · press Send when ready", Toast.LENGTH_LONG).show(); null
                     }
                     "vault-agent-go-loaded" -> {
@@ -141,8 +162,10 @@ internal object ChatVaultBridge {
                     "vault-transcript-complete" -> {
                         val active = transcriptExports.remove(payload.optString("transfer"))
                         if (active != null) {
-                            activeTranscriptFingerprints.remove(active.fingerprint)
-                            ChatTranscriptCommandState.markCompleted(context, tabId, active.fingerprint)
+                            active.fingerprint?.let { fingerprint ->
+                                activeTranscriptFingerprints.remove(fingerprint)
+                                ChatTranscriptCommandState.markCompleted(context, tabId, fingerprint)
+                            }
                             ChatTranscriptExports.discard(active.export)
                         }
                         null
@@ -150,7 +173,7 @@ internal object ChatVaultBridge {
                     "vault-transcript-cancel" -> {
                         val active = transcriptExports.remove(payload.optString("transfer"))
                         if (active != null) {
-                            activeTranscriptFingerprints.remove(active.fingerprint)
+                            active.fingerprint?.let(activeTranscriptFingerprints::remove)
                             ChatTranscriptExports.discard(active.export)
                         }
                         null
