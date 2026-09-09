@@ -12,10 +12,9 @@ import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 
-/** Native UI for the app-private ChatGPT Continuity Vault. */
+/** Native UI for the app-private, profile-scoped ChatGPT Continuity Vault. */
 internal object ChatVaultUi {
     fun show(anchor: View, workspace: Workspace, choose: (String) -> Unit = workspace::select) {
         val panel = QuickPanel.open(anchor, workspace, "Continuity Vault · local", 560) ?: return
@@ -37,18 +36,20 @@ internal object ChatVaultUi {
             if (!panel.showing) return
             val query = search.text.toString().trim().lowercase()
             val items = vault.summaries().filter { item ->
-                query.isBlank() || item.title.lowercase().contains(query) || item.url.lowercase().contains(query)
+                val profile = workspace.profileName(item.profileId)
+                query.isBlank() || item.title.lowercase().contains(query) || item.url.lowercase().contains(query) || profile.lowercase().contains(query)
             }
             status.text = when {
                 !vault.loaded -> "Loading the local vault…"
                 items.isEmpty() && query.isNotBlank() -> "No saved chats match this search"
                 items.isEmpty() -> "No saved ChatGPT chats yet · conversations save locally as they render"
-                else -> "${items.size} saved chat${if (items.size == 1) "" else "s"} · newest first · no automatic pruning"
+                else -> "${items.size} saved chat${if (items.size == 1) "" else "s"} · profile-isolated · newest first · no automatic pruning"
             }
             rows.removeAllViews()
             items.forEach { summary ->
                 val relative = DateUtils.getRelativeTimeSpanString(summary.updatedAt, System.currentTimeMillis(), 60_000).toString()
-                rows.addView(Ui.text(c, "${summary.title}\n${summary.messages} messages · $relative", 13f, Ui.TEXT, true).apply {
+                val profile = workspace.profileName(summary.profileId)
+                rows.addView(Ui.text(c, "${summary.title}\n$profile · ${summary.messages} messages · $relative", 13f, Ui.TEXT, true).apply {
                     gravity = Gravity.CENTER_VERTICAL; setPadding(d(anchor, 12), d(anchor, 8), d(anchor, 12), d(anchor, 8))
                     isClickable = true; isFocusable = true; background = Ui.ripple(c, Ui.SURFACE, 16f)
                     setOnClickListener { panel.finish { entry(anchor, workspace, summary.id, choose) } }
@@ -95,7 +96,7 @@ internal object ChatVaultUi {
                 preview.text = "The local snapshot could not be read. The live ChatGPT conversation was not modified."
                 return@read
             }
-            title.text = "${chat.title} · ${chat.messages.size} messages"
+            title.text = "${chat.title} · ${workspace.profileName(chat.profileId)} · ${chat.messages.size} messages"
             val shown = chat.messages.takeLast(PREVIEW_MESSAGES)
             val omitted = chat.messages.size - shown.size
             preview.text = buildString {
@@ -114,11 +115,11 @@ internal object ChatVaultUi {
                         copy(c, "Continuity handoff", handoff.text)
                         vault.stage(id)
                         panel.dismiss()
-                        val tab = workspace.create(Policy.HOME)
+                        val tab = workspace.create(Policy.HOME, chat.profileId)
                         choose(tab.id)
                         toast(anchor, if (handoff.complete)
-                            "Previous chat staged locally. The handoff will load into the new composer; press Send when ready."
-                        else "Size-aware handoff staged locally. The full transcript stays in the Vault; press Send when ready.")
+                            "Previous chat staged locally in ${workspace.profileName(chat.profileId)}. The handoff will load into the new composer; press Send when ready."
+                        else "Size-aware handoff staged locally in ${workspace.profileName(chat.profileId)}. The full transcript stays in the Vault; press Send when ready.")
                     }
                 }
             })
@@ -129,7 +130,7 @@ internal object ChatVaultUi {
                 }
             })
             controls.addView(action(anchor, "Open saved conversation in another tab") {
-                panel.dismiss(); choose(workspace.create(chat.url).id)
+                panel.dismiss(); choose(workspace.create(chat.url, chat.profileId).id)
             })
             controls.addView(action(anchor, "Delete this local saved copy") {
                 vault.delete(id); panel.dismiss(); toast(anchor, "Local Vault copy deleted. The server conversation was not deleted.")
