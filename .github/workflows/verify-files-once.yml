@@ -7,7 +7,8 @@ name: Verify current Bubble changes
 # sync, Archive-all-open-chats, long-press New Chat continuity cloning, any-running-tab transcript
 # command automation, the continuity-first companion skill contract, two-check 30-minute idle tab
 # maintenance, the output-driven 30-minute generation-stall watchdog, and the GitHub download-tab
-# fix. The monitor harness also validates Vault progress/full-sync events before Gradle begins.
+# fix. Full-history sync now learns and replays the exact successful live ChatGPT conversation GET
+# before using the legacy hard-coded endpoint fallback. The monitor harness validates this boundary.
 # Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
