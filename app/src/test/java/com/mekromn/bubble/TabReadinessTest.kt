@@ -30,17 +30,17 @@ class TabReadinessTest {
         val voice = ChatTab(url = "https://voice.google.com/")
         assertEquals(TabReadiness.VOICE, TabReadiness.of(voice))
 
-        val forced = ChatTab().apply { forceKeepAlive = true; session = org.mozilla.geckoview.GeckoSession() }
-        assertEquals(TabReadiness.KEEP_ALIVE, TabReadiness.of(forced))
+        val forced = ChatTab().apply { forceKeepAlive = true }
+        assertEquals(TabReadiness.KEEP_ALIVE, TabStatusPolicy.of(forced, selectedVisible = false, resident = true).readiness)
 
         val suspended = ChatTab().apply { suspended = true }
         assertEquals(TabReadiness.SUSPENDED, TabReadiness.of(suspended))
     }
 
     @Test fun chatIdleStatusKnowsWhetherItIsActuallyVisible() {
-        val chat = ChatTab().apply { session = org.mozilla.geckoview.GeckoSession() }
-        val active = TabStatusPolicy.of(chat, selectedVisible = true)
-        val background = TabStatusPolicy.of(chat, selectedVisible = false)
+        val chat = ChatTab()
+        val active = TabStatusPolicy.of(chat, selectedVisible = true, resident = true)
+        val background = TabStatusPolicy.of(chat, selectedVisible = false, resident = true)
         assertEquals(TabReadiness.ACTIVE, active.readiness)
         assertEquals(TabReadiness.IDLE, background.readiness)
         assertTrue(background.detail.contains("15-minute"))
