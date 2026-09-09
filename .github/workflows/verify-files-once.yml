@@ -3,11 +3,9 @@ name: Verify current Bubble changes
 # Archive Picker passed build 62. The aspect-preserving screenshot morph is still current transition
 # work and remains the Android runtime gate until its Pixel behavior is accepted.
 #
-# This build also upgrades Your Chats from a coarse live/working/ready model to semantic status:
-# attention, generating, page-loading with real progress, reply-ready, protected Voice, active,
-# forced-live, idle/15-minute-hibernation eligibility, and suspended. Unit coverage validates status
-# priority and distinct visual identities; the chooser renders a matching colored status dot plus the
-# already-strong selected-tab fill/edge/active marker.
+# This verification also covers the September 8 UI pass: Android-16 Archive Picker insets and
+# full-width rows, swipe-up access to Your chats, the fullscreen compositor-blurred Your chats
+# dialog, loading-driven refresh rotation, and Bubble's remembered last share-target shortcut.
 on:
   push:
     branches: [rebuild-v2]
