@@ -1,9 +1,10 @@
 /* Bubble Continuity Vault full-history observer (MAIN world, exact ChatGPT origin).
  *
  * Passive mode clones conversation JSON ChatGPT already fetched. Explicit/manual/automatic full-sync
- * mode performs a same-origin GET for only the active /c/<id> conversation. Authentication remains
- * inside the ChatGPT page world: Bubble never receives, stores, logs, or exports cookies/session
- * tokens. No scrolls, clicks, composer access, or page-form data are used.
+ * first replays the exact successful conversation GET that the live ChatGPT page itself used in this
+ * tab. That keeps Bubble aligned with endpoint/header/auth drift. A legacy backend-api/session-token
+ * request remains only as a fallback. Authentication never leaves this page world: Bubble native
+ * code receives transcript records only, never cookies, request headers, or bearer tokens.
  */
 (() => {
   'use strict';
@@ -15,8 +16,10 @@
   const CHUNK = 40000;
   const MAX_TEXT = 256 * 1024 * 1024;
   const MAX_DEPTH = 7;
+  const FORBIDDEN_REPLAY_HEADERS = /^(?:cookie|host|origin|referer|content-length|connection|user-agent|sec-)/iu;
   let latest = null;
   let sessionToken = '';
+  let learnedRequest = null;
   let fullSyncBusy = false;
   let fullSyncQueued = false;
   let lastRoute = '';
@@ -164,7 +167,38 @@
     return emitPayload({ id: found.id, title: found.title, records: found.records, capturedAt: Date.now() }, source);
   }
 
-  async function inspectResponse(response) {
+  function replayableHeaders(source) {
+    const result = [];
+    try {
+      const headers = new Headers(source || undefined);
+      headers.forEach((value, name) => {
+        if (!FORBIDDEN_REPLAY_HEADERS.test(name) && value.length <= 16384) result.push([name, value]);
+      });
+    } catch (_) {}
+    return result;
+  }
+
+  function fetchMeta(args) {
+    try {
+      const input = args?.[0];
+      const init = args?.[1] || {};
+      const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input?.url || '', location.href);
+      if (url.origin !== location.origin) return null;
+      const method = String(init.method || input?.method || 'GET').toUpperCase();
+      if (method !== 'GET') return null;
+      const headers = new Headers(input?.headers || undefined);
+      new Headers(init.headers || undefined).forEach((value, name) => headers.set(name, value));
+      return { url: url.href, method, headers: replayableHeaders(headers), chatId: routeChatId() };
+    } catch (_) { return null; }
+  }
+
+  function learnRequest(meta, conversationId) {
+    const active = routeChatId();
+    if (!meta || meta.method !== 'GET' || !active || conversationId !== active || meta.chatId !== active) return;
+    learnedRequest = { url: meta.url, headers: meta.headers, chatId: active };
+  }
+
+  async function inspectResponse(response, meta = null) {
     try {
       if (!response || !response.ok) return;
       const url = new URL(response.url || location.href, location.href);
@@ -174,7 +208,11 @@
       const clone = response.clone();
       const text = await clone.text();
       if (!text || text.length > MAX_TEXT) return;
-      inspectObject(JSON.parse(text), url.href, 'passive-full-history');
+      const object = JSON.parse(text);
+      const found = findConversation(object, url.href);
+      if (!found || found.id !== routeChatId() || !found.records.length) return;
+      learnRequest(meta, found.id);
+      emitPayload({ id: found.id, title: found.title, records: found.records, capturedAt: Date.now() }, 'passive-full-history');
     } catch (_) {}
   }
 
@@ -195,6 +233,17 @@
     } catch (_) { return ''; }
   }
 
+  async function replayLearnedRequest(id) {
+    if (!learnedRequest || learnedRequest.chatId !== id) return null;
+    try {
+      const headers = new Headers();
+      for (const [name, value] of learnedRequest.headers) headers.set(name, value);
+      return await originalFetch.call(window, learnedRequest.url, {
+        method: 'GET', credentials: 'include', cache: 'no-store', headers
+      });
+    } catch (_) { return null; }
+  }
+
   async function requestConversation(id, token = '') {
     const headers = {accept: 'application/json'};
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -203,25 +252,47 @@
     });
   }
 
+  async function consumeFullResponse(response, id, sourceLabel) {
+    if (!response) throw new Error(`${sourceLabel}-no-response`);
+    if (!response.ok) throw new Error(`${sourceLabel}-${response.status}`);
+    const type = String(response.headers?.get?.('content-type') || '').toLowerCase();
+    if (!type.includes('json')) throw new Error(`${sourceLabel}-not-json`);
+    const text = await response.text();
+    if (!text || text.length > MAX_TEXT) throw new Error(`${sourceLabel}-size`);
+    const object = JSON.parse(text);
+    const found = findConversation(object, response.url || location.href);
+    if (!found || found.id !== id || !found.records.length) throw new Error(`${sourceLabel}-parse`);
+    const success = emitPayload({ id: found.id, title: found.title, records: found.records, capturedAt: Date.now() }, 'full-history');
+    if (!success) throw new Error(`${sourceLabel}-emit`);
+    return true;
+  }
+
   async function requestFullHistory() {
     const id = routeChatId();
     if (!id || typeof originalFetch !== 'function') return false;
     if (fullSyncBusy) { fullSyncQueued = true; return false; }
     fullSyncBusy = true;
     let success = false;
+    const failures = [];
     try {
-      let response = await requestConversation(id);
-      if (response.status === 401 || response.status === 403) {
-        const token = await getSessionToken();
-        if (token) response = await requestConversation(id, token);
+      const learned = await replayLearnedRequest(id);
+      if (learned) {
+        try { success = await consumeFullResponse(learned, id, 'learned'); }
+        catch (error) { failures.push(error?.message || 'learned-failed'); }
       }
-      if (!response.ok) throw new Error(`conversation-${response.status}`);
-      const type = String(response.headers?.get?.('content-type') || '').toLowerCase();
-      if (!type.includes('json')) throw new Error('conversation-not-json');
-      const text = await response.text();
-      if (!text || text.length > MAX_TEXT) throw new Error('conversation-size');
-      success = inspectObject(JSON.parse(text), response.url || location.href, 'full-history');
-      if (!success) throw new Error('conversation-parse');
+      if (!success) {
+        try { success = await consumeFullResponse(await requestConversation(id), id, 'cookie'); }
+        catch (error) { failures.push(error?.message || 'cookie-failed'); }
+      }
+      if (!success) {
+        const token = await getSessionToken();
+        if (!token) failures.push('session-token-unavailable');
+        else {
+          try { success = await consumeFullResponse(await requestConversation(id, token), id, 'bearer'); }
+          catch (error) { failures.push(error?.message || 'bearer-failed'); }
+        }
+      }
+      if (!success) throw new Error(failures.filter(Boolean).join(';') || 'Full history unavailable');
     } catch (error) {
       emitSyncFailure(error?.message || 'Full history unavailable');
     } finally {
@@ -236,18 +307,33 @@
 
   if (typeof originalFetch === 'function') {
     window.fetch = function(...args) {
+      const meta = fetchMeta(args);
       const result = originalFetch.apply(this, args);
-      Promise.resolve(result).then(response => { void inspectResponse(response); }, () => {});
+      Promise.resolve(result).then(response => { void inspectResponse(response, meta); }, () => {});
       return result;
     };
   }
 
   const xhrOpen = XMLHttpRequest.prototype.open;
   const xhrSend = XMLHttpRequest.prototype.send;
+  const xhrSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
   const xhrUrls = new WeakMap();
+  const xhrMethods = new WeakMap();
+  const xhrHeaders = new WeakMap();
   XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-    try { xhrUrls.set(this, new URL(String(url), location.href).href); } catch (_) {}
+    try {
+      xhrUrls.set(this, new URL(String(url), location.href).href);
+      xhrMethods.set(this, String(method || 'GET').toUpperCase());
+      xhrHeaders.set(this, []);
+    } catch (_) {}
     return xhrOpen.call(this, method, url, ...rest);
+  };
+  XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+    try {
+      const headers = xhrHeaders.get(this);
+      if (headers && !FORBIDDEN_REPLAY_HEADERS.test(String(name))) headers.push([String(name), String(value).slice(0, 16384)]);
+    } catch (_) {}
+    return xhrSetRequestHeader.call(this, name, value);
   };
   XMLHttpRequest.prototype.send = function(...args) {
     this.addEventListener('load', () => {
@@ -255,12 +341,19 @@
         const responseUrl = xhrUrls.get(this) || this.responseURL || '';
         const url = new URL(responseUrl, location.href);
         if (url.origin !== location.origin || !routeChatId() || this.status < 200 || this.status >= 300) return;
-        if (this.responseType === 'json') inspectObject(this.response, url.href, 'passive-full-history');
+        let object = null;
+        if (this.responseType === 'json') object = this.response;
         else if (this.responseType === '' || this.responseType === 'text') {
           const type = String(this.getResponseHeader('content-type') || '').toLowerCase();
           const text = String(this.responseText || '');
-          if (type.includes('json') && text && text.length <= MAX_TEXT) inspectObject(JSON.parse(text), url.href, 'passive-full-history');
+          if (type.includes('json') && text && text.length <= MAX_TEXT) object = JSON.parse(text);
         }
+        if (!object) return;
+        const found = findConversation(object, url.href);
+        if (!found || found.id !== routeChatId() || !found.records.length) return;
+        const method = xhrMethods.get(this) || 'GET';
+        if (method === 'GET') learnRequest({url: url.href, method, headers: replayableHeaders(xhrHeaders.get(this)), chatId: routeChatId()}, found.id);
+        emitPayload({ id: found.id, title: found.title, records: found.records, capturedAt: Date.now() }, 'passive-full-history');
       } catch (_) {}
     }, { once: true });
     return xhrSend.apply(this, args);
@@ -271,6 +364,8 @@
     if (current === lastRoute) return;
     lastRoute = current;
     latest = null;
+    learnedRequest = null;
+    sessionToken = '';
     if (current) setTimeout(() => { void requestFullHistory(); }, 700);
   }
 
