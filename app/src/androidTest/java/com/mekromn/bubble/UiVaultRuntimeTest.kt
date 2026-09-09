@@ -2,7 +2,6 @@ package com.mekromn.bubble
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -67,11 +66,13 @@ class UiVaultRuntimeTest {
         }
     }
 
-    @Test fun vaultStoresLocalSnapshotAndBuildsContinuityHandoff() {
+    @Test fun vaultStoresProfileScopedSnapshotAndBuildsContinuityHandoff() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val vault = ChatVault(context) { }
         val id = "instrumentation-${UUID.randomUUID()}"
         val transfer = "transfer-${UUID.randomUUID()}"
+        val profileA = "profile-a-${UUID.randomUUID()}"
+        val profileB = "profile-b-${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
         val messages = JSONArray()
             .put(JSONObject().put("role", "user").put("text", "opening question $id"))
@@ -85,7 +86,7 @@ class UiVaultRuntimeTest {
             .put("firstSignature", "user:opening question $id")
             .put("messages", messages)
             .toString()
-        vault.begin("tab-test", JSONObject()
+        vault.begin("tab-test", profileA, JSONObject()
             .put("transfer", transfer).put("chatId", id).put("title", "Instrumentation Vault Chat")
             .put("url", "https://chatgpt.com/c/$id").put("createdAt", now).put("updatedAt", now)
             .put("firstSignature", "user:opening question $id").put("messages", messages.length())
@@ -94,7 +95,13 @@ class UiVaultRuntimeTest {
         vault.end("tab-test", JSONObject().put("transfer", transfer))
         val end = SystemClock.elapsedRealtime() + 10_000
         while (vault.summaries().none { it.id == id } && SystemClock.elapsedRealtime() < end) Thread.sleep(40)
-        assertTrue("Vault snapshot was not committed locally", vault.summaries().any { it.id == id && it.messages == 4 })
+        assertTrue("Vault snapshot was not committed locally", vault.summaries().any { it.id == id && it.profileId == profileA && it.messages == 4 })
+
+        vault.stage(id, profileA)
+        val stagedEnd = SystemClock.elapsedRealtime() + 5_000
+        while (vault.pendingResponse(profileA) == null && SystemClock.elapsedRealtime() < stagedEnd) Thread.sleep(30)
+        assertNotNull("Owning profile should receive staged continuity", vault.pendingResponse(profileA))
+        assertNull("Another Bubble profile must never receive this handoff", vault.pendingResponse(profileB))
 
         val latch = CountDownLatch(1)
         var handoff: VaultHandoff? = null
@@ -106,6 +113,7 @@ class UiVaultRuntimeTest {
         assertTrue(text.contains("latest unfinished request"))
         assertTrue(text.contains("[END PREVIOUS CHAT]"))
         assertTrue(requireNotNull(handoff).complete)
+        vault.clearPending(id)
         vault.delete(id)
     }
 
