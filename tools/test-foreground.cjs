@@ -68,3 +68,4 @@ console.log('Glass guard: shape-clipped Window background blur only; screen-wide
 require('./test-download-bridge.cjs');
 require('./test-monitor.cjs');
 require('./test-vault.cjs');
+require('./test-vault-live-request.cjs');
