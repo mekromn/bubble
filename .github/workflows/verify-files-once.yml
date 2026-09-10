@@ -10,27 +10,22 @@ name: Verify current Bubble changes
 #   active/high priority. App Zygote remains off and Gecko runtime settings stay at Build-84 baseline.
 # - Blur remains one masked service-owned compositor window and only covers native chrome.
 #
-# SPEED PATH:
-# - Fullscreen, fullscreen chooser, floating chrome, raw Gecko page Surface and live-glass backdrop
-#   all request the highest supported same-resolution refresh mode.
-# - Android 15+ View frame-rate requests are recursive, touch boost is enabled, and balanced
-#   frame-rate power saving is disabled to favor smoothness.
-# - SurfaceView producers receive Surface.setFrameRate() once per Surface lifetime; Android 16 uses
-#   FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
-# - The intentionally detached raw bookkeeping bridge proxies focus for the active floating page so
-#   Workspace gives the selected raw GeckoSession the same native focused state as fullscreen.
-# - Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
+# REFRESH-RATE A/B:
+# - Bubble now uses a pure refresh-rate policy: preferredDisplayModeId is explicitly cleared and
+#   preferredRefreshRate requests the highest supported same-resolution rate on every Bubble window.
+# - Android documentation says preferredRefreshRate is ignored when preferredDisplayModeId is set;
+#   the old code set both. This build removes that arbitration conflict without changing Gecko.
+# - Raw/fullscreen SurfaceView producers still receive Surface.setFrameRate() once per Surface life;
+#   Android 16 still uses FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
+# - Android 15+ per-View requests, touch boost, and disabled balanced frame-rate power saving remain.
+# - CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS is intentionally unchanged for this one-variable test.
 #
-# TAB / NOTIFICATION ROUTING:
-# - NotificationReturnActivity preserves the exact target tab and synchronously rebinds fullscreen.
-# - Google Voice WebNotification.click() is delayed until its resident tab is selected/visible/open.
+# VOICE UI 2.7 remains included:
+# - Name-only conversation headers still receive the integrated copy-number icon beside Call.
+# - Copy resolves selected-thread/accessibility metadata at use time.
+# - Voice foreground return can conservatively reveal/select a newly-unread conversation.
 #
-# VOICE UI 2.7:
-# - The integrated copy-number icon is anchored beside Voice's call control even when the header
-#   shows only a contact name; number lookup searches selected-thread/accessibility metadata at use.
-# - When Voice returns foreground with a newly-unread conversation, a conservative exact-origin
-#   fallback can reveal the mobile conversation list and activate the highest-confidence unread row.
-# - No Google CSS class names, network calls, account APIs, or persisted message content are used.
+# Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 on:
   push:
     branches: [rebuild-v2]
