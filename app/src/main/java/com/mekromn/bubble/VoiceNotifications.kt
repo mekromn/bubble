@@ -7,6 +7,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -54,6 +56,84 @@ internal object VoiceNoticeClassifier {
     }
 }
 
+internal data class VoiceContactInfo(val displayName: String?, val phone: String?)
+
+/** Pure formatter for contact-like data already present in Google Voice's Web Notification payload. */
+internal object VoiceContactPolicy {
+    private val phoneCandidate = Regex("(?<!\\d)(\\+?\\d[\\d\\s().-]{5,}\\d)(?!\\d)")
+    private val senderPrefix = Regex(
+        "^(?:google\\s+voice\\s*[-:–—]\\s*)?(?:new\\s+)?" +
+            "(?:message|text|sms|incoming\\s+call|call|missed\\s+call|voicemail|voice\\s+mail)" +
+            "(?:\\s+(?:from|by))?\\s*[:\\-–—]?\\s*",
+        RegexOption.IGNORE_CASE
+    )
+    private val explicitSender = Regex(
+        "^(?:text|message|sms|incoming\\s+call|call|missed\\s+call|voicemail|voice\\s+mail)" +
+            "\\s+(?:from|by)\\s+([^:\\n]{1,120})",
+        RegexOption.IGNORE_CASE
+    )
+    private val generic = setOf(
+        "google voice", "new message", "message", "new text", "text", "sms", "incoming call",
+        "call", "missed call", "new voicemail", "voicemail", "voice mail", "notification", "alert"
+    )
+
+    fun extract(title: String?, text: String?, tag: String?): VoiceContactInfo {
+        val sources = listOf(title, text, tag).map { it.orEmpty().trim() }
+        val phone = sources.asSequence().mapNotNull(::phoneFrom).firstOrNull()
+        val fromTitle = cleanName(title.orEmpty(), phone)
+        val fromText = explicitSender.find(text.orEmpty().trim())?.groupValues?.getOrNull(1)
+            ?.let { cleanName(it, phone) }
+        return VoiceContactInfo(fromTitle ?: fromText, phone)
+    }
+
+    private fun phoneFrom(value: String): String? {
+        for (match in phoneCandidate.findAll(value)) {
+            val raw = match.groupValues[1].trim().trimEnd('.', ',', ';', ':')
+            val digits = raw.filter(Char::isDigit)
+            if (digits.length in 7..15) return raw
+        }
+        return null
+    }
+
+    private fun cleanName(raw: String, phone: String?): String? {
+        var value = raw.replace('\u00a0', ' ').trim()
+        if (value.isBlank()) return null
+        value = senderPrefix.replace(value, "").trim()
+        if (phone != null) value = value.replace(phone, " ").trim()
+        value = value.replace(Regex("\\s+(?:via|on)\\s+google\\s+voice$", RegexOption.IGNORE_CASE), "").trim()
+        value = value.trim(' ', '-', '–', '—', ':', '(', ')', '[', ']')
+        if (value.isBlank() || value.lowercase() in generic) return null
+        if (value.length > 120 || value.any { it == '\n' || it == '\r' }) return null
+        if (value.filter(Char::isDigit).length >= 7 && value.filter { it.isLetter() }.isEmpty()) return null
+        return value
+    }
+
+    fun fallbackTitle(kind: VoiceNoticeKind): String = when (kind) {
+        VoiceNoticeKind.INCOMING_CALL -> "Incoming Google Voice call"
+        VoiceNoticeKind.MESSAGE -> "New Google Voice message"
+        VoiceNoticeKind.MISSED_CALL -> "Google Voice missed call"
+        VoiceNoticeKind.VOICEMAIL -> "New Google Voice voicemail"
+        VoiceNoticeKind.OTHER -> "Google Voice"
+    }
+
+    fun title(kind: VoiceNoticeKind, webTitle: String?, info: VoiceContactInfo): String =
+        info.displayName ?: info.phone ?: webTitle?.takeIf { it.isNotBlank() && it.trim().lowercase() !in generic }
+        ?: fallbackTitle(kind)
+
+    fun subText(kind: VoiceNoticeKind, info: VoiceContactInfo): String = buildString {
+        append("Google Voice")
+        info.phone?.let { append(" · ").append(it) }
+        if (info.phone == null) append(" · ").append(kind.label)
+    }
+
+    fun telUri(phone: String): String? {
+        val trimmed = phone.trim()
+        val digits = trimmed.filter(Char::isDigit)
+        if (digits.length !in 7..15) return null
+        return "tel:" + (if (trimmed.startsWith('+')) "+" else "") + digits
+    }
+}
+
 /** First-class exact-origin Google Voice Web Notifications with separate Android channels. */
 internal object VoiceNotifications {
     const val STATUS_CHANNEL = "google-voice-status-v2"
@@ -61,7 +141,9 @@ internal object VoiceNotifications {
     private const val CHAT_WEB_ID = 5301
     private const val CLICK = "com.mekromn.bubble.voicenotification.CLICK"
     private const val DISMISS = "com.mekromn.bubble.voicenotification.DISMISS"
+    private const val COPY_NUMBER = "com.mekromn.bubble.voicenotification.COPY_NUMBER"
     private const val TOKEN = "bubble.webnotification.token"
+    private const val PHONE = "bubble.webnotification.phone"
     private val main = Handler(Looper.getMainLooper())
 
     private data class Active(val web: WebNotification, val androidTag: String, val androidId: Int,
@@ -115,8 +197,6 @@ internal object VoiceNotifications {
                 if (permission.contextId != null && permission.contextId != tab.profileId) {
                     return GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
                 }
-                // Voice explicitly gets desktop-notification permission. Android's app permission is
-                // resolved separately below so an early request is not permanently rejected.
                 return GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW)
             }
 
@@ -168,15 +248,16 @@ internal object VoiceNotifications {
         }
         val tab = voiceTabs.singleOrNull()
         if (tab != null && tab.id != workspace.selectedId) { tab.unread = true; workspace.changed(true) }
+        val contact = VoiceContactPolicy.extract(web.title, web.text, web.tag)
         postWeb(context, web, kind.channel, kind.notificationId, tab?.id,
             web.source?.takeIf(Policy::isVoice) ?: Policy.VOICE_HOME,
-            web.title?.takeIf { it.isNotBlank() } ?: "Google Voice",
+            VoiceContactPolicy.title(kind, web.title, contact),
             web.text.orEmpty().take(4096),
             if (kind == VoiceNoticeKind.INCOMING_CALL) Notification.CATEGORY_CALL else Notification.CATEGORY_MESSAGE,
-            web.requireInteraction && kind == VoiceNoticeKind.INCOMING_CALL)
+            web.requireInteraction && kind == VoiceNoticeKind.INCOMING_CALL,
+            contact, kind)
     }
 
-    /** Backup path for ChatGPT's own Web Notification API, independent of Bubble's DOM completion monitor. */
     private fun showChatWebNotification(context: Context, workspace: Workspace, web: WebNotification) {
         if (!Replies.enabled(context)) { runCatching { web.dismiss() }; return }
         val tabs = workspace.tabs.filter { Policy.isChat(it.url) }
@@ -189,7 +270,8 @@ internal object VoiceNotifications {
     }
 
     private fun postWeb(context: Context, web: WebNotification, channel: String, id: Int, tabId: String?,
-        targetUrl: String, title: String, text: String, category: String, ongoing: Boolean) {
+        targetUrl: String, title: String, text: String, category: String, ongoing: Boolean,
+        contact: VoiceContactInfo? = null, voiceKind: VoiceNoticeKind? = null) {
         val manager = context.getSystemService(NotificationManager::class.java)
         val token = UUID.randomUUID().toString()
         val slot = if (web.tag.isNotBlank()) "${web.origin}|${web.tag}" else token
@@ -208,6 +290,19 @@ internal object VoiceNotifications {
             .setAutoCancel(!ongoing).setOnlyAlertOnce(false).setVisibility(Notification.VISIBILITY_PRIVATE)
             .setCategory(category)
         if (text.isNotBlank()) builder.setContentText(text.take(512)).setStyle(Notification.BigTextStyle().bigText(text))
+        if (contact != null && voiceKind != null) {
+            builder.setSubText(VoiceContactPolicy.subText(voiceKind, contact).take(256))
+            contact.phone?.let { phone ->
+                VoiceContactPolicy.telUri(phone)?.let(builder::addPerson)
+                val copy = PendingIntent.getBroadcast(context, token.hashCode() xor 0x2c09,
+                    Intent(context, VoiceNotificationReceiver::class.java).apply {
+                        action = COPY_NUMBER
+                        data = Uri.parse("bubble://web-notification/$token/copy-number")
+                        putExtra(TOKEN, token); putExtra(PHONE, phone)
+                    }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                builder.addAction(0, "Copy number", copy)
+            }
+        }
         if (ongoing) builder.setOngoing(true)
         try { manager.notify(androidTag, id, builder.build()); web.show() }
         catch (_: SecurityException) {
@@ -220,8 +315,15 @@ internal object VoiceNotifications {
         retire(context, token, false); runCatching { web.dismiss() }
     }
 
-    internal fun handle(context: Context, action: String?, token: String?) {
-        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { handle(context, action, token) }; return }
+    internal fun handle(context: Context, action: String?, token: String?, phone: String? = null) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { handle(context, action, token, phone) }; return }
+        if (action == COPY_NUMBER) {
+            val value = phone?.takeIf { VoiceContactPolicy.telUri(it) != null } ?: return
+            context.getSystemService(ClipboardManager::class.java)
+                .setPrimaryClip(ClipData.newPlainText("Google Voice phone number", value))
+            Toast.makeText(context, "Phone number copied", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (token.isNullOrBlank()) return
         val item = active.remove(token) ?: return
         tokenByObject.remove(item.web); slotToToken.entries.removeAll { it.value == token }
@@ -358,7 +460,9 @@ internal object VoiceNotifications {
 
 class VoiceNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        VoiceNotifications.handle(context.applicationContext, intent.action, intent.getStringExtra("bubble.webnotification.token"))
+        VoiceNotifications.handle(context.applicationContext, intent.action,
+            intent.getStringExtra("bubble.webnotification.token"),
+            intent.getStringExtra("bubble.webnotification.phone"))
     }
 }
 
@@ -380,8 +484,6 @@ class VoicePermissionActivity : Activity() {
     private fun complete(granted: Boolean) {
         VoiceNotifications.resolveAndroidPermission(granted)
         if (granted) {
-            // A Voice page may have asked Gecko for notification permission before Android's app
-            // permission existed. Reload protected Voice tabs once so the site can re-register cleanly.
             Workspace.peek()?.tabs?.filter { Policy.isVoice(it.url) }?.forEach { tab -> tab.session?.takeIf { it.isOpen }?.reload() }
             Toast.makeText(this, "Bubble notification permission enabled. ChatGPT and Google Voice alert channels are ready.", Toast.LENGTH_LONG).show()
         } else Toast.makeText(this, "Bubble notifications are still disabled. Alerts cannot appear until Android permission is enabled.", Toast.LENGTH_LONG).show()
