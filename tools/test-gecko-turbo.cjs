@@ -23,8 +23,8 @@ for (const required of [
   assert.ok(turbo.includes(required), `Turbo Gecko profile must contain ${required}`);
 }
 
-assert.match(turbo, /Build\.VERSION\.SDK_INT >= 29[\s\S]*appZygoteProcessEnabled\(true\)/,
-  'App Zygote preload must be enabled only on Android 10+');
+assert.equal(/appZygoteProcessEnabled/.test(turbo), false,
+  'App Zygote must remain disabled: Build 89 produced white pages/endless loading and Android runtime page timeouts');
 assert.match(workspace, /GeckoRuntime\.create\(app, GeckoTurboPolicy\.settings\(\)\)/,
   'Workspace must create Gecko from the explicit Turbo profile');
 
@@ -40,4 +40,4 @@ assert.equal(/glMsaaLevel\(0\)/.test(turbo), false,
 assert.equal(/lowMemoryDetection\(false\)/.test(turbo), false,
   'Turbo must preserve Gecko low-memory handling for the resident-tab workload');
 
-console.log('Gecko Turbo v1: safe runtime cuts + App Zygote with full-web/security invariants passed.');
+console.log('Gecko Turbo v1: Build-89 profile reproduced with App Zygote removed; full-web/security invariants passed.');
