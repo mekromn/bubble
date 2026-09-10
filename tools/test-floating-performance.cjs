@@ -10,9 +10,6 @@ const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspac
 const diagnostics = fs.readFileSync('app/src/main/java/com/mekromn/bubble/DiagnosticLog.kt', 'utf8');
 const meter = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FrameMeter.kt', 'utf8');
 
-// Floating rendering bypasses GeckoView's display backend entirely. Workspace still sees a tiny
-// GeckoView-shaped bookkeeping adapter, but that adapter must NEVER attach to a Window/View tree:
-// GeckoView's private session/display lifecycle would then diverge from the raw GeckoDisplay owner.
 assert.equal(/BACKEND_TEXTURE_VIEW/.test(floating + page), false,
   'Floating path must contain no TextureView backend');
 assert.equal(/setViewBackend/.test(live), false,
@@ -68,7 +65,6 @@ assert.match(floating, /geckoWindow\?\.sync\(pageBox\(fitted\)\)/,
 assert.equal(/\.setCompositionOrder\s*\(/.test(page + live), false,
   'Raw display must not depend on the failed same-window Android-16 composition-order experiment');
 
-// Build-84-style single compositor-window glass. CHAT uses one masked drawable with transparent center.
 assert.match(glass, /private var backdrop: Dialog\? = null/,
   'Hybrid glass must use one service-owned backdrop window');
 assert.equal(/private var secondary: Dialog/.test(glass), false,
@@ -81,6 +77,8 @@ assert.match(glass, /Ui\.dp\(context, 48f\)/,
   'CHAT mask must match native 48dp utility strip');
 assert.equal(/FLAG_BLUR_BEHIND|setBlurBehindRadius/.test(glass), false,
   'Screen-wide blur-behind APIs remain forbidden');
+assert.match(glass, /RenderPolicy\.vote\(context, window\.decorView, attributes\)/,
+  'The independent live-glass compositor window must share the max-refresh contract');
 
 assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
   'Native floating chrome must remain hardware accelerated');
@@ -90,6 +88,10 @@ assert.match(render, /preferredDisplayModeId = mode\.modeId/,
   'Both window paths must vote for the fastest same-resolution display mode');
 assert.match(render, /setRequestedFrameRate\(rate\)/,
   'Android 15+ per-View frame-rate voting must remain active');
+assert.match(render, /setFrameRateBoostOnTouchEnabled\(true\)/,
+  'Android 15+ Bubble windows must keep touch frame-rate boost enabled');
+assert.match(render, /setFrameRatePowerSavingsBalanced\(false\)/,
+  'Android 15+ Bubble windows must favor refresh smoothness over balanced power saving');
 assert.match(render, /Surface\.FRAME_RATE_COMPATIBILITY_AT_LEAST/,
   'Android 16 UI surfaces must request an at-least high refresh contract');
 assert.match(render, /surface\.setFrameRate\(/,
@@ -104,4 +106,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw speed path: no TextureView + ViewParent a11y + producer Surface max-refresh + shared fullscreen max-refresh + one masked glass surface + diagnostics parked.');
+console.log('Floating raw speed path: no TextureView + ViewParent a11y + producer Surface max-refresh + max-refresh live glass + shared fullscreen policy + diagnostics parked.');
