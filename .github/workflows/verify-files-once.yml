@@ -1,40 +1,35 @@
-name: Apply raw focus proxy once
+name: Verify current Bubble changes
+# Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
+# The signed ARM64 APK is published immediately after compile/signing; emulator/runtime verification
+# continues afterward and upgrades the same release from EARLY manual-test to verified when green.
+#
+# RAW GECKODISPLAY SURFACEVIEW FAST PATH — BUILD 105 STABILITY BASELINE:
+# - Floating uses GeckoSession.acquireDisplay() -> raw top-Z SurfaceView in its page-only overlay.
+# - No TextureView. Gecko accessibility is hosted on the attached page FrameLayout/ViewParent.
+# - Fullscreen remains normal GeckoView/SurfaceView. Resident ChatGPT and Google Voice tabs stay
+#   active/high priority. App Zygote remains off and Gecko runtime settings stay at Build-84 baseline.
+# - Blur remains one masked service-owned compositor window and only covers native chrome.
+#
+# SPEED PATH:
+# - Fullscreen, fullscreen chooser, floating chrome, raw Gecko page Surface and live-glass backdrop
+#   all request the highest supported same-resolution refresh mode.
+# - Android 15+ View frame-rate requests are recursive, touch boost is enabled, and balanced
+#   frame-rate power saving is disabled to favor smoothness.
+# - SurfaceView producers receive Surface.setFrameRate() once per Surface lifetime; Android 16 uses
+#   FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
+# - Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
+#
+# FULLSCREEN TAB SWITCH REPAIR:
+# - Fullscreen chooser dismissal synchronously reconciles the selected resident GeckoSession onto
+#   the existing fullscreen GeckoView; LiveGeckoView remains a lean lifecycle wrapper.
 on:
   push:
     branches: [rebuild-v2]
     paths: ['.github/workflows/verify-files-once.yml']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  patch:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Commit real raw SurfaceView focus proxy
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt')
-          text = path.read_text()
-          old = '''        override fun getSession(): GeckoSession? = bound
-
-        override fun setSession(session: GeckoSession) {'''
-          new = '''        override fun getSession(): GeckoSession? = bound
-
-        // Workspace focus policy asks its GeckoView-shaped owner for window focus. The bridge is
-        // intentionally detached, so proxy the real raw SurfaceView window instead of reporting
-        // false forever. This gives floating Gecko the same native focus semantics as fullscreen.
-        override fun hasWindowFocus(): Boolean = raw.hasWindowFocus()
-
-        override fun setSession(session: GeckoSession) {'''
-          if text.count(old) != 1:
-              raise SystemExit(f'Expected one insertion point, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
-          git diff --cached --check
-          git commit -m 'perf: proxy floating Gecko focus from raw page window'
-          git push origin HEAD:rebuild-v2
+  verify:
+    if: github.repository == 'mekromn/bubble' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify-files]'))
+    uses: ./.github/workflows/android.yml
