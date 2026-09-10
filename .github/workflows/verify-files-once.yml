@@ -8,18 +8,23 @@ name: Verify current Bubble changes
 # resident/high-priority tab policy, and the floating-browser hybrid performance path.
 #
 # HYBRID PERFORMANCE BASELINE:
-# - Gecko runtime behavior is restored to the known-fast Build 84 baseline: remote debugging and
-#   console-to-Logcat output are disabled; every other Gecko runtime setting stays at Gecko default.
-#   No App Zygote and no accumulated speculative Gecko feature disables.
+# - Gecko runtime behavior matches the known-fast Build 84 baseline: remote debugging and console-to-
+#   Logcat output are disabled; every other Gecko runtime setting stays at Gecko default. No App
+#   Zygote and no accumulated speculative Gecko feature disables.
 # - Fullscreen uses Gecko SurfaceView.
-# - Floating CHAT also uses Gecko SurfaceView: the historical TextureView request is intercepted before
-#   attachment, Gecko's SurfaceView backend is created instead, and the internal SurfaceView is promoted
-#   with setZOrderOnTop(true) before TYPE_APPLICATION_OVERLAY attachment. No Gecko TextureView is created.
-# - Floating glass is collapsed back from two compositor Dialogs to one service-owned backdrop window,
-#   matching Build 84's low layer count. CHAT uses a top/bottom alpha mask matching the 52dp header and
-#   48dp footer, leaving the rendered page center visually blur-free. Glass stays live during move/resize.
-# - Hardware acceleration, maximum-refresh voting, current resident active/high-priority behavior, all
-#   current Continuity/Voice features, profile isolation and security invariants remain unchanged.
+# - Floating CHAT also uses Gecko SurfaceView. The historical TextureView request is an A/B trigger
+#   only; LiveGeckoView translates it to BACKEND_SURFACE_VIEW and never creates Gecko TextureView.
+# - On Android 16/API 36, the internal SurfaceView uses setCompositionOrder(1), the platform's explicit
+#   above-parent composition-order API, instead of the legacy setZOrderOnTop path. Pre-36 keeps the
+#   legacy fallback only.
+# - Gecko documents SurfaceView as non-transformable; floating direct-surface mode therefore cancels
+#   ancestor View animations and enforces identity alpha/scale/translation whenever the surface attaches
+#   or regains visibility/focus. Native chrome may animate independently; Gecko pixels do not.
+# - Floating glass uses one service-owned backdrop window, matching Build 84's low layer count. CHAT
+#   uses a top/bottom alpha mask for the 52dp header and 48dp footer, leaving the rendered page center
+#   visually blur-free. Glass stays live during move/resize.
+# - Hardware acceleration, maximum-refresh voting, current resident active/high-priority behavior,
+#   all current Continuity/Voice features, profile isolation and security invariants remain unchanged.
 #
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
