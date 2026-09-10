@@ -1,5 +1,6 @@
 package com.mekromn.bubble
 
+import android.annotation.TargetApi
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.ContentValues
@@ -26,48 +27,51 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Persistent physical-device diagnostics for renderer/session handoff failures.
+ * Persistent physical-device crash diagnostics.
  *
- * Normal event calls are intentionally cheap: they enqueue one already-formatted line and return.
- * A single background writer appends to an app-owned MediaStore file under Downloads/Bubble Logs.
- * The same stream is force-drained by the uncaught-exception handler so the last handoff events are
- * durable before Android terminates the process. Android 11+ historical process-exit information is
- * recorded on the next launch as well, which gives us native-crash/signal/ANR/LMK evidence even when
- * Gecko or the process dies below the Java exception boundary.
+ * IMPORTANT: diagnostics are intentionally parked for performance testing right now. Flip ENABLED
+ * back to true for a forensic build. When disabled, install/event/error/memory/session-state helpers
+ * return before allocating a writer thread, opening MediaStore, collecting PSS, scanning Workspace
+ * tabs, or formatting log lines. The complete Downloads + private-shadow + uncaught-exception +
+ * ApplicationExitInfo implementation remains here for the next debugging cycle.
  *
- * Never put page text, cookies, request headers, auth/session tokens, form contents or full query
- * strings in this log. It is deliberately user-accessible forensic metadata, not browser telemetry.
+ * Never log page text, cookies, request headers, auth/session tokens, form contents or URL queries.
  */
 internal object DiagnosticLog {
+    const val ENABLED = false
+
     private const val TAG = "BubbleDiag"
     private const val PREFS = "bubble_diagnostics"
     private const val LAST_EXIT_TS = "last_exit_timestamp"
     private const val MAX_TRACE_BYTES = 512 * 1024
 
-    private val sequence = AtomicLong(0)
-    private val queue = ConcurrentLinkedQueue<String>()
-    private val drainScheduled = AtomicBoolean(false)
-    private val handlingCrash = AtomicBoolean(false)
-    private val writer = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "BubbleDiagnostics").apply { isDaemon = true }
+    private val sequence by lazy { AtomicLong(0) }
+    private val queue by lazy { ConcurrentLinkedQueue<String>() }
+    private val drainScheduled by lazy { AtomicBoolean(false) }
+    private val handlingCrash by lazy { AtomicBoolean(false) }
+    private val writer by lazy {
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "BubbleDiagnostics").apply { isDaemon = true }
+        }
     }
     private val writeLock = Any()
 
     @Volatile private var app: Context? = null
-    @Volatile private var publicUri: Uri? = null
     @Volatile private var publicPfd: ParcelFileDescriptor? = null
     @Volatile private var publicOut: FileOutputStream? = null
     @Volatile private var privateOut: FileOutputStream? = null
     @Volatile private var installed = false
     @Volatile private var previousHandler: Thread.UncaughtExceptionHandler? = null
-    private val processStartElapsed = SystemClock.elapsedRealtime()
-    private val processStamp = Instant.now().toString().replace(':', '-').replace('.', '-')
+
+    private val processStartElapsed by lazy { SystemClock.elapsedRealtime() }
+    private val processStamp by lazy { Instant.now().toString().replace(':', '-').replace('.', '-') }
 
     val fileHint: String
-        get() = "Downloads/Bubble Logs/Bubble-diagnostics-$processStamp-p${Process.myPid()}.log"
+        get() = if (!ENABLED) "diagnostics disabled" else
+            "Downloads/Bubble Logs/Bubble-diagnostics-$processStamp-p${Process.myPid()}.log"
 
     fun install(context: Context) {
-        if (installed) return
+        if (!ENABLED || installed) return
         synchronized(writeLock) {
             if (installed) return
             app = context.applicationContext
@@ -94,13 +98,14 @@ internal object DiagnosticLog {
     }
 
     fun event(area: String, message: String) {
-        val line = line(area, message)
+        if (!ENABLED || !installed) return
         Log.d(TAG, "$area $message")
-        queue.add(line)
+        queue.add(line(area, message))
         scheduleDrain()
     }
 
     fun error(area: String, message: String, error: Throwable) {
+        if (!ENABLED || !installed) return
         Log.e(TAG, "$area $message", error)
         queue.add(line(area, "$message :: ${throwableSummary(error)}"))
         queue.add(stackLine(area, error))
@@ -108,6 +113,7 @@ internal object DiagnosticLog {
     }
 
     fun snapshotMemory(reason: String) {
+        if (!ENABLED || !installed) return
         val runtime = Runtime.getRuntime()
         val used = runtime.totalMemory() - runtime.freeMemory()
         val am = app?.getSystemService(ActivityManager::class.java)
@@ -122,36 +128,36 @@ internal object DiagnosticLog {
     }
 
     fun sessionLabel(session: org.mozilla.geckoview.GeckoSession?): String {
+        if (!ENABLED || !installed) return "diag=off"
         if (session == null) return "session=null"
         val identity = Integer.toHexString(System.identityHashCode(session))
-        val tab = runCatching { Workspace.peek()?.tabs?.firstOrNull { it.session === session } }.getOrNull()
+        val workspace = runCatching { Workspace.peek() }.getOrNull()
+        val tab = runCatching { workspace?.tabs?.firstOrNull { it.session === session } }.getOrNull()
         return if (tab == null) {
             "session=$identity isOpen=${runCatching { session.isOpen }.getOrDefault(false)} tab=?"
         } else {
-            val host = sanitizedHost(tab.url)
-            "session=$identity isOpen=${runCatching { session.isOpen }.getOrDefault(false)} tab=${shortId(tab.id)} host=$host " +
-                "selected=${tab.id == Workspace.peek()?.selectedId} loading=${tab.loading} progress=${tab.progress} painted=${tab.painted} suspended=${tab.suspended}"
+            "session=$identity isOpen=${runCatching { session.isOpen }.getOrDefault(false)} tab=${tab.id.take(8)} " +
+                "host=${sanitizedHost(tab.url)} selected=${tab.id == workspace?.selectedId} loading=${tab.loading} " +
+                "progress=${tab.progress} painted=${tab.painted} suspended=${tab.suspended}"
         }
     }
 
     fun selectedState(): String {
+        if (!ENABLED || !installed) return "diag=off"
         val workspace = Workspace.peek() ?: return "workspace=null"
         val tab = workspace.selected ?: return "selected=null tabs=${workspace.tabs.size}"
-        return "selected=${shortId(tab.id)} host=${sanitizedHost(tab.url)} tabs=${workspace.tabs.size} " +
-            "loading=${tab.loading} progress=${tab.progress} painted=${tab.painted} session=${Integer.toHexString(System.identityHashCode(tab.session))} " +
-            "floating=${workspace.floatingVisible} visible=${workspace.visible} covered=${workspace.covered}"
+        return "selected=${tab.id.take(8)} host=${sanitizedHost(tab.url)} tabs=${workspace.tabs.size} " +
+            "loading=${tab.loading} progress=${tab.progress} painted=${tab.painted} " +
+            "session=${Integer.toHexString(System.identityHashCode(tab.session))} floating=${workspace.floatingVisible} " +
+            "visible=${workspace.visible} covered=${workspace.covered}"
     }
 
-    private fun shortId(id: String): String = id.take(8)
-
-    private fun sanitizedHost(raw: String): String {
-        return runCatching {
-            val uri = Uri.parse(raw)
-            val scheme = uri.scheme.orEmpty()
-            val host = uri.host.orEmpty()
-            if (host.isNotBlank()) "$scheme://$host" else scheme.ifBlank { "unknown" }
-        }.getOrDefault("unknown")
-    }
+    private fun sanitizedHost(raw: String): String = runCatching {
+        val uri = Uri.parse(raw)
+        val scheme = uri.scheme.orEmpty()
+        val host = uri.host.orEmpty()
+        if (host.isNotBlank()) "$scheme://$host" else scheme.ifBlank { "unknown" }
+    }.getOrDefault("unknown")
 
     private fun line(area: String, message: String): String {
         val seq = sequence.incrementAndGet()
@@ -191,7 +197,7 @@ internal object DiagnosticLog {
         "${error.javaClass.name}: ${error.message.orEmpty()}"
 
     private fun scheduleDrain() {
-        if (!installed) return
+        if (!ENABLED || !installed) return
         if (!drainScheduled.compareAndSet(false, true)) return
         writer.execute {
             try {
@@ -204,6 +210,7 @@ internal object DiagnosticLog {
     }
 
     private fun drainQueueSync(force: Boolean) {
+        if (!ENABLED || !installed) return
         synchronized(writeLock) {
             var wrote = false
             while (true) {
@@ -228,8 +235,7 @@ internal object DiagnosticLog {
         val context = app ?: return
         runCatching {
             val dir = File(context.filesDir, "diagnostics").apply { mkdirs() }
-            val file = File(dir, "Bubble-diagnostics-$processStamp-p${Process.myPid()}.log")
-            privateOut = FileOutputStream(file, true)
+            privateOut = FileOutputStream(File(dir, "Bubble-diagnostics-$processStamp-p${Process.myPid()}.log"), true)
         }.onFailure { Log.e(TAG, "Could not open private diagnostic shadow", it) }
     }
 
@@ -246,16 +252,15 @@ internal object DiagnosticLog {
                 ?: error("MediaStore insert returned null")
             val pfd = context.contentResolver.openFileDescriptor(uri, "wa")
                 ?: error("MediaStore openFileDescriptor returned null")
-            publicUri = uri
             publicPfd = pfd
             publicOut = FileOutputStream(pfd.fileDescriptor)
         }.onFailure { Log.e(TAG, "Could not open Downloads diagnostic log", it) }
     }
 
     private fun recordUncaught(thread: Thread, error: Throwable) {
-        if (!handlingCrash.compareAndSet(false, true)) return
+        if (!ENABLED || !installed || !handlingCrash.compareAndSet(false, true)) return
         try {
-            queue.add(line("FATAL", "UNCAUGHT thread=${thread.name} id=${thread.id} state=${thread.state} ${throwableSummary(error)} ${selectedState()}"))
+            queue.add(line("FATAL", "UNCAUGHT thread=${thread.name} state=${thread.state} ${throwableSummary(error)} ${selectedState()}"))
             queue.add(stackLine("FATAL", error))
             queue.add(line("FATAL", threadDump()))
             drainQueueSync(force = true)
@@ -264,23 +269,22 @@ internal object DiagnosticLog {
         }
     }
 
-    private fun threadDump(): String {
-        return runCatching {
-            val stacks = Thread.getAllStackTraces()
-            buildString {
-                append("THREAD_DUMP count=").append(stacks.size).append("\\n")
-                stacks.entries.sortedBy { it.key.name }.take(64).forEach { (thread, stack) ->
-                    append("--- ").append(thread.name).append(" id=").append(thread.id)
-                        .append(" state=").append(thread.state).append(" daemon=").append(thread.isDaemon).append("\\n")
-                    stack.take(80).forEach { append("  at ").append(it).append("\\n") }
-                }
-            }.take(256 * 1024)
-        }.getOrElse { "THREAD_DUMP_FAILED ${throwableSummary(it)}" }
-    }
+    private fun threadDump(): String = runCatching {
+        val stacks = Thread.getAllStackTraces()
+        buildString {
+            append("THREAD_DUMP count=").append(stacks.size).append("\\n")
+            stacks.entries.sortedBy { it.key.name }.take(64).forEach { (thread, stack) ->
+                append("--- ").append(thread.name).append(" state=").append(thread.state)
+                    .append(" daemon=").append(thread.isDaemon).append("\\n")
+                stack.take(80).forEach { append("  at ").append(it).append("\\n") }
+            }
+        }.take(256 * 1024)
+    }.getOrElse { "THREAD_DUMP_FAILED ${throwableSummary(it)}" }
 
+    @TargetApi(30)
     private fun recordHistoricalExits() {
+        if (!ENABLED || !installed || Build.VERSION.SDK_INT < 30) return
         val context = app ?: return
-        if (Build.VERSION.SDK_INT < 30) return
         runCatching {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val lastSeen = prefs.getLong(LAST_EXIT_TS, 0L)
@@ -293,8 +297,9 @@ internal object DiagnosticLog {
                 newest = maxOf(newest, info.timestamp)
                 event(
                     "EXIT",
-                    "timestamp=${Instant.ofEpochMilli(info.timestamp)} process=${info.processName} reason=${exitReason(info.reason)}(${info.reason}) " +
-                        "status=${info.status} importance=${info.importance} pss=${info.pss} rss=${info.rss} description=${info.description.orEmpty().replace('\n', ' ').take(512)}"
+                    "timestamp=${Instant.ofEpochMilli(info.timestamp)} process=${info.processName} " +
+                        "reason=${exitReason(info.reason)}(${info.reason}) status=${info.status} importance=${info.importance} " +
+                        "pss=${info.pss} rss=${info.rss} description=${info.description.orEmpty().replace('\n', ' ').take(512)}"
                 )
                 val trace = readExitTrace(info)
                 if (trace.isNotBlank()) event("EXIT_TRACE", trace)
@@ -304,24 +309,23 @@ internal object DiagnosticLog {
         }.onFailure { error("EXIT", "failed to read historical exits", it) }
     }
 
-    @android.annotation.TargetApi(Build.VERSION_CODES.R)
-    private fun readExitTrace(info: ApplicationExitInfo): String {
-        return runCatching {
-            info.traceInputStream?.use { input ->
-                val out = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                var remaining = MAX_TRACE_BYTES
-                while (remaining > 0) {
-                    val read = input.read(buffer, 0, minOf(buffer.size, remaining))
-                    if (read <= 0) break
-                    out.write(buffer, 0, read)
-                    remaining -= read
-                }
-                String(out.toByteArray(), StandardCharsets.UTF_8).replace('\u0000', ' ').take(MAX_TRACE_BYTES)
-            }.orEmpty()
-        }.getOrElse { "trace-read-failed ${throwableSummary(it)}" }
-    }
+    @TargetApi(30)
+    private fun readExitTrace(info: ApplicationExitInfo): String = runCatching {
+        info.traceInputStream?.use { input ->
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            var remaining = MAX_TRACE_BYTES
+            while (remaining > 0) {
+                val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+                if (read <= 0) break
+                out.write(buffer, 0, read)
+                remaining -= read
+            }
+            String(out.toByteArray(), StandardCharsets.UTF_8).replace('\u0000', ' ').take(MAX_TRACE_BYTES)
+        }.orEmpty()
+    }.getOrElse { "trace-read-failed ${throwableSummary(it)}" }
 
+    @TargetApi(30)
     private fun exitReason(reason: Int): String = when (reason) {
         ApplicationExitInfo.REASON_UNKNOWN -> "UNKNOWN"
         ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
@@ -337,9 +341,6 @@ internal object DiagnosticLog {
         ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
         ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
         ApplicationExitInfo.REASON_OTHER -> "OTHER"
-        ApplicationExitInfo.REASON_FREEZER -> "FREEZER"
-        ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "PACKAGE_STATE_CHANGE"
-        ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "PACKAGE_UPDATED"
         else -> "REASON_$reason"
     }
 }
