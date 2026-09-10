@@ -14,9 +14,11 @@ name: Verify current Bubble changes
 # inputs, and use bounded drop/paste fallbacks. Google Voice notifications promote detected contact
 # names, retain phone numbers as secondary context, expose a Copy number Android action, and an exact
 # voice.google.com top-frame script adds a one-tap copy-number control immediately before the existing
-# call button. The page copy path preserves normal parenthesized phone formatting exactly as shown,
-# remains local-only, and synthesizes no Google Voice control clicks. Credentials never cross to the
-# isolated/native Vault bridge. Existing focused UI/Vault/archive/dialog/transition gates remain.
+# call button. The bundled Gecko extension is now version 2.6 so ensureBuiltIn upgrades profiles that
+# still have the pre-Voice-UI 2.5 package. Voice header detection covers aria/tooltip/tel/data-number
+# variants plus a geometry fallback around the call/menu action row. The page copy path remains local-
+# only and synthesizes no Google Voice control clicks. Credentials never cross to the isolated/native
+# Vault bridge. Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
     branches: [rebuild-v2]
