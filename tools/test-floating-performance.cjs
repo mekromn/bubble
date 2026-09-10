@@ -7,12 +7,14 @@ const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
 const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
 
-assert.match(live, /override fun setViewBackend\(backend: Int\)/,
-  'LiveGeckoView must own the backend choice so floating callers cannot silently select TextureView');
-assert.match(live, /super\.setViewBackend\(BACKEND_SURFACE_VIEW\)/,
-  'Every live GeckoView must resolve to the direct SurfaceView backend');
-assert.equal(/super\.setViewBackend\(backend\)/.test(live), false,
-  'LiveGeckoView must not pass a slower caller-selected backend through');
+// Fullscreen GeckoView uses GeckoView's default SurfaceView fast path, but the interactive
+// TYPE_APPLICATION_OVERLAY must remain a TextureView so it composites/clips/moves as a normal View.
+assert.equal(/override fun setViewBackend\(backend: Int\)/.test(live), false,
+  'LiveGeckoView must not globally coerce the floating overlay backend');
+assert.match(floating, /setViewBackend\(GeckoView\.BACKEND_TEXTURE_VIEW\)/,
+  'Floating browser overlay must use TextureView so Gecko pixels render inside TYPE_APPLICATION_OVERLAY');
+assert.equal(/setViewBackend\(GeckoView\.BACKEND_SURFACE_VIEW\)/.test(floating), false,
+  'Floating overlay must not force SurfaceView after the transparent-page regression');
 
 assert.match(glass, /floating\.mode == FloatingMode\.CHAT/,
   'Overlay blur policy must distinguish browser CHAT mode from native-only UI modes');
@@ -43,4 +45,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve the current resident-tab priority policy: Voice and ordinary resident tabs remain active/high-priority');
 
-console.log('Floating browser fast path: SurfaceView, live UI-only blur, cached compositor state, hardware acceleration, refresh voting and resident high priority passed.');
+console.log('Floating browser path: fullscreen SurfaceView default, overlay TextureView, live UI-only blur, cached compositor state, hardware acceleration, refresh voting and resident high priority passed.');
