@@ -15,5 +15,9 @@ assert.equal(/override fun setSession\(/.test(live), false,
   'Fullscreen LiveGeckoView must not reintroduce diagnostic setSession overrides');
 assert.equal(/override fun releaseSession\(/.test(live), false,
   'Fullscreen LiveGeckoView must not reintroduce diagnostic releaseSession overrides');
+assert.match(live, /override fun hasWindowFocus\(\): Boolean[\s\S]*if \(isAttachedToWindow\) return super\.hasWindowFocus\(\)/,
+  'Attached fullscreen GeckoView must continue using Android real window focus');
+assert.match(live, /floating\?\.geckoView === this && workspace\?\.floatingVisible == true/,
+  'Detached raw floating bridge must report focus while it owns the visible interactive floating page');
 
-console.log('Fullscreen tab selection: chooser dismissal synchronously rebinds the selected resident GeckoSession; LiveGeckoView remains lean.');
+console.log('Tab/focus sync: fullscreen chooser rebinds immediately and detached raw floating Gecko receives native focus parity without attaching its bridge.');
