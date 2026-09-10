@@ -31,9 +31,6 @@ for (const protocol of ['file:', 'chrome:', 'resource:', 'moz-extension:']) {
   const other = environment(protocol);
   assert.equal(other.document.hidden, true); assert.equal(other.document.hasFocus(), false); assert.deepEqual(other.handlers, {});
 }
-// Google Voice must see genuine background visibility/focus. Its page notification logic can
-// suppress alerts when a browser lies that the document is perpetually visible. Bubble keeps Voice
-// alive natively through GeckoSession active/high-priority state instead of this JS shim.
 for (const frame of [false, true]) {
   const voice = environment('https:', frame, 'voice.google.com', '');
   assert.equal(voice.document.hidden, true, 'Google Voice hidden state must stay real');
@@ -55,9 +52,6 @@ const monitor = manifest.content_scripts.find(item => item.js.includes('monitor.
 assert.deepEqual(monitor.matches, ['https://chatgpt.com/*'], 'Reply lifecycle native monitor must not be broadened');
 assert.equal(monitor.all_frames, false); assert.notEqual(monitor.world, 'MAIN');
 
-// Android's blur-behind API is screen-wide by definition and produced visible blur outside the
-// Bubble window on the target Pixel. The glass implementation must use shape-clipped Window
-// background blur instead. Keep this source guard so the bad API cannot quietly return later.
 const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt', 'utf8');
 assert.equal(/\.setBlurBehindRadius\s*\(/.test(glass), false, 'Screen-wide blur-behind API is forbidden for Bubble glass');
 assert.equal(/WindowManager\.LayoutParams\.FLAG_BLUR_BEHIND/.test(glass), false, 'FLAG_BLUR_BEHIND is forbidden for Bubble glass');
@@ -72,4 +66,5 @@ require('./test-vault-live-request.cjs');
 require('./test-vault-handoff-attachment.cjs');
 require('./test-voice-ui.cjs');
 require('./test-floating-performance.cjs');
+require('./test-fullscreen-tab-sync.cjs');
 require('./test-gecko-turbo.cjs');
