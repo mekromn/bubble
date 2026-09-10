@@ -35,6 +35,14 @@ import org.mozilla.geckoview.GeckoSession
  * session/display lifecycle state that our raw display does not own, so letting the adapter receive
  * GeckoView window callbacks creates a split-brain lifecycle and can crash during fullscreen ->
  * floating handoff. The only real attached page View is RawGeckoSurfaceView below.
+ *
+ * The raw SurfaceView is intentionally Z-ordered above its own dedicated page-only overlay window.
+ * SurfaceView normally composes behind its containing Window; that is useful in ordinary Activities
+ * because Android punches a hole through the app window, but the target Pixel showed our opaque
+ * TYPE_APPLICATION_OVERLAY as solid black. Since this dedicated overlay contains only webpage pixels
+ * (the glass header/footer live in separate windows), putting the SurfaceView above this one Window is
+ * safe and removes any dependence on overlay-window hole punching while preserving the direct Surface
+ * compositor path.
  */
 internal class FloatingGeckoWindow(private val context: Context) {
     private val manager = context.getSystemService(WindowManager::class.java)
@@ -160,6 +168,10 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var publishFailurePosted = false
 
         init {
+            // This MUST happen before the containing Window is added. The page Surface then composes
+            // above this dedicated page-only overlay instead of relying on SurfaceView's normal
+            // behind-window hole-punch path, which stayed black on the Pixel 9 Pro XL.
+            setZOrderOnTop(true)
             holder.setFormat(PixelFormat.OPAQUE)
             holder.addCallback(this)
             setBackgroundColor(Color.BLACK)
