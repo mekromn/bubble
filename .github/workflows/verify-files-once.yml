@@ -17,6 +17,8 @@ name: Verify current Bubble changes
 #   frame-rate power saving is disabled to favor smoothness.
 # - SurfaceView producers receive Surface.setFrameRate() once per Surface lifetime; Android 16 uses
 #   FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
+# - The intentionally detached raw bookkeeping bridge proxies focus for the active floating page so
+#   Workspace gives the selected raw GeckoSession the same native focused state as fullscreen.
 # - Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 #
 # FULLSCREEN TAB SWITCH REPAIR:
