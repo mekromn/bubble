@@ -9,8 +9,8 @@ const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolic
 const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
 
 // Floating rendering bypasses GeckoView's display backend entirely. Workspace still sees a tiny
-// invisible GeckoView-shaped bookkeeping bridge, but the real pixels come from GeckoDisplay driving
-// a plain Android SurfaceView through the raw SurfaceInfo API.
+// GeckoView-shaped bookkeeping adapter, but that adapter must NEVER attach to a Window/View tree:
+// GeckoView's private session/display lifecycle would then diverge from the raw GeckoDisplay owner.
 assert.equal(/BACKEND_TEXTURE_VIEW/.test(floating + page), false,
   'Floating path must contain no TextureView backend');
 assert.equal(/setViewBackend/.test(live), false,
@@ -19,6 +19,12 @@ assert.match(floating, /FloatingGeckoWindow\(context\)/,
   'FloatingWindow must own the dedicated raw Gecko page sibling');
 assert.match(page, /class RawGeckoSurfaceView[\s\S]*SurfaceView/,
   'Floating page must be a plain Android SurfaceView');
+assert.match(page, /class RawSessionBridge[\s\S]*LiveGeckoView/,
+  'Workspace compatibility adapter must remain explicit');
+assert.equal(/addView\(view\s*,/.test(page), false,
+  'RawSessionBridge must never enter the Window/View lifecycle');
+assert.match(page, /fun hide\(\)[\s\S]*view\.releaseSession\(\)/,
+  'Hiding the raw window must release GeckoDisplay ownership before removing the Surface');
 assert.match(page, /acquireDisplay\(\)/,
   'Floating raw path must acquire GeckoDisplay directly from GeckoSession');
 assert.match(page, /GeckoDisplay\.SurfaceInfo\.Builder\(androidSurface\)/,
@@ -33,6 +39,8 @@ assert.match(page, /surfaceDestroyed\(\)/,
   'Raw display must tell Gecko when the Android Surface is destroyed');
 assert.match(page, /releaseDisplay\(oldDisplay\)/,
   'Raw display must release GeckoDisplay when Workspace releases the session');
+assert.match(page, /Could not publish raw Gecko Surface/,
+  'SurfaceHolder publication failures must be caught and diagnosed instead of crashing the process');
 assert.match(page, /panZoomController\.onTouchEvent\(event\)/,
   'Touch input must go directly to Gecko PanZoomController');
 assert.match(page, /textInput\.setView\(this\)/,
@@ -78,4 +86,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw fast path: GeckoDisplay -> SurfaceInfo -> SurfaceView + direct input + one masked glass surface + max refresh + resident high priority.');
+console.log('Floating raw fast path: detached GeckoView adapter + GeckoDisplay -> SurfaceInfo -> SurfaceView + direct input + one masked glass surface + max refresh + resident high priority.');
