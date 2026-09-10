@@ -29,10 +29,12 @@ import org.mozilla.geckoview.GeckoSession
  * GeckoDisplay.surfaceChanged(SurfaceInfo). This is the same low-level display API GeckoView itself
  * ultimately uses, but it removes GeckoView's overlay-sensitive surface lifecycle from the hot path.
  *
- * Workspace still needs a GeckoView-shaped object for its existing session handoff/focus bookkeeping,
- * so a 1x1 INVISIBLE RawSessionBridge lives in the same window. It never calls GeckoView.setSession(),
- * never acquires a Gecko display and never renders. Its overridden setSession/releaseSession methods
- * bind/unbind the raw SurfaceView instead. The real pixels therefore have exactly one display surface.
+ * Workspace still needs a GeckoView-shaped object for its existing session handoff bookkeeping.
+ * RawSessionBridge therefore exists only as a DETACHED adapter object: it is never inserted into a
+ * View hierarchy or attached to a Window. That distinction is important. GeckoView has private
+ * session/display lifecycle state that our raw display does not own, so letting the adapter receive
+ * GeckoView window callbacks creates a split-brain lifecycle and can crash during fullscreen ->
+ * floating handoff. The only real attached page View is RawGeckoSurfaceView below.
  */
 internal class FloatingGeckoWindow(private val context: Context) {
     private val manager = context.getSystemService(WindowManager::class.java)
@@ -44,7 +46,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
     private val root = FrameLayout(context).apply {
         setBackgroundColor(Color.BLACK)
         addView(surface, FrameLayout.LayoutParams(-1, -1))
-        addView(view, FrameLayout.LayoutParams(1, 1))
+        // Deliberately DO NOT add RawSessionBridge. It is bookkeeping only, never a window child.
     }
 
     private var params: WindowManager.LayoutParams? = null
@@ -112,6 +114,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
     }
 
     fun hide() {
+        // Release GeckoDisplay while the Android Surface is still valid. This also makes hide()
+        // idempotently clean up a partially-attached/bind-failed window instead of leaking ownership.
+        view.releaseSession()
         if (!attached) return
         attached = false
         params = null
@@ -152,6 +157,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var surfaceWidth = 0
         private var surfaceHeight = 0
         private val screenOrigin = IntArray(2)
+        private var publishFailurePosted = false
 
         init {
             holder.setFormat(PixelFormat.OPAQUE)
@@ -164,7 +170,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         fun bind(next: GeckoSession): Boolean {
             if (session === next && display != null) {
                 publishSurfaceIfReady()
-                return true
+                return display != null
             }
             session?.let(::unbind)
             return try {
@@ -173,12 +179,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 display = next.acquireDisplay()
                 publishSurfaceIfReady()
                 updateScreenOrigin()
-                true
+                display != null
             } catch (error: RuntimeException) {
-                Log.e(TAG, "Could not acquire raw GeckoDisplay", error)
-                display = null
-                session = null
-                Toast.makeText(context, "Raw Gecko display failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+                cleanupAfterBindFailure(next, error)
                 false
             }
         }
@@ -188,11 +191,26 @@ internal class FloatingGeckoWindow(private val context: Context) {
             val oldDisplay = display
             if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
             surfacePublished = false
+            publishFailurePosted = false
             display = null
             session = null
             if (expected.textInput.view === this) expected.textInput.setView(null)
             if (expected.accessibility.view === this) expected.accessibility.setView(null)
             if (oldDisplay != null) runCatching { expected.releaseDisplay(oldDisplay) }
+        }
+
+        private fun cleanupAfterBindFailure(target: GeckoSession, error: RuntimeException) {
+            Log.e(TAG, "Could not acquire/publish raw GeckoDisplay", error)
+            val oldDisplay = display
+            if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
+            surfacePublished = false
+            publishFailurePosted = false
+            display = null
+            session = null
+            if (target.textInput.view === this) target.textInput.setView(null)
+            if (target.accessibility.view === this) target.accessibility.setView(null)
+            if (oldDisplay != null) runCatching { target.releaseDisplay(oldDisplay) }
+            Toast.makeText(context, "Raw Gecko display failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
         }
 
         private fun configureInput(target: GeckoSession) {
@@ -227,24 +245,42 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         private fun publishSurfaceIfReady() {
             val gecko = display ?: return
+            val current = session ?: return
             val androidSurface = holder.surface
             if (!androidSurface.isValid) return
             val width = (if (surfaceWidth > 0) surfaceWidth else this.width).coerceAtLeast(1)
             val height = (if (surfaceHeight > 0) surfaceHeight else this.height).coerceAtLeast(1)
-            val builder = GeckoDisplay.SurfaceInfo.Builder(androidSurface)
-                .newSurfaceProvider(this)
-                .size(width, height)
-            if (Build.VERSION.SDK_INT >= 29) builder.surfaceControl(surfaceControl)
-            gecko.surfaceChanged(builder.build())
-            surfacePublished = true
-            updateScreenOrigin()
+            try {
+                val builder = GeckoDisplay.SurfaceInfo.Builder(androidSurface)
+                    .newSurfaceProvider(this)
+                    .size(width, height)
+                if (Build.VERSION.SDK_INT >= 29) builder.surfaceControl(surfaceControl)
+                gecko.surfaceChanged(builder.build())
+                surfacePublished = true
+                publishFailurePosted = false
+                updateScreenOrigin()
+            } catch (error: RuntimeException) {
+                // SurfaceHolder callbacks run on the UI thread. Never let a display handoff race kill
+                // the whole process; unwind this raw display once and leave the chrome alive so the
+                // exact exception is visible/loggable on the physical device.
+                if (!publishFailurePosted) {
+                    publishFailurePosted = true
+                    Log.e(TAG, "Could not publish raw Gecko Surface", error)
+                    post {
+                        if (session === current) {
+                            unbind(current)
+                            Toast.makeText(context, "Raw Gecko surface failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
         }
 
         fun updateScreenOrigin() {
             val gecko = display ?: return
             if (!isAttachedToWindow) return
             getLocationOnScreen(screenOrigin)
-            gecko.screenOriginChanged(screenOrigin[0], screenOrigin[1])
+            runCatching { gecko.screenOriginChanged(screenOrigin[0], screenOrigin[1]) }
         }
 
         override fun requestNewSurface() {
