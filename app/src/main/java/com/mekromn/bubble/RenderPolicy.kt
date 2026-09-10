@@ -14,16 +14,16 @@ import android.view.WindowManager
 import java.util.WeakHashMap
 
 /**
- * One high-refresh policy for fullscreen and floating rendering.
+ * One aggressive high-refresh policy for fullscreen and floating rendering.
  *
  * Window/display-mode votes alone are not enough for Bubble's raw floating renderer because the
- * webpage lives in its own SurfaceView/Surface. On Android 11+ we therefore give every real
- * SurfaceView producer an explicit Surface.setFrameRate() contract as well. Android 16's
- * FRAME_RATE_COMPATIBILITY_AT_LEAST is intended for UI/scrolling, so use it when available.
+ * webpage lives in its own SurfaceView/Surface. On Android 11+ every real SurfaceView producer gets
+ * an explicit Surface.setFrameRate() contract too. Android 16's FRAME_RATE_COMPATIBILITY_AT_LEAST is
+ * designed for UI/scrolling/fling, so use it when available.
  *
- * Surface frame-rate hints are applied once per Surface lifetime, never every frame. This avoids
- * injecting scheduler work into scrolling/animation hot paths while still letting SurfaceFlinger
- * choose the highest display cadence Bubble requests.
+ * Android 15+ touch boost is explicitly enabled and the power-savings-balanced frame-rate policy is
+ * disabled for Bubble windows. That intentionally spends more display power to favor smoothness.
+ * Surface frame-rate hints are applied once per Surface lifetime, never every frame.
  */
 internal object RenderPolicy {
     private data class SurfaceVote(var rate: Float, var voted: Boolean = false)
@@ -41,10 +41,13 @@ internal object RenderPolicy {
             ?: current
 
         params?.let {
-            // Keep the exact same-resolution maximum mode request used by the known-fast fullscreen
-            // path. The Surface vote below additionally targets the actual producer layer.
+            // Exact same-resolution maximum mode request for both fullscreen and overlay windows.
             it.preferredDisplayModeId = mode.modeId
             it.preferredRefreshRate = mode.refreshRate
+            if (Build.VERSION.SDK_INT >= 35) {
+                it.setFrameRateBoostOnTouchEnabled(true)
+                it.setFrameRatePowerSavingsBalanced(false)
+            }
         }
         voteTree(view, mode.refreshRate)
         return mode.refreshRate
