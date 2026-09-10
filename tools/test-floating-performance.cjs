@@ -7,24 +7,24 @@ const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
 const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
 
-// FloatingWindow's historical TextureView request is now only the marker that this GeckoView belongs
-// to the floating page slot. LiveGeckoView must translate it to SurfaceView and promote the entire
-// GeckoView into a separate opaque overlay window instead of fighting SurfaceView inside translucent
-// native chrome.
+// FloatingWindow's historical TextureView request is only a marker. LiveGeckoView translates it to
+// SurfaceView, keeps that view INVISIBLE while temporarily attached to translucent chrome so no
+// SurfaceView surface can be created there, then promotes the same GeckoView into a separate opaque
+// overlay window and makes it VISIBLE only after WindowManager owns the dedicated page window.
 assert.match(floating, /setViewBackend\(GeckoView\.BACKEND_TEXTURE_VIEW\)/,
   'Floating marker call must remain stable');
 assert.match(live, /super\.setViewBackend\(BACKEND_SURFACE_VIEW\)/,
   'Floating page must instantiate Gecko SurfaceView');
 assert.equal(/super\.setViewBackend\(BACKEND_TEXTURE_VIEW\)/.test(live), false,
   'Floating path must never instantiate Gecko TextureView');
+assert.match(live, /visibility = View\.INVISIBLE[\s\S]*super\.setViewBackend\(BACKEND_SURFACE_VIEW\)/,
+  'Floating SurfaceView must remain invisible before first chrome attachment');
+assert.match(live, /host\.removeView\(this\)[\s\S]*manager\.addView\(this, params\)[\s\S]*visibility = View\.VISIBLE/,
+  'SurfaceView may become visible only after dedicated WindowManager attachment');
 assert.match(live, /PixelFormat\.OPAQUE/,
   'Dedicated Gecko page window must be opaque for the direct compositor path');
 assert.match(live, /WindowManager\.LayoutParams\.TYPE_APPLICATION_OVERLAY/,
   'Dedicated Gecko page must own an application-overlay window');
-assert.match(live, /host\.removeView\(this\)/,
-  'GeckoView must leave the translucent chrome hierarchy before direct overlay attachment');
-assert.match(live, /manager\.addView\(this, params\)/,
-  'Same GeckoView must be attached as its own WindowManager root');
 assert.match(live, /ViewTreeObserver\.OnPreDrawListener/,
   'Original page slot must drive geometry synchronization without a timer');
 assert.match(live, /manager\.updateViewLayout\(this, params\)/,
@@ -33,6 +33,10 @@ assert.match(live, /x == lastX && y == lastY && width == lastWidth && height == 
   'Geometry synchronization must skip redundant WindowManager writes');
 assert.equal(/setZOrderOnTop|setCompositionOrder/.test(live), false,
   'Dedicated page window must not rely on failed same-window SurfaceView Z-order tricks');
+assert.equal(/removeCallbacksAndMessages\(null\)/.test(live), false,
+  'Dedicated Gecko cleanup must not erase unrelated handler work');
+assert.match(live, /Direct Gecko window failed:/,
+  'Dedicated-window attachment failure must be visible on the real device');
 
 // Build-84-style single compositor-window glass. CHAT uses one masked drawable with transparent center.
 assert.match(glass, /private var backdrop: Dialog\? = null/,
@@ -62,4 +66,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Dedicated Gecko fast path: opaque SurfaceView overlay + anchored geometry + one masked glass surface + max refresh + resident high priority.');
+console.log('Dedicated Gecko fast path: surface-less chrome staging -> opaque SurfaceView overlay + anchored geometry + one masked glass surface + max refresh + resident high priority.');
