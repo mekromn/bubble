@@ -37,6 +37,8 @@ name: Verify current Bubble changes
 # - DiagnosticLog installs from BubbleApp before GeckoRuntime/Workspace creation.
 # - Low-overhead breadcrumbs are queued off the UI thread and mirrored to an app-owned MediaStore file
 #   under Downloads/Bubble Logs plus a private shadow file.
+# - Workspace traces select -> ensureSession -> newSession -> session.open -> load/restore -> surface
+#   handoff, including targetHadSession before ensureSession so never-before-opened tabs are explicit.
 # - Normal LiveGeckoView fullscreen set/release ownership is traced as well as RawSessionBridge,
 #   GeckoDisplay acquire/release, Surface create/change/destroy/publish, input binding, page-window
 #   attach/remove and selected-tab/session identity. This distinguishes tabs that previously owned a
