@@ -7,7 +7,7 @@ name: Verify current Bubble changes
 # New Chat continuation, transcript command automation, Google Voice notification/UI enhancements,
 # resident/high-priority tab policy, and the floating-browser hybrid performance path.
 #
-# RAW GECKODISPLAY SURFACEVIEW FAST PATH:
+# RAW GECKODISPLAY SURFACEVIEW FAST PATH — BUILD 101 PHYSICAL-PIXEL BASELINE:
 # - Gecko runtime behavior matches the known-fast Build 84 baseline: remote debugging and console-to-
 #   Logcat output are disabled; every other Gecko runtime setting stays at Gecko default. No App
 #   Zygote and no accumulated speculative Gecko feature disables.
@@ -15,17 +15,14 @@ name: Verify current Bubble changes
 # - Floating rendering bypasses GeckoView's display backend entirely. A plain Android SurfaceView owns
 #   the page window and GeckoSession.acquireDisplay() feeds its Surface + SurfaceControl directly to
 #   GeckoDisplay.surfaceChanged(SurfaceInfo).
-# - Workspace compatibility uses a tiny GeckoView-shaped bookkeeping adapter, but that adapter is now
-#   deliberately DETACHED: it is never inserted into an Android View tree or attached to a Window.
-#   This prevents GeckoView's private window/session/display lifecycle from running alongside the raw
-#   GeckoDisplay owner. There is no floating TextureView rendering path.
+# - The raw SurfaceView is setZOrderOnTop(true) BEFORE attachment inside its dedicated page-only opaque
+#   overlay. This is required on the Pixel 9 Pro XL: Build 101 is the first no-TextureView raw-display
+#   build physically verified to render both ChatGPT and Google Voice in floating mode.
+# - Workspace compatibility uses a tiny GeckoView-shaped bookkeeping adapter, deliberately DETACHED:
+#   it is never inserted into an Android View tree or attached to a Window. There is no floating
+#   TextureView rendering path.
 # - Raw display teardown happens before its Android Surface window is removed, and async SurfaceHolder
 #   publication failures are caught/unwound so a handoff race cannot terminate the process.
-# - The target Pixel proved the dedicated page window itself is visible but its center stays opaque
-#   black. RawGeckoSurfaceView therefore calls setZOrderOnTop(true) before WindowManager attachment so
-#   the Surface is composed above this page-only opaque overlay instead of depending on SurfaceView's
-#   normal behind-window hole-punch behavior. Because this Window contains no native chrome, the
-#   Surface cannot cover Bubble's header/footer UI.
 # - Raw touch goes to PanZoomController; IME/key input goes to SessionTextInput; accessibility motion
 #   is forwarded to SessionAccessibility. Gecko can request a replacement Surface through the supplied
 #   GeckoDisplay.NewSurfaceProvider implementation.
@@ -35,6 +32,17 @@ name: Verify current Bubble changes
 #   GeckoDisplay receives screen-origin updates whenever the page window moves.
 # - Floating glass remains one service-owned backdrop window matching Build 84's low layer count, with
 #   CHAT masked to top/bottom native chrome only. Current resident active/high-priority behavior stays.
+#
+# PHYSICAL-DEVICE CRASH DIAGNOSTICS:
+# - DiagnosticLog installs from BubbleApp before GeckoRuntime/Workspace creation.
+# - Low-overhead breadcrumbs are queued off the UI thread and mirrored to an app-owned MediaStore file
+#   under Downloads/Bubble Logs plus a private shadow file.
+# - RawSessionBridge, GeckoDisplay acquire/release, Surface create/change/destroy/publish, input binding,
+#   page-window attach/remove and selected-tab/session identity are traced without page contents,
+#   cookies, auth headers, tokens or query strings.
+# - Uncaught Java/Kotlin exceptions force-flush the breadcrumb tail plus stack and thread dump.
+# - Android 11+ ApplicationExitInfo is recorded on next launch so native Gecko crashes, signals, ANRs,
+#   low-memory kills and other process deaths remain diagnosable even when Java cannot catch them.
 #
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
