@@ -67,4 +67,5 @@ require('./test-vault-handoff-attachment.cjs');
 require('./test-voice-ui.cjs');
 require('./test-floating-performance.cjs');
 require('./test-fullscreen-tab-sync.cjs');
+require('./test-notification-routing.cjs');
 require('./test-gecko-turbo.cjs');
