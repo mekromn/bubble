@@ -26,6 +26,13 @@ name: Verify current Bubble changes
 # The rendered Gecko page is never a blur target. UI blur remains live during drag/resize; its
 # shape/radius/geometry state is cached to avoid unnecessary allocations and redundant compositor
 # configuration in the motion hot path.
+#
+# Gecko Turbo v1 now creates the runtime from one explicit policy: Gecko/debug logcat output,
+# about:config, mozAddonManager Web API, remote extension process, login autofill, enterprise-root
+# import, Web Manifest processing, translation-offer UI, font inflation and input auto-zoom are off.
+# Android 10+ uses Gecko App Zygote preloading. JavaScript/Wasm, web fonts, WebGL/WebRender, Fission,
+# Service Workers, Push, WebRTC, web storage, low-memory handling and the current resident high-priority
+# tab policy remain intact.
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
 on:
