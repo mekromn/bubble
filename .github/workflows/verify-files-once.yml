@@ -9,7 +9,7 @@ name: Verify current Bubble changes
 # sync, Archive-all-open-chats, long-press New Chat continuation, any-running-tab transcript command
 # automation, the continuity-first companion skill contract, two-check 30-minute idle tab
 # maintenance, the output-driven 30-minute generation-stall watchdog, the GitHub download-tab fix,
-# Google Voice notification/UI enhancements, and the corrected floating-browser compositor path.
+# Google Voice notification/UI enhancements, and the floating-browser compositor experiment.
 # Full-history sync follows the supplied Continuity Vault CRX flow. New-chat continuity stages the
 # exact source chat and attaches its complete native Markdown transcript in the fresh ChatGPT composer;
 # the 70k text handoff is fallback-only. Both continuation and GET_CHAT_TRANSCRIPT prefer ChatGPT's
@@ -19,20 +19,19 @@ name: Verify current Bubble changes
 # copy-number control immediately before the existing call button. The bundled Gecko extension is
 # version 2.6 so ensureBuiltIn upgrades profiles that still have the pre-Voice-UI 2.5 package.
 #
-# Fullscreen keeps GeckoView's default SurfaceView fast path. Floating CHAT explicitly uses TextureView
-# because the TYPE_APPLICATION_OVERLAY must composite, clip, move and resize the rendered page inside
-# the Android View hierarchy; globally forcing SurfaceView produced a live session with a transparent
-# page on the target Pixel. Floating still retains hardware acceleration and maximum-refresh voting,
-# preserves the resident active/high-priority tab policy, and limits cross-window blur to the native
-# 52dp header and 48dp footer. The rendered Gecko page is never a blur target. UI blur remains live
-# during drag/resize and its compositor state is cached.
+# Fullscreen keeps GeckoView's default SurfaceView. Floating CHAT now tests the true fast path again:
+# when the host makes its historical TextureView request, LiveGeckoView creates Gecko's SurfaceView
+# backend instead and calls setZOrderOnTop(true) on the internal SurfaceView while still detached,
+# before TYPE_APPLICATION_OVERLAY attachment. The page rectangle sits only between the 52dp header and
+# 48dp footer, so top-Z Gecko pixels do not overlap the native glass chrome. Hardware acceleration,
+# maximum-refresh voting and the resident active/high-priority tab policy remain unchanged. The Gecko
+# page is never a blur target; UI blur remains live during drag/resize and caches compositor state.
 #
-# Turbo regression isolation: this build retains Build 90's Gecko Turbo profile with App Zygote
-# preloading removed. Gecko/debug logcat output, about:config, mozAddonManager Web API, remote extension
-# process, login autofill, enterprise-root import, Web Manifest processing, translation-offer UI, font
-# inflation and input auto-zoom remain off. JavaScript/Wasm, web fonts, WebGL/WebRender, Fission,
-# Service Workers, Push, WebRTC, web storage, low-memory handling and the current resident high-priority
-# tab policy remain intact.
+# Turbo regression isolation remains unchanged from Build 90/91: App Zygote preloading is removed.
+# Gecko/debug logcat output, about:config, mozAddonManager Web API, remote extension process, login
+# autofill, enterprise-root import, Web Manifest processing, translation-offer UI, font inflation and
+# input auto-zoom remain off. JavaScript/Wasm, web fonts, WebGL/WebRender, Fission, Service Workers,
+# Push, WebRTC, web storage, low-memory handling and the current resident high-priority tab policy remain.
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
 on:
