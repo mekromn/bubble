@@ -7,40 +7,35 @@ const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
 const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
 
-// Fullscreen keeps GeckoView's normal SurfaceView. Floating still calls its historical TextureView
-// request, but LiveGeckoView intentionally interprets that one request as the experimental direct
-// SurfaceView path and fixes overlay Z-order before the view can attach to WindowManager.
+// The historical floating call is retained as a stable trigger, but LiveGeckoView must translate it
+// into Gecko's direct SurfaceView and fix SurfaceView Z-order before WindowManager attachment.
 assert.match(floating, /setViewBackend\(GeckoView\.BACKEND_TEXTURE_VIEW\)/,
-  'Floating host trigger must remain stable for the direct-surface A/B');
-assert.match(live, /override fun setViewBackend\(backend: Int\)/,
-  'LiveGeckoView must own the experimental floating backend translation');
+  'Floating A/B trigger must remain stable');
 assert.match(live, /super\.setViewBackend\(BACKEND_SURFACE_VIEW\)/,
-  'Floating experiment must create Gecko SurfaceView rather than TextureView');
+  'Floating render path must instantiate Gecko SurfaceView');
 assert.match(live, /check\(!isAttachedToWindow\)/,
-  'Surface Z-order must be configured before the floating view attaches');
+  'SurfaceView Z-order must be configured before overlay attachment');
 assert.match(live, /setZOrderOnTop\(true\)/,
-  'Floating Gecko SurfaceView must be promoted above the translucent overlay window');
+  'Floating SurfaceView must be promoted above the translucent overlay window');
 assert.equal(/super\.setViewBackend\(BACKEND_TEXTURE_VIEW\)/.test(live), false,
-  'Experimental floating path must not actually instantiate Gecko TextureView');
+  'Hybrid must never actually instantiate Gecko TextureView');
 
-assert.match(glass, /floating\.mode == FloatingMode\.CHAT/,
-  'Overlay blur policy must distinguish browser CHAT mode from native-only UI modes');
+// Return to Build-84-style single compositor-window glass. CHAT uses one masked drawable with a fully
+// transparent middle instead of keeping separate top/bottom overlay windows alive.
+assert.match(glass, /private var backdrop: Dialog\? = null/,
+  'Hybrid glass must use one service-owned backdrop window');
+assert.equal(/private var secondary: Dialog/.test(glass), false,
+  'Hybrid must not keep a second blur overlay surface alive');
+assert.match(glass, /ChromeMaskDrawable/,
+  'CHAT must mask one backdrop to native chrome rather than blur page pixels visually');
 assert.match(glass, /Ui\.dp\(context, 52f\)/,
-  'CHAT blur must be limited to the native 52dp header');
+  'CHAT mask must match the native 52dp header');
 assert.match(glass, /Ui\.dp\(context, 48f\)/,
-  'CHAT blur must be limited to the native 48dp utility strip');
-assert.match(glass, /Gecko page/,
-  'Blur policy must explicitly identify the Gecko page region');
-assert.match(glass, /region between them has no blur window underneath it at all/,
-  'The rendered Gecko page region must never be a blur target');
+  'CHAT mask must match the native 48dp utility strip');
 assert.equal(/FLAG_BLUR_BEHIND|setBlurBehindRadius/.test(glass), false,
-  'Full-screen blur-behind APIs are forbidden');
-assert.match(glass, /state\.shape != shape \|\| state\.corner != corner/,
-  'Live UI blur must cache shape state rather than allocate a new drawable every motion frame');
-assert.match(glass, /state\.blur != blurRadius/,
-  'Live UI blur must avoid redundant blur-radius configuration');
-assert.match(glass, /state\.x == x && state\.y == y && state\.width == w && state\.height == h/,
-  'Blur windows must skip redundant geometry writes');
+  'Screen-wide blur-behind APIs remain forbidden');
+assert.match(glass, /state\.x == x && state\.y == y && state\.width == width && state\.height == height/,
+  'Single blur window must skip redundant motion geometry writes');
 
 assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
   'Floating overlay must remain hardware accelerated');
@@ -50,6 +45,6 @@ assert.match(render, /setRequestedFrameRate\(rate\)/,
   'Android 15+ frame-rate voting must remain active');
 const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPriorityHint\(GeckoSession\.PRIORITY_HIGH\)/g) || [];
 assert.ok(activeHigh.length >= 2,
-  'Preserve the current resident-tab priority policy: Voice and ordinary resident tabs remain active/high-priority');
+  'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating browser experiment: fullscreen SurfaceView, top-Z overlay SurfaceView, live UI-only blur, cached compositor state, hardware acceleration, refresh voting and resident high priority passed.');
+console.log('Hybrid fast path: direct top-Z SurfaceView + one masked glass surface + max refresh + resident high priority.');
