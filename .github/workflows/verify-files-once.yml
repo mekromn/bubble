@@ -27,6 +27,10 @@ name: Verify current Bubble changes
 # - NotificationReturnActivity preserves the exact target tab id and, when reusing an existing
 #   fullscreen BrowserActivity, selects that tab and synchronously binds its resident GeckoSession
 #   before launching/reusing the singleTask Activity. This avoids stopped-onNewIntent stale-tab races.
+# - Google Voice web-notification taps foreground the exact resident Voice tab first, wait until it is
+#   selected/visible/open, then fire Gecko WebNotification.click(). The underlying notification is
+#   dismissed only afterward so Voice's own notificationclick handler can switch that current tab to
+#   the exact message/conversation instead of Bubble merely opening generic voice.google.com.
 on:
   push:
     branches: [rebuild-v2]
