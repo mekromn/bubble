@@ -118,6 +118,10 @@ internal class TabTray(
             ViewCompat.requestApplyInsets(root)
         }
         setOnDismissListener {
+            // Selection can occur while BrowserActivity is marked covered by this Dialog. Reconcile
+            // the selected resident GeckoSession immediately when the overlay is gone rather than
+            // waiting for a coalesced Workspace/Choreographer callback or another window transition.
+            Workspace.peek()?.host?.get()?.syncSelectedSurfaceNow()
             releaseBackHandler()
             releaseBlurListener()
             revealedSelected = ""
@@ -133,9 +137,16 @@ internal class TabTray(
     }
 
     fun conceal() {
-        if (!isShowing) return
+        if (!isShowing) {
+            Workspace.peek()?.host?.get()?.syncSelectedSurfaceNow()
+            return
+        }
         root.animate().cancel(); root.animate().withEndAction(null)
-        if (!ValueAnimator.areAnimatorsEnabled()) { dismiss(); return }
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            dismiss()
+            Workspace.peek()?.host?.get()?.syncSelectedSurfaceNow()
+            return
+        }
         root.animate().alpha(0f).translationY(d(10).toFloat()).setDuration(135L).setInterpolator(Ui.ease)
             .withEndAction { if (isShowing) dismiss() }.start()
     }
@@ -158,7 +169,7 @@ internal class TabTray(
             win.setBackgroundBlurRadius(Ui.dp(context, 18f).coerceIn(36, 72))
             registerBlurListener(manager)
         }
-        win.attributes = win.attributes.apply {
+        val attributes = win.attributes.apply {
             gravity = Gravity.TOP or Gravity.LEFT
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
@@ -167,6 +178,8 @@ internal class TabTray(
             flags = flags and WindowManager.LayoutParams.FLAG_DIM_BEHIND.inv()
             title = "Bubble Your chats"
         }
+        RenderPolicy.vote(context, win.decorView, attributes)
+        win.attributes = attributes
         win.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
     }
 
