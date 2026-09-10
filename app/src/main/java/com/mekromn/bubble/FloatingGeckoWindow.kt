@@ -512,7 +512,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
 
         override fun onKeyMultiple(keyCode: Int, repeatCount: Int, event: KeyEvent): Boolean {
-            if (super.onKeyMultiple(keyCode, event)) return true
+            if (super.onKeyMultiple(keyCode, repeatCount, event)) return true
             return session?.textInput?.onKeyMultiple(keyCode, repeatCount, event) ?: false
         }
 
