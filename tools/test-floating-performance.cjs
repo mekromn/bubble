@@ -7,6 +7,8 @@ const page = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingGecko
 const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt', 'utf8');
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
 const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
+const diagnostics = fs.readFileSync('app/src/main/java/com/mekromn/bubble/DiagnosticLog.kt', 'utf8');
+const meter = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FrameMeter.kt', 'utf8');
 
 // Floating rendering bypasses GeckoView's display backend entirely. Workspace still sees a tiny
 // GeckoView-shaped bookkeeping adapter, but that adapter must NEVER attach to a Window/View tree:
@@ -85,11 +87,21 @@ assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
 assert.match(page, /FLAG_HARDWARE_ACCELERATED/,
   'Raw Gecko page sibling must remain hardware accelerated');
 assert.match(render, /preferredDisplayModeId = mode\.modeId/,
-  'Floating windows must continue voting for the fastest supported display mode');
+  'Both window paths must vote for the fastest same-resolution display mode');
 assert.match(render, /setRequestedFrameRate\(rate\)/,
-  'Android 15+ frame-rate voting must remain active');
+  'Android 15+ per-View frame-rate voting must remain active');
+assert.match(render, /Surface\.FRAME_RATE_COMPATIBILITY_AT_LEAST/,
+  'Android 16 UI surfaces must request an at-least high refresh contract');
+assert.match(render, /surface\.setFrameRate\(/,
+  'Real SurfaceView producers must receive Surface.setFrameRate, not only a window hint');
+assert.match(render, /if \(!created\.voted\) applySurfaceRate/,
+  'Surface frame-rate contracts must not be spammed during resize callbacks');
+assert.match(meter, /RenderPolicy\.vote\(a, a\.window\.decorView, attributes\)/,
+  'Fullscreen must share the exact same max-refresh policy as floating mode');
+assert.match(diagnostics, /const val ENABLED = false/,
+  'Performance builds must keep persistent crash diagnostics parked unless explicitly re-enabled');
 const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPriorityHint\(GeckoSession\.PRIORITY_HIGH\)/g) || [];
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw fast path: detached GeckoView adapter + GeckoDisplay -> top-Z page-only SurfaceView + ViewParent a11y host + direct input + one masked glass surface + max refresh + resident high priority.');
+console.log('Floating raw speed path: no TextureView + ViewParent a11y + producer Surface max-refresh + shared fullscreen max-refresh + one masked glass surface + diagnostics parked.');
