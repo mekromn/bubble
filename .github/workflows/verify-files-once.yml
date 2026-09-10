@@ -7,21 +7,22 @@ name: Verify current Bubble changes
 # New Chat continuation, transcript command automation, Google Voice notification/UI enhancements,
 # resident/high-priority tab policy, and the floating-browser hybrid performance path.
 #
-# DEDICATED SURFACEVIEW HYBRID — SURFACE-LESS STAGING:
+# FIRST-CLASS FLOATING GECKO SURFACEVIEW SIBLING:
 # - Gecko runtime behavior matches the known-fast Build 84 baseline: remote debugging and console-to-
 #   Logcat output are disabled; every other Gecko runtime setting stays at Gecko default. No App
 #   Zygote and no accumulated speculative Gecko feature disables.
 # - Fullscreen uses Gecko SurfaceView.
-# - Floating CHAT also uses Gecko SurfaceView. The historical TextureView request is only a marker;
-#   LiveGeckoView translates it to BACKEND_SURFACE_VIEW and never instantiates Gecko TextureView.
-# - Floating Gecko is INVISIBLE while temporarily attached to the translucent page slot so SurfaceView
-#   cannot create its rendering surface against that bad window. The slot is used only to obtain page
-#   geometry. The same GeckoView/session is removed while still surface-less, attached as its own
-#   PixelFormat.OPAQUE hardware-accelerated TYPE_APPLICATION_OVERLAY root, and only then made VISIBLE.
-# - Same-window SurfaceView Z-order/composition-order tricks remain gone. The geometry anchor follows
-#   normal layout/pre-draw traversal; WindowManager is updated only when x/y/size actually changes.
-# - Dedicated-window attachment failures are logged and shown on-device rather than silently swallowed;
-#   there is still no TextureView fallback.
+# - Floating CHAT also uses Gecko SurfaceView. FloatingWindow owns a FloatingGeckoWindow directly;
+#   neither FloatingWindow nor LiveGeckoView requests or instantiates TextureView.
+# - Gecko never enters Bubble's translucent chrome hierarchy. FloatingGeckoWindow attaches the
+#   LiveGeckoView directly as the root of its own PixelFormat.OPAQUE, hardware-accelerated
+#   TYPE_APPLICATION_OVERLAY window. No attach/detach promotion, visibility staging, Z-order hack, or
+#   composition-order hack remains.
+# - The page window is created after native chrome and is physically bounded to the center page
+#   rectangle: panel x, panel y + 52dp, full panel width, panel height - 52dp - 48dp. It therefore sits
+#   above only the webpage region and cannot cover the header/footer controls.
+# - FloatingWindow is the single geometry authority and synchronously updates both chrome and page
+#   sibling on move/resize; unchanged page rectangles skip WindowManager writes.
 # - Floating glass uses one service-owned backdrop window, matching Build 84's low layer count. CHAT
 #   uses a top/bottom alpha mask for the 52dp header and 48dp footer, leaving the rendered page center
 #   visually blur-free. Glass stays live during move/resize.
