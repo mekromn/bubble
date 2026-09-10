@@ -6,16 +6,16 @@ name: Verify current Bubble changes
 # Current verification covers cumulative Continuity Vault merging, explicit same-origin full-history
 # sync, Archive-all-open-chats, long-press New Chat continuation, any-running-tab transcript command
 # automation, the continuity-first companion skill contract, two-check 30-minute idle tab
-# maintenance, the output-driven 30-minute generation-stall watchdog, and the GitHub download-tab
-# fix. Full-history sync follows the supplied Continuity Vault CRX flow: capture ChatGPT's live
-# backend Bearer token in MAIN world and reuse it for the active conversation, with auth-session only
-# as fallback. New-chat continuity stages the exact source chat and attaches its complete native
-# Markdown transcript in the fresh ChatGPT composer; the 70k text handoff is fallback-only. Both
-# continuation and GET_CHAT_TRANSCRIPT explicitly prefer ChatGPT's generic #upload-files control,
-# reject photo/camera-only inputs, and use bounded drop/paste attachment fallbacks instead of long
-# dead waits. The Vault saved-chat viewer renders the full stored message list with no arbitrary
-# preview cutoff, and resident ChatGPT idle tabs no longer advertise removed auto-hibernation.
-# Credentials never cross to the isolated/native Vault bridge.
+# maintenance, the output-driven 30-minute generation-stall watchdog, the GitHub download-tab fix,
+# and the Google Voice notification/UI pass. Full-history sync follows the supplied Continuity Vault
+# CRX flow. New-chat continuity stages the exact source chat and attaches its complete native Markdown
+# transcript in the fresh ChatGPT composer; the 70k text handoff is fallback-only. Both continuation
+# and GET_CHAT_TRANSCRIPT prefer ChatGPT's generic #upload-files control, reject photo/camera-only
+# inputs, and use bounded drop/paste fallbacks. Google Voice notifications now promote detected contact
+# names, retain phone numbers as secondary context, expose a Copy number Android action, and an exact
+# voice.google.com top-frame script adds a one-tap copy-number control immediately before the existing
+# call button in a conversation header. The Voice page enhancement is local-only and synthesizes no
+# Google Voice control clicks. Credentials never cross to the isolated/native Vault bridge.
 # Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
