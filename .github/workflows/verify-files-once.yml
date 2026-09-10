@@ -9,18 +9,23 @@ name: Verify current Bubble changes
 # sync, Archive-all-open-chats, long-press New Chat continuation, any-running-tab transcript command
 # automation, the continuity-first companion skill contract, two-check 30-minute idle tab
 # maintenance, the output-driven 30-minute generation-stall watchdog, the GitHub download-tab fix,
-# and the Google Voice notification/UI pass. Full-history sync follows the supplied Continuity Vault
-# CRX flow. New-chat continuity stages the exact source chat and attaches its complete native Markdown
-# transcript in the fresh ChatGPT composer; the 70k text handoff is fallback-only. Both continuation
-# and GET_CHAT_TRANSCRIPT prefer ChatGPT's generic #upload-files control, reject photo/camera-only
-# inputs, and use bounded drop/paste fallbacks. Google Voice notifications promote detected contact
-# names, retain phone numbers as secondary context, expose a Copy number Android action, and an exact
-# voice.google.com top-frame script adds a one-tap copy-number control immediately before the existing
-# call button. The bundled Gecko extension is now version 2.6 so ensureBuiltIn upgrades profiles that
-# still have the pre-Voice-UI 2.5 package. Voice header detection covers aria/tooltip/tel/data-number
-# variants plus a geometry fallback around the call/menu action row. The page copy path remains local-
-# only and synthesizes no Google Voice control clicks. Credentials never cross to the isolated/native
-# Vault bridge. Existing focused UI/Vault/archive/dialog/transition gates remain.
+# Google Voice notification/UI enhancements, and the floating-browser direct-compositor speed path.
+# Full-history sync follows the supplied Continuity Vault CRX flow. New-chat continuity stages the
+# exact source chat and attaches its complete native Markdown transcript in the fresh ChatGPT composer;
+# the 70k text handoff is fallback-only. Both continuation and GET_CHAT_TRANSCRIPT prefer ChatGPT's
+# generic #upload-files control, reject photo/camera-only inputs, and use bounded drop/paste fallbacks.
+# Google Voice notifications promote detected contact names, retain phone numbers as secondary context,
+# expose a Copy number Android action, and an exact voice.google.com top-frame script adds a one-tap
+# copy-number control immediately before the existing call button. The bundled Gecko extension is
+# version 2.6 so ensureBuiltIn upgrades profiles that still have the pre-Voice-UI 2.5 package.
+#
+# Floating CHAT now forces GeckoView's direct SurfaceView backend, retains hardware acceleration and
+# maximum-refresh voting, preserves the existing resident active/high-priority tab policy, and limits
+# cross-window blur to the native 52dp header and 48dp footer only. The rendered Gecko page is never
+# a blur target. UI blur remains live during drag/resize; its shape/radius/geometry state is cached to
+# avoid unnecessary allocations and redundant compositor configuration in the motion hot path.
+# Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
+# dialog/transition gates remain.
 on:
   push:
     branches: [rebuild-v2]
