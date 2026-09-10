@@ -7,29 +7,26 @@ name: Verify current Bubble changes
 # New Chat continuation, transcript command automation, Google Voice notification/UI enhancements,
 # resident/high-priority tab policy, and the floating-browser hybrid performance path.
 #
-# FIRST-CLASS FLOATING GECKO SURFACEVIEW SIBLING:
+# RAW GECKODISPLAY SURFACEVIEW FAST PATH:
 # - Gecko runtime behavior matches the known-fast Build 84 baseline: remote debugging and console-to-
 #   Logcat output are disabled; every other Gecko runtime setting stays at Gecko default. No App
 #   Zygote and no accumulated speculative Gecko feature disables.
-# - Fullscreen uses Gecko SurfaceView.
-# - Floating CHAT also uses Gecko SurfaceView. FloatingWindow owns a FloatingGeckoWindow directly;
-#   neither FloatingWindow nor LiveGeckoView requests or instantiates TextureView.
-# - Gecko never enters Bubble's translucent chrome hierarchy. FloatingGeckoWindow attaches the
-#   LiveGeckoView directly as the root of its own PixelFormat.OPAQUE, hardware-accelerated
-#   TYPE_APPLICATION_OVERLAY window. No attach/detach promotion, visibility staging, Z-order hack, or
-#   composition-order hack remains.
-# - The page window is created after native chrome and is physically bounded to the center page
-#   rectangle: panel x, panel y + 52dp, full panel width, panel height - 52dp - 48dp. It therefore sits
-#   above only the webpage region and cannot cover the header/footer controls.
-# - FloatingWindow is the single geometry authority and synchronously updates both chrome and page
-#   sibling on move/resize; unchanged page rectangles skip WindowManager writes.
-# - Floating glass uses one service-owned backdrop window, matching Build 84's low layer count. CHAT
-#   uses a top/bottom alpha mask for the 52dp header and 48dp footer, leaving the rendered page center
-#   visually blur-free. Glass stays live during move/resize.
-# - Hardware acceleration, maximum-refresh voting, current resident active/high-priority behavior,
-#   all current Continuity/Voice features, profile isolation and security invariants remain unchanged.
-# - This run follows the guard-only correction: no rendering-path code changed after the first-class
-#   sibling implementation; the prior CI failure matched explanatory comment text, not a real API call.
+# - Fullscreen remains normal GeckoView/SurfaceView.
+# - Floating rendering bypasses GeckoView's display backend entirely. A plain Android SurfaceView owns
+#   the page window and GeckoSession.acquireDisplay() feeds its Surface + SurfaceControl directly to
+#   GeckoDisplay.surfaceChanged(SurfaceInfo).
+# - GeckoView remains only as a 1x1 invisible bookkeeping bridge so the existing Workspace session
+#   handoff and focus model stay intact; that bridge never calls GeckoView.setSession and never acquires
+#   a display. There is no floating TextureView rendering path.
+# - Raw touch goes to PanZoomController; IME/key input goes to SessionTextInput; accessibility motion
+#   is forwarded to SessionAccessibility. Gecko can request a replacement Surface through the supplied
+#   GeckoDisplay.NewSurfaceProvider implementation.
+# - The raw page SurfaceView lives in its own PixelFormat.OPAQUE hardware-accelerated
+#   TYPE_APPLICATION_OVERLAY window physically bounded between the 52dp header and 48dp footer.
+# - FloatingWindow remains the single geometry authority. The page sibling follows move/resize, and
+#   GeckoDisplay receives screen-origin updates whenever the page window moves.
+# - Floating glass remains one service-owned backdrop window matching Build 84's low layer count, with
+#   CHAT masked to top/bottom native chrome only. Current resident active/high-priority behavior stays.
 #
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
