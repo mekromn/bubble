@@ -1,5 +1,7 @@
 name: Verify current Bubble changes
 # Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
+# The signed ARM64 APK is now published immediately after compile/signing; emulator/runtime verification
+# continues afterward and upgrades the same release from EARLY manual-test to verified when green.
 # Archive Picker passed build 62. The aspect-preserving screenshot morph remains the current
 # transition regression gate.
 #
