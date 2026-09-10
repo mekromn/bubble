@@ -24,8 +24,9 @@ name: Verify current Bubble changes
 # - The raw page SurfaceView remains PixelFormat.OPAQUE and hardware accelerated.
 # - Floating glass remains one masked service-owned backdrop window, with blur only on native chrome.
 #
-# SPEED BUILD — SHARED HIGH-REFRESH POLICY:
-# - Fullscreen and floating both select the highest supported same-resolution display mode.
+# SPEED BUILD — FULL COMPOSITOR HIGH-REFRESH CONTRACT:
+# - Fullscreen, floating native chrome, raw Gecko page, and the independent live-glass backdrop all
+#   select/request the highest supported same-resolution display mode.
 # - Android 15+ setRequestedFrameRate(maxRate) is applied recursively because ViewGroup requests do not
 #   propagate automatically to child Views.
 # - Every real SurfaceView producer gets a Surface.setFrameRate() contract once per Surface lifetime.
