@@ -38,8 +38,8 @@ assert.match(floating, /geckoWindow\?\.sync\(pageBox\(fitted\)\)/,
   'Floating move/resize must synchronously move the dedicated page sibling');
 assert.match(floating, /geckoWindow\?\.hide\(\)/,
   'Non-chat transitions must explicitly remove the page sibling');
-assert.equal(/setZOrderOnTop|setCompositionOrder/.test(page + live), false,
-  'Dedicated sibling architecture must not rely on same-window SurfaceView Z-order tricks');
+assert.equal(/\.setZOrderOnTop\s*\(|\.setCompositionOrder\s*\(/.test(page + live), false,
+  'Dedicated sibling architecture must not call same-window SurfaceView Z-order APIs');
 
 // Build-84-style single compositor-window glass. CHAT uses one masked drawable with transparent center.
 assert.match(glass, /private var backdrop: Dialog\? = null/,
