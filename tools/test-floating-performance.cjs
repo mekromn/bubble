@@ -3,40 +3,43 @@ const assert = require('node:assert/strict');
 
 const live = fs.readFileSync('app/src/main/java/com/mekromn/bubble/LiveGeckoView.kt', 'utf8');
 const floating = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt', 'utf8');
+const page = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt', 'utf8');
 const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt', 'utf8');
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
 const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
 
-// FloatingWindow's historical TextureView request is only a marker. LiveGeckoView translates it to
-// SurfaceView, keeps that view INVISIBLE while temporarily attached to translucent chrome so no
-// SurfaceView surface can be created there, then promotes the same GeckoView into a separate opaque
-// overlay window and makes it VISIBLE only after WindowManager owns the dedicated page window.
-assert.match(floating, /setViewBackend\(GeckoView\.BACKEND_TEXTURE_VIEW\)/,
-  'Floating marker call must remain stable');
-assert.match(live, /super\.setViewBackend\(BACKEND_SURFACE_VIEW\)/,
-  'Floating page must instantiate Gecko SurfaceView');
-assert.equal(/super\.setViewBackend\(BACKEND_TEXTURE_VIEW\)/.test(live), false,
-  'Floating path must never instantiate Gecko TextureView');
-assert.match(live, /visibility = View\.INVISIBLE[\s\S]*super\.setViewBackend\(BACKEND_SURFACE_VIEW\)/,
-  'Floating SurfaceView must remain invisible before first chrome attachment');
-assert.match(live, /host\.removeView\(this\)[\s\S]*manager\.addView\(this, params\)[\s\S]*visibility = View\.VISIBLE/,
-  'SurfaceView may become visible only after dedicated WindowManager attachment');
-assert.match(live, /PixelFormat\.OPAQUE/,
+// Gecko must never enter the translucent native chrome tree. FloatingWindow owns a separate page
+// sibling window from birth, and that sibling uses Gecko's SurfaceView backend directly.
+assert.equal(/BACKEND_TEXTURE_VIEW/.test(floating), false,
+  'FloatingWindow must never request Gecko TextureView');
+assert.equal(/setViewBackend/.test(live), false,
+  'LiveGeckoView must not perform backend/window surgery itself');
+assert.match(floating, /FloatingGeckoWindow\(context\)/,
+  'FloatingWindow must own the dedicated Gecko page sibling');
+assert.match(page, /setViewBackend\(GeckoView\.BACKEND_SURFACE_VIEW\)/,
+  'Dedicated floating page must instantiate Gecko SurfaceView directly');
+assert.equal(/BACKEND_TEXTURE_VIEW/.test(page), false,
+  'Dedicated floating page must contain no TextureView fallback');
+assert.match(page, /PixelFormat\.OPAQUE/,
   'Dedicated Gecko page window must be opaque for the direct compositor path');
-assert.match(live, /WindowManager\.LayoutParams\.TYPE_APPLICATION_OVERLAY/,
+assert.match(page, /WindowManager\.LayoutParams\.TYPE_APPLICATION_OVERLAY/,
   'Dedicated Gecko page must own an application-overlay window');
-assert.match(live, /ViewTreeObserver\.OnPreDrawListener/,
-  'Original page slot must drive geometry synchronization without a timer');
-assert.match(live, /manager\.updateViewLayout\(this, params\)/,
-  'Dedicated Gecko window must follow real page-slot geometry');
-assert.match(live, /x == lastX && y == lastY && width == lastWidth && height == lastHeight/,
-  'Geometry synchronization must skip redundant WindowManager writes');
-assert.equal(/setZOrderOnTop|setCompositionOrder/.test(live), false,
-  'Dedicated page window must not rely on failed same-window SurfaceView Z-order tricks');
-assert.equal(/removeCallbacksAndMessages\(null\)/.test(live), false,
-  'Dedicated Gecko cleanup must not erase unrelated handler work');
-assert.match(live, /Direct Gecko window failed:/,
-  'Dedicated-window attachment failure must be visible on the real device');
+assert.match(page, /manager\.addView\(view, layout\)/,
+  'Gecko SurfaceView must be born directly into its own WindowManager root');
+assert.match(page, /manager\.updateViewLayout\(view, layout\)/,
+  'Dedicated Gecko page must follow floating geometry directly');
+assert.match(floating, /pageBox\(rectangle\)/,
+  'FloatingWindow must derive the exact page rectangle from its own authoritative geometry');
+assert.match(floating, /panel\.y\+top/,
+  'Dedicated page must start below the 52dp native header');
+assert.match(floating, /panel\.height-top-bottom/,
+  'Dedicated page must stop above the 48dp native utility strip');
+assert.match(floating, /geckoWindow\?\.sync\(pageBox\(fitted\)\)/,
+  'Floating move/resize must synchronously move the dedicated page sibling');
+assert.match(floating, /geckoWindow\?\.hide\(\)/,
+  'Non-chat transitions must explicitly remove the page sibling');
+assert.equal(/setZOrderOnTop|setCompositionOrder/.test(page + live), false,
+  'Dedicated sibling architecture must not rely on same-window SurfaceView Z-order tricks');
 
 // Build-84-style single compositor-window glass. CHAT uses one masked drawable with transparent center.
 assert.match(glass, /private var backdrop: Dialog\? = null/,
@@ -56,8 +59,8 @@ assert.match(glass, /state\.x == x && state\.y == y && state\.width == width && 
 
 assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
   'Native floating chrome must remain hardware accelerated');
-assert.match(live, /FLAG_HARDWARE_ACCELERATED/,
-  'Dedicated Gecko overlay must remain hardware accelerated');
+assert.match(page, /FLAG_HARDWARE_ACCELERATED/,
+  'Dedicated Gecko page sibling must remain hardware accelerated');
 assert.match(render, /preferredDisplayModeId = mode\.modeId/,
   'Floating windows must continue voting for the fastest supported display mode');
 assert.match(render, /setRequestedFrameRate\(rate\)/,
@@ -66,4 +69,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Dedicated Gecko fast path: surface-less chrome staging -> opaque SurfaceView overlay + anchored geometry + one masked glass surface + max refresh + resident high priority.');
+console.log('Floating fast path: first-class opaque SurfaceView sibling + direct geometry + one masked glass surface + max refresh + resident high priority.');
