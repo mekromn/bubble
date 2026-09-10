@@ -21,9 +21,12 @@ name: Verify current Bubble changes
 #   Workspace gives the selected raw GeckoSession the same native focused state as fullscreen.
 # - Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 #
-# FULLSCREEN TAB SWITCH REPAIR:
+# TAB / NOTIFICATION ROUTING:
 # - Fullscreen chooser dismissal synchronously reconciles the selected resident GeckoSession onto
 #   the existing fullscreen GeckoView; LiveGeckoView remains a lean lifecycle wrapper.
+# - NotificationReturnActivity preserves the exact target tab id and, when reusing an existing
+#   fullscreen BrowserActivity, selects that tab and synchronously binds its resident GeckoSession
+#   before launching/reusing the singleTask Activity. This avoids stopped-onNewIntent stale-tab races.
 on:
   push:
     branches: [rebuild-v2]
