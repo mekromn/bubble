@@ -49,6 +49,8 @@ assert.match(page, /textInput\?\.onCreateInputConnection|textInput\.onCreateInpu
   'IME connection must be forwarded to Gecko SessionTextInput');
 assert.match(page, /PixelFormat\.OPAQUE/,
   'Raw Gecko page window must be opaque');
+assert.match(page, /setZOrderOnTop\(true\)/,
+  'Dedicated page-only SurfaceView must compose above its own opaque overlay Window');
 assert.match(page, /manager\.addView\(root, layout\)/,
   'Raw SurfaceView must be attached in its own WindowManager root');
 assert.match(page, /manager\.updateViewLayout\(root, layout\)/,
@@ -57,8 +59,8 @@ assert.match(floating, /pageBox\(rectangle\)/,
   'FloatingWindow must derive the page rectangle from its authoritative geometry');
 assert.match(floating, /geckoWindow\?\.sync\(pageBox\(fitted\)\)/,
   'Move/resize must synchronously move the raw page sibling');
-assert.equal(/\.setZOrderOnTop\s*\(|\.setCompositionOrder\s*\(/.test(page + live), false,
-  'Raw display path must not use failed same-window Z-order tricks');
+assert.equal(/\.setCompositionOrder\s*\(/.test(page + live), false,
+  'Raw display must not depend on the failed same-window Android-16 composition-order experiment');
 
 // Build-84-style single compositor-window glass. CHAT uses one masked drawable with transparent center.
 assert.match(glass, /private var backdrop: Dialog\? = null/,
@@ -86,4 +88,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw fast path: detached GeckoView adapter + GeckoDisplay -> SurfaceInfo -> SurfaceView + direct input + one masked glass surface + max refresh + resident high priority.');
+console.log('Floating raw fast path: detached GeckoView adapter + GeckoDisplay -> top-Z page-only SurfaceView + direct input + one masked glass surface + max refresh + resident high priority.');
