@@ -7,8 +7,6 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -23,10 +21,9 @@ import kotlin.math.min
  * The Gecko SurfaceView between those strips stays on the direct compositor path with no blur
  * behind it. BUBBLE and CHOOSER are native UI, so they may still use a full-shape glass backdrop.
  *
- * During CHAT movement/resize the two cosmetic blur windows are collapsed immediately and remain
- * disabled until geometry has been stable for a short settle interval. The hot drag path therefore
- * relayouts only the real interactive browser window; decorative blur never chases the finger frame
- * by frame. Once motion settles, the two tiny UI-only blur strips are restored at final geometry.
+ * The UI blur remains live while the floating window moves and resizes. Only the two narrow native
+ * chrome strips track geometry; the large Gecko page region never participates in the blur path.
+ * This preserves the glass look during direct manipulation without paying to blur rendered pages.
  *
  * Two non-interactive backdrop windows are created before FloatingWindow adds its real overlay.
  * Keeping both alive (with the unused one collapsed to 1x1) preserves their Z-order underneath the
@@ -34,31 +31,11 @@ import kotlin.math.min
  * an already-attached Gecko surface. No screenshots, bitmap caches, polling or RenderEffect tricks.
  */
 internal object OverlayGlass {
-    private const val CHAT_BLUR_SETTLE_MS = 72L
-    private val main = Handler(Looper.getMainLooper())
-
-    private data class ChatChrome(
-        val x: Int, val y: Int, val width: Int, val height: Int,
-        val topHeight: Int, val bottomHeight: Int, val corner: Float, val blurRadius: Int
-    )
-
     private var owner: View? = null
     private var primary: Dialog? = null
     private var secondary: Dialog? = null
     private var blurManager: WindowManager? = null
     private var blurListener: Consumer<Boolean>? = null
-    private var lastChat: ChatChrome? = null
-    private var pendingChat: ChatChrome? = null
-    private var chatMotionShedding = false
-
-    private val settleChat = Runnable {
-        val geometry = pendingChat ?: return@Runnable
-        if (owner == null || primary?.isShowing != true || secondary?.isShowing != true) return@Runnable
-        applyChatChrome(geometry)
-        lastChat = geometry
-        pendingChat = null
-        chatMotionShedding = false
-    }
 
     private val detach = object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) = Unit
@@ -81,14 +58,8 @@ internal object OverlayGlass {
         val currentOwner = floating.transitionView
         if (!ensureBackdrops(context, manager, currentOwner)) return
 
-        if (floating.mode == FloatingMode.CHAT) scheduleChatChrome(context, params)
-        else {
-            main.removeCallbacks(settleChat)
-            pendingChat = null
-            lastChat = null
-            chatMotionShedding = false
-            updateFull(context, params, expanded)
-        }
+        if (floating.mode == FloatingMode.CHAT) updateChatChrome(context, params)
+        else updateFull(context, params, expanded)
     }
 
     @SuppressLint("NewApi")
@@ -154,61 +125,23 @@ internal object OverlayGlass {
         disable(secondary, source.x, source.y)
     }
 
-    private fun chatGeometry(context: Context, source: WindowManager.LayoutParams): ChatChrome {
+    @SuppressLint("NewApi")
+    private fun updateChatChrome(context: Context, source: WindowManager.LayoutParams) {
         val width = source.width.coerceAtLeast(1)
         val height = source.height.coerceAtLeast(1)
         val topHeight = Ui.dp(context, 52f).coerceAtMost(height)
         val bottomHeight = Ui.dp(context, 48f).coerceAtMost((height - topHeight).coerceAtLeast(0))
-        return ChatChrome(
-            source.x, source.y, width, height, topHeight, bottomHeight,
-            Ui.dp(context, 26f).toFloat(), Ui.dp(context, 18f).coerceIn(36, 72)
-        )
-    }
+        val corner = Ui.dp(context, 26f).toFloat()
+        val blurRadius = Ui.dp(context, 18f).coerceIn(36, 72)
 
-    /**
-     * First CHAT geometry is drawn immediately. Any subsequent geometry change is treated as live
-     * motion: decorative blur collapses once, then only a Handler timestamp is refreshed until the
-     * browser window stops moving. No per-frame blur-window relayouts occur in the drag hot path.
-     */
-    @SuppressLint("NewApi")
-    private fun scheduleChatChrome(context: Context, source: WindowManager.LayoutParams) {
-        val geometry = chatGeometry(context, source)
-        val previous = lastChat
-        if (previous == null) {
-            main.removeCallbacks(settleChat)
-            pendingChat = null
-            chatMotionShedding = false
-            applyChatChrome(geometry)
-            lastChat = geometry
-            return
-        }
-        if (geometry == previous && !chatMotionShedding) return
-
-        pendingChat = geometry
-        if (!chatMotionShedding) {
-            // One compositor update at motion start removes both cosmetic layers. The real browser
-            // window can now move/resize alone at display cadence.
-            disable(primary, geometry.x, geometry.y)
-            disable(secondary, geometry.x, geometry.y + geometry.height)
-            chatMotionShedding = true
-        }
-        main.removeCallbacks(settleChat)
-        main.postDelayed(settleChat, CHAT_BLUR_SETTLE_MS)
-    }
-
-    @SuppressLint("NewApi")
-    private fun applyChatChrome(geometry: ChatChrome) {
-        // Only these two native chrome strips have blur. The page region in between has no blur
-        // window underneath it at all.
-        update(primary ?: return, geometry.x, geometry.y, geometry.width, geometry.topHeight.coerceAtLeast(1),
-            floatArrayOf(geometry.corner,geometry.corner, geometry.corner,geometry.corner, 0f,0f, 0f,0f),
-            geometry.blurRadius)
-        if (geometry.bottomHeight > 0) {
-            update(secondary ?: return, geometry.x, geometry.y + geometry.height - geometry.bottomHeight,
-                geometry.width, geometry.bottomHeight,
-                floatArrayOf(0f,0f, 0f,0f, geometry.corner,geometry.corner, geometry.corner,geometry.corner),
-                geometry.blurRadius)
-        } else disable(secondary, geometry.x, geometry.y + geometry.height)
+        // These two small native chrome windows follow every move/resize update. The page region
+        // between them has no blur window underneath it at all.
+        update(primary ?: return, source.x, source.y, width, topHeight.coerceAtLeast(1),
+            floatArrayOf(corner,corner, corner,corner, 0f,0f, 0f,0f), blurRadius)
+        if (bottomHeight > 0) {
+            update(secondary ?: return, source.x, source.y + height - bottomHeight, width, bottomHeight,
+                floatArrayOf(0f,0f, 0f,0f, corner,corner, corner,corner), blurRadius)
+        } else disable(secondary, source.x, source.y + height)
     }
 
     @SuppressLint("NewApi")
@@ -263,10 +196,6 @@ internal object OverlayGlass {
 
     @SuppressLint("NewApi")
     private fun release() {
-        main.removeCallbacks(settleChat)
-        pendingChat = null
-        lastChat = null
-        chatMotionShedding = false
         val oldOwner = owner
         val first = primary
         val second = secondary
