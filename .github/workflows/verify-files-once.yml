@@ -1,37 +1,26 @@
 name: Verify current Bubble changes
 # Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
-# The signed ARM64 APK is now published immediately after compile/signing; emulator/runtime verification
+# The signed ARM64 APK is published immediately after compile/signing; emulator/runtime verification
 # continues afterward and upgrades the same release from EARLY manual-test to verified when green.
-# Archive Picker passed build 62. The aspect-preserving screenshot morph remains the current
-# transition regression gate.
 #
-# Current verification covers cumulative Continuity Vault merging, explicit same-origin full-history
-# sync, Archive-all-open-chats, long-press New Chat continuation, any-running-tab transcript command
-# automation, the continuity-first companion skill contract, two-check 30-minute idle tab
-# maintenance, the output-driven 30-minute generation-stall watchdog, the GitHub download-tab fix,
-# Google Voice notification/UI enhancements, and the floating-browser compositor experiment.
-# Full-history sync follows the supplied Continuity Vault CRX flow. New-chat continuity stages the
-# exact source chat and attaches its complete native Markdown transcript in the fresh ChatGPT composer;
-# the 70k text handoff is fallback-only. Both continuation and GET_CHAT_TRANSCRIPT prefer ChatGPT's
-# generic #upload-files control, reject photo/camera-only inputs, and use bounded drop/paste fallbacks.
-# Google Voice notifications promote detected contact names, retain phone numbers as secondary context,
-# expose a Copy number Android action, and an exact voice.google.com top-frame script adds a one-tap
-# copy-number control immediately before the existing call button. The bundled Gecko extension is
-# version 2.6 so ensureBuiltIn upgrades profiles that still have the pre-Voice-UI 2.5 package.
+# Current verification covers Continuity Vault/full-history sync, Archive-all-open-chats, long-press
+# New Chat continuation, transcript command automation, Google Voice notification/UI enhancements,
+# resident/high-priority tab policy, and the floating-browser hybrid performance path.
 #
-# Fullscreen keeps GeckoView's default SurfaceView. Floating CHAT now tests the true fast path again:
-# when the host makes its historical TextureView request, LiveGeckoView creates Gecko's SurfaceView
-# backend instead and calls setZOrderOnTop(true) on the internal SurfaceView while still detached,
-# before TYPE_APPLICATION_OVERLAY attachment. The page rectangle sits only between the 52dp header and
-# 48dp footer, so top-Z Gecko pixels do not overlap the native glass chrome. Hardware acceleration,
-# maximum-refresh voting and the resident active/high-priority tab policy remain unchanged. The Gecko
-# page is never a blur target; UI blur remains live during drag/resize and caches compositor state.
+# HYBRID PERFORMANCE BASELINE:
+# - Gecko runtime behavior is restored to the known-fast Build 84 baseline: remote debugging and
+#   console-to-Logcat output are disabled; every other Gecko runtime setting stays at Gecko default.
+#   No App Zygote and no accumulated speculative Gecko feature disables.
+# - Fullscreen uses Gecko SurfaceView.
+# - Floating CHAT also uses Gecko SurfaceView: the historical TextureView request is intercepted before
+#   attachment, Gecko's SurfaceView backend is created instead, and the internal SurfaceView is promoted
+#   with setZOrderOnTop(true) before TYPE_APPLICATION_OVERLAY attachment. No Gecko TextureView is created.
+# - Floating glass is collapsed back from two compositor Dialogs to one service-owned backdrop window,
+#   matching Build 84's low layer count. CHAT uses a top/bottom alpha mask matching the 52dp header and
+#   48dp footer, leaving the rendered page center visually blur-free. Glass stays live during move/resize.
+# - Hardware acceleration, maximum-refresh voting, current resident active/high-priority behavior, all
+#   current Continuity/Voice features, profile isolation and security invariants remain unchanged.
 #
-# Turbo regression isolation remains unchanged from Build 90/91: App Zygote preloading is removed.
-# Gecko/debug logcat output, about:config, mozAddonManager Web API, remote extension process, login
-# autofill, enterprise-root import, Web Manifest processing, translation-offer UI, font inflation and
-# input auto-zoom remain off. JavaScript/Wasm, web fonts, WebGL/WebRender, Fission, Service Workers,
-# Push, WebRTC, web storage, low-memory handling and the current resident high-priority tab policy remain.
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
 on:
