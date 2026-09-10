@@ -8,8 +8,13 @@
 
   const ID = 'bubble-voice-copy-number';
   const STYLE_ID = 'bubble-voice-copy-number-style';
+  const SCRIPT_VERSION = '2.6';
   let timer = 0;
   let lastLocation = location.href;
+
+  // Harmless local execution marker. This is intentionally not persisted or sent anywhere; it
+  // makes it possible to distinguish "script did not load" from "live DOM matcher missed".
+  document.documentElement.dataset.bubbleVoiceUi = SCRIPT_VERSION;
 
   function visible(node) {
     if (!(node instanceof Element) || !node.isConnected) return false;
@@ -30,10 +35,35 @@
     return '';
   }
 
+  function attributeValues(node) {
+    if (!(node instanceof Element)) return [];
+    return [
+      node.getAttribute('aria-label'), node.getAttribute('aria-description'), node.getAttribute('title'),
+      node.getAttribute('data-tooltip'), node.getAttribute('data-tooltip-text'), node.getAttribute('data-tooltip-label'),
+      node.getAttribute('data-phone-number'), node.getAttribute('data-number'), node.getAttribute('href'),
+      node.textContent
+    ];
+  }
+
   function nodePhone(node) {
     if (!(node instanceof Element)) return '';
-    for (const value of [node.getAttribute('aria-label'), node.getAttribute('title'), node.textContent]) {
+    const href = node.getAttribute('href') || '';
+    if (/^tel:/iu.test(href)) {
+      const fromTel = phoneFrom(decodeURIComponent(href.slice(4)));
+      if (fromTel) return fromTel;
+    }
+    for (const value of attributeValues(node)) {
       const phone = phoneFrom(value);
+      if (phone) return phone;
+    }
+    const tel = node.querySelector?.('a[href^="tel:" i]');
+    if (tel) {
+      const phone = nodePhone(tel);
+      if (phone) return phone;
+    }
+    const explicit = node.querySelector?.('[data-phone-number],[data-number]');
+    if (explicit) {
+      const phone = nodePhone(explicit);
       if (phone) return phone;
     }
     return '';
@@ -41,43 +71,88 @@
 
   function labelOf(node) {
     if (!(node instanceof Element)) return '';
-    return `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.textContent || ''}`
-      .replace(/\s+/gu, ' ').trim().toLowerCase();
+    return attributeValues(node).filter(Boolean).join(' ').replace(/\s+/gu, ' ').trim().toLowerCase();
   }
 
-  function callButtonIn(root) {
-    if (!(root instanceof Element)) return null;
-    const controls = [...root.querySelectorAll('button,[role="button"]')].filter(visible);
-    return controls.find(node => {
-      const label = labelOf(node);
-      return /(^|\s)(call|phone)(\s|$)/u.test(label) && !/copy|history|settings|help/iu.test(label);
-    }) || null;
+  function isMenuControl(node) {
+    const label = labelOf(node);
+    return /\b(more|options|menu|settings|help|history)\b/iu.test(label);
+  }
+
+  function isCallControl(node) {
+    const label = labelOf(node);
+    return /\b(call|calling|phone|dial)\b/iu.test(label) && !/copy|history|settings|help/iu.test(label);
+  }
+
+  function controlsIn(root) {
+    if (!(root instanceof Element)) return [];
+    return [...root.querySelectorAll('button,[role="button"],a[role="button"]')].filter(visible);
+  }
+
+  function geometricCallFallback(root, phoneNode) {
+    const controls = controlsIn(root);
+    if (controls.length < 2) return null;
+    const menus = controls.filter(isMenuControl);
+    for (const menu of menus) {
+      const menuRect = menu.getBoundingClientRect();
+      const candidates = controls.filter(node => {
+        if (node === menu || isMenuControl(node)) return false;
+        const rect = node.getBoundingClientRect();
+        return Math.abs(rect.top - menuRect.top) <= Math.max(rect.height, menuRect.height, 24) && rect.right <= menuRect.left + 4;
+      }).sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+      if (candidates[0]) return candidates[0];
+    }
+
+    if (phoneNode) {
+      const phoneRect = phoneNode.getBoundingClientRect();
+      const candidates = controls.filter(node => {
+        if (isMenuControl(node)) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.left > phoneRect.right && Math.abs(rect.top - phoneRect.top) < 90;
+      }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      if (candidates[0]) return candidates[0];
+    }
+    return null;
+  }
+
+  function callButtonIn(root, phoneNode = null) {
+    const controls = controlsIn(root);
+    return controls.find(isCallControl) || geometricCallFallback(root, phoneNode);
+  }
+
+  function candidatePhoneNodes() {
+    const selector = [
+      'main a[href^="tel:" i]', 'main [data-phone-number]', 'main [data-number]', 'main [aria-label]',
+      'main span', 'main div', 'main button', 'body header a[href^="tel:" i]', 'body header [data-phone-number]',
+      'body header [data-number]', 'body header [aria-label]', 'body header span', 'body header div', 'body header button'
+    ].join(',');
+    return [...document.querySelectorAll(selector)]
+      .filter(node => visible(node) && node !== document.body && (node.textContent?.length || 0) <= 220)
+      .map(node => ({node, phone: nodePhone(node), rect: node.getBoundingClientRect()}))
+      .filter(item => item.phone && item.rect.top >= 32 && item.rect.top <= Math.min(innerHeight * 0.48, 560))
+      .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
   }
 
   function conversationHeader() {
-    const nodes = [...document.querySelectorAll('main span,main div,main button,main [aria-label],body header span,body header div,body header button')]
-      .filter(node => visible(node) && node !== document.body && node.textContent?.length <= 180)
-      .map(node => ({node, phone: nodePhone(node), rect: node.getBoundingClientRect()}))
-      .filter(item => item.phone && item.rect.top >= 40 && item.rect.top <= Math.min(innerHeight * 0.45, 520))
-      .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-
+    const nodes = candidatePhoneNodes();
     for (const item of nodes) {
       let root = item.node;
-      for (let depth = 0; depth < 7 && root; depth++, root = root.parentElement) {
+      for (let depth = 0; depth < 9 && root; depth++, root = root.parentElement) {
         const rect = root.getBoundingClientRect();
-        if (rect.height > 220 || rect.width < 220) continue;
-        const call = callButtonIn(root);
+        if (rect.height > 260 || rect.width < 220) continue;
+        const call = callButtonIn(root, item.node);
         if (call) return {root, call, phone: item.phone};
       }
     }
 
-    const calls = [...document.querySelectorAll('main button,main [role="button"],header button,header [role="button"]')]
-      .filter(node => visible(node) && /(^|\s)(call|phone)(\s|$)/u.test(labelOf(node)))
+    // Reverse search: find a likely call/header action first, then climb until a phone number appears.
+    const calls = [...document.querySelectorAll('main button,main [role="button"],main a[role="button"],header button,header [role="button"],header a[role="button"]')]
+      .filter(node => visible(node) && isCallControl(node))
       .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
     for (const call of calls) {
-      if (call.getBoundingClientRect().top > Math.min(innerHeight * 0.45, 520)) continue;
+      if (call.getBoundingClientRect().top > Math.min(innerHeight * 0.48, 560)) continue;
       let root = call.parentElement;
-      for (let depth = 0; depth < 6 && root; depth++, root = root.parentElement) {
+      for (let depth = 0; depth < 9 && root; depth++, root = root.parentElement) {
         const phone = nodePhone(root);
         if (phone) return {root, call, phone};
       }
@@ -94,9 +169,10 @@
         width: 40px !important; height: 40px !important; min-width: 40px !important;
         margin: 0 2px !important; padding: 0 !important; border: 0 !important;
         border-radius: 50% !important; background: transparent !important;
-        color: inherit !important; opacity: .78; display: inline-flex !important;
+        color: inherit !important; opacity: .82; display: inline-flex !important;
         align-items: center !important; justify-content: center !important;
         vertical-align: middle !important; cursor: pointer !important;
+        flex: 0 0 40px !important; position: relative !important; z-index: 2 !important;
         -webkit-tap-highlight-color: transparent !important;
       }
       #${ID}:active { background: rgba(127,127,127,.20) !important; opacity: 1; }
@@ -158,6 +234,7 @@
   function install() {
     timer = 0;
     if (location.origin !== 'https://voice.google.com') return;
+    document.documentElement.dataset.bubbleVoiceUi = SCRIPT_VERSION;
     const found = conversationHeader();
     const existing = document.getElementById(ID);
     if (!found) { existing?.remove(); return; }
@@ -181,12 +258,13 @@
 
   const observer = new MutationObserver(() => schedule());
   observer.observe(document.documentElement, {subtree: true, childList: true, characterData: true,
-    attributes: true, attributeFilter: ['aria-label', 'title', 'class']});
+    attributes: true, attributeFilter: ['aria-label', 'aria-description', 'title', 'class', 'data-tooltip',
+      'data-tooltip-text', 'data-tooltip-label', 'data-phone-number', 'data-number', 'href']});
   window.addEventListener('pageshow', () => schedule(60), {passive: true});
   window.addEventListener('popstate', () => schedule(80), {passive: true});
   setInterval(() => {
     if (location.href !== lastLocation) { lastLocation = location.href; schedule(60); }
     else if (!document.getElementById(ID)) schedule(0);
-  }, 1200);
+  }, 900);
   schedule(0);
 })();
