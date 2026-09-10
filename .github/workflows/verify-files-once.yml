@@ -9,30 +9,30 @@ name: Verify current Bubble changes
 # sync, Archive-all-open-chats, long-press New Chat continuation, any-running-tab transcript command
 # automation, the continuity-first companion skill contract, two-check 30-minute idle tab
 # maintenance, the output-driven 30-minute generation-stall watchdog, the GitHub download-tab fix,
-# Google Voice notification/UI enhancements, and the corrected floating-browser direct-compositor
-# speed path. Full-history sync follows the supplied Continuity Vault CRX flow. New-chat continuity
-# stages the exact source chat and attaches its complete native Markdown transcript in the fresh
-# ChatGPT composer; the 70k text handoff is fallback-only. Both continuation and GET_CHAT_TRANSCRIPT
-# prefer ChatGPT's generic #upload-files control, reject photo/camera-only inputs, and use bounded
-# drop/paste fallbacks. Google Voice notifications promote detected contact names, retain phone
-# numbers as secondary context, expose a Copy number Android action, and an exact voice.google.com
-# top-frame script adds a one-tap copy-number control immediately before the existing call button.
-# The bundled Gecko extension is version 2.6 so ensureBuiltIn upgrades profiles that still have the
-# pre-Voice-UI 2.5 package.
+# Google Voice notification/UI enhancements, and the corrected floating-browser compositor path.
+# Full-history sync follows the supplied Continuity Vault CRX flow. New-chat continuity stages the
+# exact source chat and attaches its complete native Markdown transcript in the fresh ChatGPT composer;
+# the 70k text handoff is fallback-only. Both continuation and GET_CHAT_TRANSCRIPT prefer ChatGPT's
+# generic #upload-files control, reject photo/camera-only inputs, and use bounded drop/paste fallbacks.
+# Google Voice notifications promote detected contact names, retain phone numbers as secondary context,
+# expose a Copy number Android action, and an exact voice.google.com top-frame script adds a one-tap
+# copy-number control immediately before the existing call button. The bundled Gecko extension is
+# version 2.6 so ensureBuiltIn upgrades profiles that still have the pre-Voice-UI 2.5 package.
 #
-# Floating CHAT hard-locks GeckoView to SurfaceView even if an older caller requests TextureView,
-# retains hardware acceleration and maximum-refresh voting, preserves the existing resident active/
-# high-priority tab policy, and limits cross-window blur to the native 52dp header and 48dp footer.
-# The rendered Gecko page is never a blur target. UI blur remains live during drag/resize; its
-# shape/radius/geometry state is cached to avoid unnecessary allocations and redundant compositor
-# configuration in the motion hot path.
+# Fullscreen keeps GeckoView's default SurfaceView fast path. Floating CHAT explicitly uses TextureView
+# because the TYPE_APPLICATION_OVERLAY must composite, clip, move and resize the rendered page inside
+# the Android View hierarchy; globally forcing SurfaceView produced a live session with a transparent
+# page on the target Pixel. Floating still retains hardware acceleration and maximum-refresh voting,
+# preserves the resident active/high-priority tab policy, and limits cross-window blur to the native
+# 52dp header and 48dp footer. The rendered Gecko page is never a blur target. UI blur remains live
+# during drag/resize and its compositor state is cached.
 #
-# Turbo regression isolation: this build reproduces Build 89's Gecko Turbo profile with exactly one
-# functional change: App Zygote preloading is removed. Gecko/debug logcat output, about:config,
-# mozAddonManager Web API, remote extension process, login autofill, enterprise-root import,
-# Web Manifest processing, translation-offer UI, font inflation and input auto-zoom remain off.
-# JavaScript/Wasm, web fonts, WebGL/WebRender, Fission, Service Workers, Push, WebRTC, web storage,
-# low-memory handling and the current resident high-priority tab policy remain intact.
+# Turbo regression isolation: this build retains Build 90's Gecko Turbo profile with App Zygote
+# preloading removed. Gecko/debug logcat output, about:config, mozAddonManager Web API, remote extension
+# process, login autofill, enterprise-root import, Web Manifest processing, translation-offer UI, font
+# inflation and input auto-zoom remain off. JavaScript/Wasm, web fonts, WebGL/WebRender, Fission,
+# Service Workers, Push, WebRTC, web storage, low-memory handling and the current resident high-priority
+# tab policy remain intact.
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
 on:
