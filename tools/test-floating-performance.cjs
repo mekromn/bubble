@@ -47,6 +47,10 @@ assert.match(page, /textInput\.setView\(this\)/,
   'Raw SurfaceView must become Gecko SessionTextInput view');
 assert.match(page, /textInput\?\.onCreateInputConnection|textInput\.onCreateInputConnection/,
   'IME connection must be forwarded to Gecko SessionTextInput');
+assert.equal(/accessibility\.setView\(this\)/.test(page), false,
+  'Raw SurfaceView must never be the Gecko accessibility event host because SurfaceView is not ViewParent');
+assert.match(page, /check\(host is ViewParent\)[\s\S]*accessibilityHost = host[\s\S]*accessibility\.setView\(host\)/,
+  'Raw Gecko accessibility must use its page ViewGroup/ViewParent host');
 assert.match(page, /PixelFormat\.OPAQUE/,
   'Raw Gecko page window must be opaque');
 assert.match(page, /setZOrderOnTop\(true\)/,
@@ -88,4 +92,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw fast path: detached GeckoView adapter + GeckoDisplay -> top-Z page-only SurfaceView + direct input + one masked glass surface + max refresh + resident high priority.');
+console.log('Floating raw fast path: detached GeckoView adapter + GeckoDisplay -> top-Z page-only SurfaceView + ViewParent a11y host + direct input + one masked glass surface + max refresh + resident high priority.');
