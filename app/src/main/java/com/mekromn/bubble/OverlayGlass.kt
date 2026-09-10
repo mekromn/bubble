@@ -21,9 +21,9 @@ import kotlin.math.min
  * The Gecko SurfaceView between those strips stays on the direct compositor path with no blur
  * behind it. BUBBLE and CHOOSER are native UI, so they may still use a full-shape glass backdrop.
  *
- * The UI blur remains live while the floating window moves and resizes. Only the two narrow native
- * chrome strips track geometry; the large Gecko page region never participates in the blur path.
- * This preserves the glass look during direct manipulation without paying to blur rendered pages.
+ * The UI blur remains live while the floating window moves and resizes. Only geometry changes on
+ * motion frames. Blur radius and shape state are cached, so drag/resize does not allocate new
+ * drawables or repeatedly send identical compositor configuration.
  *
  * Two non-interactive backdrop windows are created before FloatingWindow adds its real overlay.
  * Keeping both alive (with the unused one collapsed to 1x1) preserves their Z-order underneath the
@@ -31,11 +31,25 @@ import kotlin.math.min
  * an already-attached Gecko surface. No screenshots, bitmap caches, polling or RenderEffect tricks.
  */
 internal object OverlayGlass {
+    private enum class Shape { OFF, FULL, TOP, BOTTOM }
+
+    private data class WindowState(
+        var x: Int = Int.MIN_VALUE,
+        var y: Int = Int.MIN_VALUE,
+        var width: Int = -1,
+        var height: Int = -1,
+        var shape: Shape = Shape.OFF,
+        var corner: Float = -1f,
+        var blur: Int = -1
+    )
+
     private var owner: View? = null
     private var primary: Dialog? = null
     private var secondary: Dialog? = null
     private var blurManager: WindowManager? = null
     private var blurListener: Consumer<Boolean>? = null
+    private var primaryState = WindowState()
+    private var secondaryState = WindowState()
 
     private val detach = object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) = Unit
@@ -78,6 +92,8 @@ internal object OverlayGlass {
         primary = first
         secondary = second
         blurManager = manager
+        primaryState = WindowState()
+        secondaryState = WindowState()
         currentOwner.addOnAttachStateChangeListener(detach)
         registerBlurListener(manager, currentOwner)
         return true
@@ -99,7 +115,7 @@ internal object OverlayGlass {
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         window.addFlags(baseFlags())
         window.setDimAmount(0f)
-        window.setBackgroundDrawable(glassShape(floatArrayOf(1f,1f,1f,1f,1f,1f,1f,1f)))
+        window.setBackgroundDrawable(transparentDrawable())
         window.attributes = window.attributes.apply {
             gravity = Gravity.TOP or Gravity.LEFT
             x = 0; y = 0; width = 1; height = 1
@@ -114,15 +130,13 @@ internal object OverlayGlass {
 
     @SuppressLint("NewApi")
     private fun updateFull(context: Context, source: WindowManager.LayoutParams, expanded: Boolean) {
-        val first = primary ?: return
         val width = source.width.coerceAtLeast(1)
         val height = source.height.coerceAtLeast(1)
         val corner = if (expanded) Ui.dp(context, 26f).toFloat() else min(width, height) / 2f
         val blurRadius = if (expanded) Ui.dp(context, 18f).coerceIn(36, 72)
             else Ui.dp(context, 14f).coerceIn(28, 60)
-        update(first, source.x, source.y, width, height,
-            floatArrayOf(corner,corner, corner,corner, corner,corner, corner,corner), blurRadius)
-        disable(secondary, source.x, source.y)
+        update(primary ?: return, primaryState, source.x, source.y, width, height, Shape.FULL, corner, blurRadius)
+        disable(secondary, secondaryState, source.x, source.y)
     }
 
     @SuppressLint("NewApi")
@@ -134,56 +148,82 @@ internal object OverlayGlass {
         val corner = Ui.dp(context, 26f).toFloat()
         val blurRadius = Ui.dp(context, 18f).coerceIn(36, 72)
 
-        // These two small native chrome windows follow every move/resize update. The page region
-        // between them has no blur window underneath it at all.
-        update(primary ?: return, source.x, source.y, width, topHeight.coerceAtLeast(1),
-            floatArrayOf(corner,corner, corner,corner, 0f,0f, 0f,0f), blurRadius)
+        // These two small native chrome windows follow every move/resize update. The Gecko page
+        // region between them has no blur window underneath it at all.
+        update(primary ?: return, primaryState, source.x, source.y, width, topHeight.coerceAtLeast(1), Shape.TOP, corner, blurRadius)
         if (bottomHeight > 0) {
-            update(secondary ?: return, source.x, source.y + height - bottomHeight, width, bottomHeight,
-                floatArrayOf(0f,0f, 0f,0f, corner,corner, corner,corner), blurRadius)
-        } else disable(secondary, source.x, source.y + height)
+            update(secondary ?: return, secondaryState, source.x, source.y + height - bottomHeight,
+                width, bottomHeight, Shape.BOTTOM, corner, blurRadius)
+        } else disable(secondary, secondaryState, source.x, source.y + height)
     }
 
+    /**
+     * Shape/radius changes are mode changes, not motion changes. Moving/resizing a live CHAT window
+     * normally reaches only the geometry block below, avoiding drawable allocation and redundant
+     * setBackgroundBlurRadius calls in the 120 Hz hot path.
+     */
     @SuppressLint("NewApi")
-    private fun update(dialog: Dialog, x: Int, y: Int, width: Int, height: Int,
-        corners: FloatArray, blurRadius: Int) {
+    private fun update(dialog: Dialog, state: WindowState, x: Int, y: Int, width: Int, height: Int,
+        shape: Shape, corner: Float, blurRadius: Int) {
         val window = dialog.window ?: return
-        window.setBackgroundDrawable(glassShape(corners))
-        window.setBackgroundBlurRadius(blurRadius)
+        if (state.shape != shape || state.corner != corner) {
+            window.setBackgroundDrawable(glassShape(shape, corner))
+            state.shape = shape
+            state.corner = corner
+        }
+        if (state.blur != blurRadius) {
+            window.setBackgroundBlurRadius(blurRadius)
+            state.blur = blurRadius
+        }
+
+        val w = width.coerceAtLeast(1)
+        val h = height.coerceAtLeast(1)
+        if (state.x == x && state.y == y && state.width == w && state.height == h) return
         window.attributes = window.attributes.apply {
             gravity = Gravity.TOP or Gravity.LEFT
             this.x = x; this.y = y
-            this.width = width.coerceAtLeast(1); this.height = height.coerceAtLeast(1)
+            this.width = w; this.height = h
             format = PixelFormat.TRANSLUCENT
             dimAmount = 0f
             flags = (flags or baseFlags()) and WindowManager.LayoutParams.FLAG_DIM_BEHIND.inv()
         }
+        state.x = x; state.y = y; state.width = w; state.height = h
     }
 
     @SuppressLint("NewApi")
-    private fun disable(dialog: Dialog?, x: Int, y: Int) {
+    private fun disable(dialog: Dialog?, state: WindowState, x: Int, y: Int) {
         val window = dialog?.window ?: return
-        window.setBackgroundBlurRadius(0)
-        window.setBackgroundDrawable(ColorDrawableCompat.transparent())
+        if (state.shape != Shape.OFF) {
+            window.setBackgroundDrawable(transparentDrawable())
+            state.shape = Shape.OFF
+            state.corner = 0f
+        }
+        if (state.blur != 0) {
+            window.setBackgroundBlurRadius(0)
+            state.blur = 0
+        }
+        if (state.x == x && state.y == y && state.width == 1 && state.height == 1) return
         window.attributes = window.attributes.apply {
             gravity = Gravity.TOP or Gravity.LEFT
             this.x = x; this.y = y; width = 1; height = 1
             format = PixelFormat.TRANSLUCENT; dimAmount = 0f
             flags = (flags or baseFlags()) and WindowManager.LayoutParams.FLAG_DIM_BEHIND.inv()
         }
+        state.x = x; state.y = y; state.width = 1; state.height = 1
     }
 
-    /** Tiny non-zero fill gives Android a concrete outline from which to clip background blur. */
-    private fun glassShape(cornerRadii: FloatArray) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
+    private fun glassShape(shape: Shape, corner: Float) = GradientDrawable().apply {
+        this.shape = GradientDrawable.RECTANGLE
         setColor(0x01000000)
-        this.cornerRadii = cornerRadii
+        cornerRadii = when (shape) {
+            Shape.TOP -> floatArrayOf(corner,corner, corner,corner, 0f,0f, 0f,0f)
+            Shape.BOTTOM -> floatArrayOf(0f,0f, 0f,0f, corner,corner, corner,corner)
+            Shape.FULL -> floatArrayOf(corner,corner, corner,corner, corner,corner, corner,corner)
+            Shape.OFF -> floatArrayOf(0f,0f,0f,0f,0f,0f,0f,0f)
+        }
     }
 
-    /** Avoid an android.graphics.drawable.ColorDrawable import solely for a 1x1 disabled window. */
-    private object ColorDrawableCompat {
-        fun transparent() = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
-    }
+    private fun transparentDrawable() = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
 
     @SuppressLint("NewApi")
     private fun registerBlurListener(manager: WindowManager, currentOwner: View) {
@@ -206,6 +246,8 @@ internal object OverlayGlass {
         secondary = null
         blurManager = null
         blurListener = null
+        primaryState = WindowState()
+        secondaryState = WindowState()
         oldOwner?.removeOnAttachStateChangeListener(detach)
         if (manager != null && listener != null) runCatching { manager.removeCrossWindowBlurEnabledListener(listener) }
         if (first != null) runCatching { first.dismiss() }
