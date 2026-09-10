@@ -5,11 +5,13 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.WindowManager
+import android.widget.Toast
 import org.mozilla.geckoview.GeckoView
 
 /**
@@ -18,11 +20,11 @@ import org.mozilla.geckoview.GeckoView
  *
  * Fullscreen uses GeckoView's normal SurfaceView backend in the activity window. FloatingWindow still
  * issues its historical TextureView request as the marker that this GeckoView belongs to the floating
- * page slot, but TextureView is never instantiated. Instead we create Gecko's SurfaceView backend,
- * remember the attached page-slot ViewGroup as a geometry anchor, then move this same GeckoView into a
- * dedicated opaque TYPE_APPLICATION_OVERLAY window. The floating native header/footer remain in their
- * translucent glass window while Gecko owns a normal hardware-composed SurfaceView window covering
- * only the page rectangle.
+ * page slot, but TextureView is never instantiated. Instead we select Gecko's SurfaceView backend while
+ * keeping this view INVISIBLE so its SurfaceView cannot create a surface against the translucent chrome
+ * window. The attached page-slot ViewGroup is remembered only as a geometry anchor; this same GeckoView
+ * is then moved into a dedicated opaque TYPE_APPLICATION_OVERLAY window and made VISIBLE there. Its
+ * first real SurfaceView therefore belongs to the dedicated hardware-composed page window.
  *
  * The anchor stays in the chrome hierarchy and reports its real screen bounds through normal pre-draw
  * traversal. We update the Gecko window only when those bounds actually change, so drag/resize follows
@@ -63,6 +65,9 @@ internal class LiveGeckoView(context: Context) : GeckoView(context) {
         if (backend == BACKEND_TEXTURE_VIEW) {
             check(!isAttachedToWindow) { "Floating SurfaceView must be selected before attachment" }
             floatingDirectSurface = true
+            // Critical ordering invariant: do not let SurfaceView create a surface while this view is
+            // temporarily hosted by Bubble's translucent chrome window.
+            visibility = View.INVISIBLE
             super.setViewBackend(BACKEND_SURFACE_VIEW)
         } else {
             super.setViewBackend(backend)
@@ -116,20 +121,26 @@ internal class LiveGeckoView(context: Context) : GeckoView(context) {
         lastWidth = params.width
         lastHeight = params.height
 
-        // The page-slot parent remains as the geometry anchor. Only Gecko moves into its own window.
+        // The invisible page-slot child has never created a SurfaceView surface. Move that same
+        // GeckoView to its real window first; only after WindowManager owns it may it become visible.
         host.removeView(this)
         setBackgroundColor(Color.BLACK)
         dedicated = true
         try {
             RenderPolicy.vote(context, this, params)
             manager.addView(this, params)
-        } catch (_: RuntimeException) {
+            visibility = View.VISIBLE
+            requestLayout()
+            invalidate()
+        } catch (error: RuntimeException) {
             dedicated = false
             dedicatedManager = null
             dedicatedParams = null
             unregisterAnchor()
-            // Keep the SurfaceView object alive in the original slot rather than silently falling back
-            // to TextureView. This is deliberately fail-visible so the fast path can be debugged.
+            visibility = View.VISIBLE
+            Log.e(TAG, "Dedicated Gecko SurfaceView window failed", error)
+            Toast.makeText(context, "Direct Gecko window failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+            // Fail visibly in the original slot; never instantiate TextureView as a hidden fallback.
             if (parent == null && host.isAttachedToWindow) {
                 runCatching { host.addView(this, ViewGroup.LayoutParams(-1, -1)) }
             }
@@ -162,7 +173,8 @@ internal class LiveGeckoView(context: Context) : GeckoView(context) {
             lastY = y
             lastWidth = width
             lastHeight = height
-        } catch (_: RuntimeException) {
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Dedicated Gecko geometry update failed", error)
             stopDedicatedWindow()
         }
     }
@@ -179,7 +191,7 @@ internal class LiveGeckoView(context: Context) : GeckoView(context) {
         if (stoppingDedicated) return
         stoppingDedicated = true
         promoteQueued = false
-        main.removeCallbacksAndMessages(null)
+        main.removeCallbacks(reconcile)
         unregisterAnchor()
         val manager = dedicatedManager
         dedicatedManager = null
@@ -192,6 +204,9 @@ internal class LiveGeckoView(context: Context) : GeckoView(context) {
             dedicated = false
             if (manager != null && isAttachedToWindow) runCatching { manager.removeViewImmediate(this) }
         }
+        // If FloatingWindow reuses this instance for another CHAT slot, keep it surface-less until the
+        // next promotion so it still cannot create against translucent chrome.
+        if (floatingDirectSurface) visibility = View.INVISIBLE
         stoppingDedicated = false
         reconcileLater()
     }
@@ -220,5 +235,9 @@ internal class LiveGeckoView(context: Context) : GeckoView(context) {
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         reconcileLater()
+    }
+
+    companion object {
+        private const val TAG = "BubbleDirectGecko"
     }
 }
