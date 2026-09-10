@@ -7,37 +7,33 @@ const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspac
 for (const required of [
   '.remoteDebuggingEnabled(false)',
   '.consoleOutput(false)',
-  '.debugLogging(false)',
-  '.aboutConfigEnabled(false)',
-  '.extensionsProcessEnabled(false)',
-  '.extensionsWebAPIEnabled(false)',
-  '.loginAutofillEnabled(false)',
-  '.enterpriseRootsEnabled(false)',
-  '.webManifest(false)',
-  '.translationsOfferPopup(false)',
-  '.fontInflation(false)',
-  '.inputAutoZoomEnabled(false)',
-  '.javaScriptEnabled(true)',
-  '.webFontsEnabled(true)',
 ]) {
-  assert.ok(turbo.includes(required), `Turbo Gecko profile must contain ${required}`);
+  assert.ok(turbo.includes(required), `Build-84 Gecko baseline must contain ${required}`);
 }
 
-assert.equal(/appZygoteProcessEnabled/.test(turbo), false,
-  'App Zygote must remain disabled: Build 89 produced white pages/endless loading and Android runtime page timeouts');
+for (const forbidden of [
+  'appZygoteProcessEnabled',
+  'debugLogging(',
+  'aboutConfigEnabled(',
+  'extensionsProcessEnabled(',
+  'extensionsWebAPIEnabled(',
+  'loginAutofillEnabled(',
+  'enterpriseRootsEnabled(',
+  'webManifest(',
+  'translationsOfferPopup(',
+  'fontInflation(',
+  'inputAutoZoomEnabled(',
+  'javaScriptEnabled(',
+  'webFontsEnabled(',
+  'fissionEnabled(',
+  'glMsaaLevel(',
+  'lowMemoryDetection(',
+]) {
+  assert.equal(turbo.includes(forbidden), false,
+    `Hybrid baseline must leave Gecko default alone: ${forbidden}`);
+}
+
 assert.match(workspace, /GeckoRuntime\.create\(app, GeckoTurboPolicy\.settings\(\)\)/,
-  'Workspace must create Gecko from the explicit Turbo profile');
+  'Workspace must create Gecko from the Build-84-compatible policy wrapper');
 
-// Preserve the current full-web/security path. These are deliberate non-optimizations.
-assert.equal(/fissionEnabled\(false\)/.test(turbo), false,
-  'Turbo must not disable Fission/site isolation');
-assert.equal(/webFontsEnabled\(false\)/.test(turbo), false,
-  'Turbo must not trade web typography/fidelity for speed');
-assert.equal(/javaScriptEnabled\(false\)/.test(turbo), false,
-  'Turbo must not disable JavaScript/Wasm workloads');
-assert.equal(/glMsaaLevel\(0\)/.test(turbo), false,
-  'WebGL MSAA is an optional benchmark toggle, not part of safe Turbo v1');
-assert.equal(/lowMemoryDetection\(false\)/.test(turbo), false,
-  'Turbo must preserve Gecko low-memory handling for the resident-tab workload');
-
-console.log('Gecko Turbo v1: Build-89 profile reproduced with App Zygote removed; full-web/security invariants passed.');
+console.log('Hybrid Gecko runtime: exact Build-84 settings baseline, no speculative runtime toggles.');
