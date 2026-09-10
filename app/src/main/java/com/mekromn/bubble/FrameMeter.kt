@@ -5,8 +5,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.FrameMetrics
-import android.view.View
-import android.view.ViewGroup
 import android.view.Window
 import java.util.Locale
 
@@ -56,22 +54,15 @@ internal class FrameMeter {
 
 internal object Refresh {
     @Suppress("DEPRECATION") fun actual(a: Activity): Float = a.windowManager.defaultDisplay.refreshRate
-    @Suppress("DEPRECATION") fun request(a: Activity) {
-        val display = a.windowManager.defaultDisplay
-        val current = display.mode
-        val best = display.supportedModes.filter {
-            it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight
-        }.maxByOrNull { it.refreshRate } ?: current
+
+    /**
+     * Fullscreen uses the exact same maximum-refresh policy as floating mode. RenderPolicy walks the
+     * entire decor tree, so Android 15+ per-View hints reach GeckoView's children and Android 11+
+     * SurfaceView producers receive the same Surface.setFrameRate() contract as the raw floating page.
+     */
+    fun request(a: Activity) {
         val attributes = a.window.attributes
-        if(attributes.preferredDisplayModeId != best.modeId || attributes.preferredRefreshRate != best.refreshRate) {
-            attributes.preferredDisplayModeId = best.modeId
-            attributes.preferredRefreshRate = best.refreshRate
-            a.window.attributes = attributes
-        }
-        if (Build.VERSION.SDK_INT >= 35) vote(a.window.decorView, best.refreshRate)
-    }
-    private fun vote(view: View, rate: Float) {
-        if (Build.VERSION.SDK_INT >= 35) view.setRequestedFrameRate(rate)
-        if (view is ViewGroup) for (i in 0 until view.childCount) vote(view.getChildAt(i), rate)
+        RenderPolicy.vote(a, a.window.decorView, attributes)
+        a.window.attributes = attributes
     }
 }
