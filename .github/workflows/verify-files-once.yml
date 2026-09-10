@@ -11,12 +11,12 @@ name: Verify current Bubble changes
 # CRX flow. New-chat continuity stages the exact source chat and attaches its complete native Markdown
 # transcript in the fresh ChatGPT composer; the 70k text handoff is fallback-only. Both continuation
 # and GET_CHAT_TRANSCRIPT prefer ChatGPT's generic #upload-files control, reject photo/camera-only
-# inputs, and use bounded drop/paste fallbacks. Google Voice notifications now promote detected contact
+# inputs, and use bounded drop/paste fallbacks. Google Voice notifications promote detected contact
 # names, retain phone numbers as secondary context, expose a Copy number Android action, and an exact
 # voice.google.com top-frame script adds a one-tap copy-number control immediately before the existing
-# call button in a conversation header. The Voice page enhancement is local-only and synthesizes no
-# Google Voice control clicks. Credentials never cross to the isolated/native Vault bridge.
-# Existing focused UI/Vault/archive/dialog/transition gates remain.
+# call button. The page copy path preserves normal parenthesized phone formatting exactly as shown,
+# remains local-only, and synthesizes no Google Voice control clicks. Credentials never cross to the
+# isolated/native Vault bridge. Existing focused UI/Vault/archive/dialog/transition gates remain.
 on:
   push:
     branches: [rebuild-v2]
