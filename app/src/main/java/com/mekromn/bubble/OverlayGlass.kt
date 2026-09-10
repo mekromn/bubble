@@ -29,6 +29,10 @@ import kotlin.math.min
  * fully transparent, and the top-Z Gecko SurfaceView covers the browser rectangle above this backdrop.
  * This avoids the two extra service-owned blur windows introduced after Build 84 while preserving live
  * glass on native chrome during every move/resize frame.
+ *
+ * The backdrop is a real independent Window, so it receives the same maximum-refresh policy as the
+ * interactive chrome and Gecko page. Otherwise Android's frame-rate arbitration could treat this live
+ * blur layer as a normal-rate participant while the page is asking for high refresh.
  */
 internal object OverlayGlass {
     private enum class Shape { OFF, FULL, CHROME }
@@ -103,6 +107,11 @@ internal object OverlayGlass {
             // FloatingWindow calls apply() before its interactive overlay is attached, preserving
             // stable same-type Z order below the Gecko/native window for the lifetime of the panel.
             dialog.show()
+            // This is a separate compositor Window. Give it the same max-refresh request as the page
+            // and native chrome so live blur does not become the low-rate participant in the scene.
+            val attributes = window.attributes
+            RenderPolicy.vote(context, window.decorView, attributes)
+            window.attributes = attributes
             owner = currentOwner
             backdrop = dialog
             blurManager = manager
