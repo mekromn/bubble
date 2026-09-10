@@ -28,6 +28,8 @@ name: Verify current Bubble changes
 #   visually blur-free. Glass stays live during move/resize.
 # - Hardware acceleration, maximum-refresh voting, current resident active/high-priority behavior,
 #   all current Continuity/Voice features, profile isolation and security invariants remain unchanged.
+# - This run follows the guard-only correction: no rendering-path code changed after the first-class
+#   sibling implementation; the prior CI failure matched explanatory comment text, not a real API call.
 #
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
