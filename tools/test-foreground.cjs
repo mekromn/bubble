@@ -72,3 +72,4 @@ require('./test-vault-live-request.cjs');
 require('./test-vault-handoff-attachment.cjs');
 require('./test-voice-ui.cjs');
 require('./test-floating-performance.cjs');
+require('./test-gecko-turbo.cjs');
