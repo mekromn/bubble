@@ -84,8 +84,12 @@ assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
   'Native floating chrome must remain hardware accelerated');
 assert.match(page, /FLAG_HARDWARE_ACCELERATED/,
   'Raw Gecko page sibling must remain hardware accelerated');
-assert.match(render, /preferredDisplayModeId = mode\.modeId/,
-  'Both window paths must vote for the fastest same-resolution display mode');
+assert.equal(/preferredDisplayModeId = mode\.modeId/.test(render), false,
+  'Refresh-only Bubble policy must not pin a display mode id');
+assert.match(render, /preferredDisplayModeId = 0/,
+  'Any stale mode-id preference must be explicitly cleared');
+assert.match(render, /preferredRefreshRate = rate/,
+  'Fullscreen and overlay windows must use Android refresh-rate voting directly');
 assert.match(render, /setRequestedFrameRate\(rate\)/,
   'Android 15+ per-View frame-rate voting must remain active');
 assert.match(render, /setFrameRateBoostOnTouchEnabled\(true\)/,
@@ -106,4 +110,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw speed path: no TextureView + ViewParent a11y + producer Surface max-refresh + max-refresh live glass + shared fullscreen policy + diagnostics parked.');
+console.log('Floating raw speed path: no TextureView + ViewParent a11y + pure refresh-rate votes + producer Surface max-refresh + live glass + diagnostics parked.');
