@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const source = fs.readFileSync('app/src/main/assets/chat-monitor/voice-ui.js', 'utf8');
 const manifest = JSON.parse(fs.readFileSync('app/src/main/assets/chat-monitor/manifest.json', 'utf8'));
+const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspace.kt', 'utf8');
 
 assert.doesNotThrow(() => new vm.Script(source, {filename: 'voice-ui.js'}), 'Google Voice page enhancement must remain valid JavaScript');
 const script = manifest.content_scripts.find(item => item.js.includes('voice-ui.js'));
@@ -12,6 +13,14 @@ assert.deepEqual(script.matches, ['https://voice.google.com/*'], 'Voice UI enhan
 assert.equal(script.all_frames, false, 'Voice UI enhancement must stay in the top document');
 assert.equal(source.includes("window !== window.top || location.origin !== 'https://voice.google.com'"), true,
   'Runtime must independently enforce exact Voice origin and top-frame scope');
+
+// GeckoView ensureBuiltIn keeps the already-installed package when the embedded add-on advertises
+// the same version. Build 84 proved this can make a newly-added content script look completely absent
+// after an APK upgrade. Keep the built-in package version ahead of the pre-Voice-UI 2.5 bundle.
+assert.match(workspace, /ensureBuiltIn\("resource:\/\/android\/assets\/chat-monitor\/", "chat-monitor@bubble\.local"\)/,
+  'Bubble must continue installing the packaged monitor through ensureBuiltIn');
+assert.equal(manifest.version, '2.6',
+  'Built-in extension version must advance past 2.5 so existing Bubble profiles receive voice-ui.js');
 
 assert.match(source, /bubble-voice-copy-number/, 'A stable one-copy-control id is required');
 assert.match(source, /actionRow\.insertBefore\(button, found\.call\)/,
@@ -29,4 +38,4 @@ assert.equal(/fetch\s*\(|XMLHttpRequest|sendNativeMessage|localStorage|sessionSt
 assert.equal(/\.click\s*\(/.test(source), false,
   'Voice UI enhancement must not synthesize clicks on Google Voice controls');
 
-console.log('Exact-origin Google Voice one-tap copy-number UI guard passed.');
+console.log('Exact-origin Google Voice one-tap copy-number UI and built-in extension upgrade guard passed.');
