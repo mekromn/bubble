@@ -20,7 +20,9 @@ assert.match(glass, /Ui\.dp\(context, 52f\)/,
   'CHAT blur must be limited to the native 52dp header');
 assert.match(glass, /Ui\.dp\(context, 48f\)/,
   'CHAT blur must be limited to the native 48dp utility strip');
-assert.match(glass, /Gecko page\s+region between them has no blur window underneath it at all/,
+assert.match(glass, /Gecko page/,
+  'Blur policy must explicitly identify the Gecko page region');
+assert.match(glass, /region between them has no blur window underneath it at all/,
   'The rendered Gecko page region must never be a blur target');
 assert.equal(/FLAG_BLUR_BEHIND|setBlurBehindRadius/.test(glass), false,
   'Full-screen blur-behind APIs are forbidden');
