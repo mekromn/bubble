@@ -25,8 +25,8 @@ name: Verify current Bubble changes
 # - Floating glass remains one masked service-owned backdrop window, with blur only on native chrome.
 #
 # SPEED BUILD — FULL COMPOSITOR HIGH-REFRESH CONTRACT:
-# - Fullscreen, floating native chrome, raw Gecko page, and the independent live-glass backdrop all
-#   select/request the highest supported same-resolution display mode.
+# - Fullscreen, fullscreen Your-chats overlay, floating native chrome, raw Gecko page, and the
+#   independent live-glass backdrop all select/request the highest supported same-resolution mode.
 # - Android 15+ setRequestedFrameRate(maxRate) is applied recursively because ViewGroup requests do not
 #   propagate automatically to child Views.
 # - Every real SurfaceView producer gets a Surface.setFrameRate() contract once per Surface lifetime.
@@ -36,6 +36,12 @@ name: Verify current Bubble changes
 # - Surface frame-rate hints are never spammed on every frame or resize callback.
 # - Persistent crash diagnostics remain fully implemented but DiagnosticLog.ENABLED=false for this
 #   performance build: no Downloads logger, writer thread, PSS sampling, or diagnostic tab scans.
+#
+# FULLSCREEN TAB SWITCH REPAIR:
+# - Fullscreen chooser dismissal synchronously reconciles the selected resident GeckoSession onto the
+#   existing fullscreen GeckoView instead of waiting for a coalesced Choreographer listener.
+# - LiveGeckoView is restored to the lean Build-101 lifecycle wrapper with no diagnostic setSession or
+#   releaseSession overrides in the fullscreen hot path.
 #
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
