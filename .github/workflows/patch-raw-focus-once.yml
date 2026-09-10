@@ -1,0 +1,40 @@
+name: Apply raw SurfaceView focus proxy once
+on:
+  push:
+    branches: [rebuild-v2]
+    paths: ['.github/workflows/patch-raw-focus-once.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Proxy detached bridge focus from the real raw page window
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt')
+          text = path.read_text()
+          old = '''        override fun getSession(): GeckoSession? = bound
+
+        override fun setSession(session: GeckoSession) {'''
+          new = '''        override fun getSession(): GeckoSession? = bound
+
+        // Workspace owns focus policy through its GeckoView-shaped surface owner. This bridge is
+        // intentionally detached, so inherited hasWindowFocus() is always false. Proxy the actual
+        // raw page SurfaceView window instead: native Gecko then receives the same focused/unfocused
+        // state in floating mode that it receives from the attached GeckoView in fullscreen.
+        override fun hasWindowFocus(): Boolean = raw.hasWindowFocus()
+
+        override fun setSession(session: GeckoSession) {'''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected one RawSessionBridge insertion point, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+          git diff --cached --check
+          git commit -m 'perf: proxy floating Gecko focus from raw page window'
+          git push origin HEAD:rebuild-v2
