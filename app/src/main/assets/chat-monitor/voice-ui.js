@@ -21,7 +21,7 @@
 
   function phoneFrom(value) {
     const text = String(value || '').replace(/\u00a0/gu, ' ');
-    const matches = text.match(/\+?\d[\d\s().-]{5,}\d/gu) || [];
+    const matches = text.match(/\+?\s*(?:\(\d{2,4}\)|\d)[\d\s().-]{4,}\d/gu) || [];
     for (const rawValue of matches) {
       const raw = rawValue.trim().replace(/[.,;:]+$/u, '');
       const digits = raw.replace(/\D/gu, '');
