@@ -20,10 +20,16 @@ assert.match(glass, /Ui\.dp\(context, 52f\)/,
   'CHAT blur must be limited to the native 52dp header');
 assert.match(glass, /Ui\.dp\(context, 48f\)/,
   'CHAT blur must be limited to the native 48dp utility strip');
-assert.match(glass, /The page region in between has no blur/,
-  'Source contract must explicitly preserve a zero-blur Gecko page region');
+assert.match(glass, /Gecko page\s+region between them has no blur window underneath it at all/,
+  'The rendered Gecko page region must never be a blur target');
 assert.equal(/FLAG_BLUR_BEHIND|setBlurBehindRadius/.test(glass), false,
   'Full-screen blur-behind APIs are forbidden');
+assert.match(glass, /state\.shape != shape \|\| state\.corner != corner/,
+  'Live UI blur must cache shape state rather than allocate a new drawable every motion frame');
+assert.match(glass, /state\.blur != blurRadius/,
+  'Live UI blur must avoid redundant blur-radius configuration');
+assert.match(glass, /state\.x == x && state\.y == y && state\.width == w && state\.height == h/,
+  'Blur windows must skip redundant geometry writes');
 
 assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
   'Floating overlay must remain hardware accelerated');
@@ -31,7 +37,8 @@ assert.match(render, /preferredDisplayModeId = mode\.modeId/,
   'Floating window must continue voting for the fastest supported display mode');
 assert.match(render, /setRequestedFrameRate\(rate\)/,
   'Android 15+ frame-rate voting must remain active');
-assert.match(workspace, /session\.setActive\(true\); session\.setPriorityHint\(GeckoSession\.PRIORITY_HIGH\)/,
-  'Resident browser sessions must retain active/high-priority scheduling');
+const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPriorityHint\(GeckoSession\.PRIORITY_HIGH\)/g) || [];
+assert.ok(activeHigh.length >= 2,
+  'Preserve the current resident-tab priority policy: Voice and ordinary resident tabs remain active/high-priority');
 
-console.log('Floating browser fast path: SurfaceView, UI-only blur, hardware acceleration and refresh voting passed.');
+console.log('Floating browser fast path: SurfaceView, live UI-only blur, cached compositor state, hardware acceleration, refresh voting and resident high priority passed.');
