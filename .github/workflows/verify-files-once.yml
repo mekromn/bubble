@@ -37,9 +37,11 @@ name: Verify current Bubble changes
 # - DiagnosticLog installs from BubbleApp before GeckoRuntime/Workspace creation.
 # - Low-overhead breadcrumbs are queued off the UI thread and mirrored to an app-owned MediaStore file
 #   under Downloads/Bubble Logs plus a private shadow file.
-# - RawSessionBridge, GeckoDisplay acquire/release, Surface create/change/destroy/publish, input binding,
-#   page-window attach/remove and selected-tab/session identity are traced without page contents,
-#   cookies, auth headers, tokens or query strings.
+# - Normal LiveGeckoView fullscreen set/release ownership is traced as well as RawSessionBridge,
+#   GeckoDisplay acquire/release, Surface create/change/destroy/publish, input binding, page-window
+#   attach/remove and selected-tab/session identity. This distinguishes tabs that previously owned a
+#   fullscreen display from first-display tabs opened directly from the floating chooser.
+# - Logs never include page contents, cookies, auth headers, tokens or URL query strings.
 # - Uncaught Java/Kotlin exceptions force-flush the breadcrumb tail plus stack and thread dump.
 # - Android 11+ ApplicationExitInfo is recorded on next launch so native Gecko crashes, signals, ANRs,
 #   low-memory kills and other process deaths remain diagnosable even when Java cannot catch them.
