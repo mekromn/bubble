@@ -11,18 +11,22 @@ import android.provider.Settings
 /** Direct notification Activity PendingIntent: no service/broadcast notification trampoline.
  * This transparent task hands off to the requested overlay mode, or the browser when overlays are unavailable.
  * A freshly parked workspace may still report its Activity as visible for a few frames; parked state wins so
- * an immediate notification tap cannot accidentally reopen fullscreen instead of the bubble/edge workspace. */
+ * an immediate notification tap cannot accidentally reopen fullscreen instead of the bubble/edge workspace.
+ *
+ * Notification targeting is applied twice on purpose. The durable tab id remains in the BrowserActivity Intent,
+ * but when an existing fullscreen Activity is being reused we also select + synchronously rebind that resident
+ * session before launching it. Android may deliver onNewIntent while the singleTask Activity is still stopped;
+ * relying only on BrowserActivity.render() there can leave the old page attached until some later UI transition.
+ */
 class NotificationReturnActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
+
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         val id = intent.getStringExtra(BrowserActivity.EXTRA_TAB)
         val serviceParked = BubbleService.active?.isParked == true
         if (!Settings.canDrawOverlays(this) || (Workspace.peek()?.visible == true && !serviceParked)) {
-            startActivity(Intent(this, BrowserActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                if (id != null) putExtra(BrowserActivity.EXTRA_TAB, id)
-            })
+            openFullscreen(id)
             finish(); return
         }
         val reply = object : ResultReceiver(main) {
@@ -36,13 +40,27 @@ class NotificationReturnActivity : Activity() {
             main.postDelayed({ if (!isFinishing) fallback(id) }, 15_000)
         } catch (_: RuntimeException) { fallback(id) }
     }
+
+    private fun openFullscreen(id: String?) {
+        val workspace = Workspace.peek()
+        if (id != null && workspace?.ready == true) {
+            workspace.select(id)
+            workspace.host.get()?.takeIf { !it.isFinishing && !it.isDestroyed }?.syncSelectedSurfaceNow()
+        }
+        startActivity(Intent(this, BrowserActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (id != null) putExtra(BrowserActivity.EXTRA_TAB, id)
+        })
+    }
+
     private fun fallback(id: String?) {
         if (isFinishing) return
-        startActivity(Intent(this, BrowserActivity::class.java).putExtra(BrowserActivity.EXTRA_TAB, id)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        openFullscreen(id)
         finish()
     }
+
     override fun onDestroy() { main.removeCallbacksAndMessages(null); super.onDestroy() }
+
     companion object {
         internal fun pending(context: Context, tabId: String?, mode: FloatingMode, forceBubble: Boolean = false): PendingIntent = PendingIntent.getActivity(context, 0,
             Intent(context, NotificationReturnActivity::class.java).apply {
