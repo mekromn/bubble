@@ -315,7 +315,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun engine(): GeckoRuntime {
         runtime?.let { return it }
-        val created = GeckoRuntime.create(app, GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false).build())
+        val created = GeckoRuntime.create(app, GeckoTurboPolicy.settings())
         runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
         VoiceNotifications.install(app, created, this)
         main.postDelayed(monitorTimeout, 10_000)
