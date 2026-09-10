@@ -304,6 +304,7 @@ internal object DiagnosticLog {
         }.onFailure { error("EXIT", "failed to read historical exits", it) }
     }
 
+    @android.annotation.TargetApi(Build.VERSION_CODES.R)
     private fun readExitTrace(info: ApplicationExitInfo): String {
         return runCatching {
             info.traceInputStream?.use { input ->
