@@ -7,7 +7,7 @@ name: Verify current Bubble changes
 # New Chat continuation, transcript command automation, Google Voice notification/UI enhancements,
 # resident/high-priority tab policy, and the floating-browser hybrid performance path.
 #
-# RAW GECKODISPLAY SURFACEVIEW FAST PATH — BUILD 101 PHYSICAL-PIXEL BASELINE:
+# RAW GECKODISPLAY SURFACEVIEW FAST PATH — BUILD 105 STABILITY BASELINE:
 # - Gecko runtime behavior matches the known-fast Build 84 baseline: remote debugging and console-to-
 #   Logcat output are disabled; every other Gecko runtime setting stays at Gecko default. No App
 #   Zygote and no accumulated speculative Gecko feature disables.
@@ -16,38 +16,25 @@ name: Verify current Bubble changes
 #   the page window and GeckoSession.acquireDisplay() feeds its Surface + SurfaceControl directly to
 #   GeckoDisplay.surfaceChanged(SurfaceInfo).
 # - The raw SurfaceView is setZOrderOnTop(true) BEFORE attachment inside its dedicated page-only opaque
-#   overlay. This is required on the Pixel 9 Pro XL: Build 101 is the first no-TextureView raw-display
-#   build physically verified to render both ChatGPT and Google Voice in floating mode.
-# - Workspace compatibility uses a tiny GeckoView-shaped bookkeeping adapter, deliberately DETACHED:
-#   it is never inserted into an Android View tree or attached to a Window. There is no floating
-#   TextureView rendering path.
-# - Raw display teardown happens before its Android Surface window is removed, and async SurfaceHolder
-#   publication failures are caught/unwound so a handoff race cannot terminate the process.
-# - Raw touch goes to PanZoomController; IME/key input goes to SessionTextInput. Gecko accessibility is
-#   hosted on the attached page FrameLayout/ViewParent, NOT on RawGeckoSurfaceView itself. Physical
-#   Build-104 diagnostics proved SessionAccessibility.sendEvent casts its configured View to
-#   ViewParent; using SurfaceView there caused the floating tab-switch ClassCastException after an
-#   otherwise successful raw surface publication.
-# - The raw page SurfaceView lives in its own PixelFormat.OPAQUE hardware-accelerated
-#   TYPE_APPLICATION_OVERLAY window physically bounded between the 52dp header and 48dp footer.
-# - FloatingWindow remains the single geometry authority. The page sibling follows move/resize, and
-#   GeckoDisplay receives screen-origin updates whenever the page window moves.
-# - Floating glass remains one service-owned backdrop window matching Build 84's low layer count, with
-#   CHAT masked to top/bottom native chrome only. Current resident active/high-priority behavior stays.
+#   overlay. This is required on the Pixel 9 Pro XL; no TextureView is used.
+# - Gecko accessibility is hosted on the attached page FrameLayout/ViewParent, never the SurfaceView.
+#   Build 105 physically fixed the SessionAccessibility ViewParent tab-switch crash.
+# - Raw display teardown happens before its Android Surface window is removed; touch still goes straight
+#   to PanZoomController and IME/key input goes straight to SessionTextInput.
+# - The raw page SurfaceView remains PixelFormat.OPAQUE and hardware accelerated.
+# - Floating glass remains one masked service-owned backdrop window, with blur only on native chrome.
 #
-# PHYSICAL-DEVICE CRASH DIAGNOSTICS:
-# - DiagnosticLog installs from BubbleApp before GeckoRuntime/Workspace creation.
-# - Low-overhead breadcrumbs are queued off the UI thread and mirrored to an app-owned MediaStore file
-#   under Downloads/Bubble Logs plus a private shadow file.
-# - Workspace traces select -> ensureSession -> newSession -> session.open -> load/restore -> surface
-#   handoff, including targetHadSession before ensureSession so never-before-opened tabs are explicit.
-# - Normal LiveGeckoView fullscreen set/release ownership is traced as well as RawSessionBridge,
-#   GeckoDisplay acquire/release, Surface create/change/destroy/publish, input binding, page-window
-#   attach/remove and selected-tab/session identity.
-# - Logs never include page contents, cookies, auth headers, tokens or URL query strings.
-# - Uncaught Java/Kotlin exceptions force-flush the breadcrumb tail plus stack and thread dump.
-# - Android 11+ ApplicationExitInfo is recorded on next launch so native Gecko crashes, signals, ANRs,
-#   low-memory kills and other process deaths remain diagnosable even when Java cannot catch them.
+# SPEED BUILD — SHARED HIGH-REFRESH POLICY:
+# - Fullscreen and floating both select the highest supported same-resolution display mode.
+# - Android 15+ setRequestedFrameRate(maxRate) is applied recursively because ViewGroup requests do not
+#   propagate automatically to child Views.
+# - Every real SurfaceView producer gets a Surface.setFrameRate() contract once per Surface lifetime.
+# - Android 16 uses FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling producer surfaces.
+# - Android 15+ touch frame-rate boost is explicitly enabled for Bubble windows.
+# - Android 15+ frame-rate power-savings-balanced policy is disabled to favor smoothness over power.
+# - Surface frame-rate hints are never spammed on every frame or resize callback.
+# - Persistent crash diagnostics remain fully implemented but DiagnosticLog.ENABLED=false for this
+#   performance build: no Downloads logger, writer thread, PSS sampling, or diagnostic tab scans.
 #
 # Credentials never cross to the isolated/native Vault bridge. Existing focused UI/Vault/archive/
 # dialog/transition gates remain.
