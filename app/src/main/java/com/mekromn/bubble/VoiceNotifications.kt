@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -144,6 +145,9 @@ internal object VoiceNotifications {
     private const val COPY_NUMBER = "com.mekromn.bubble.voicenotification.COPY_NUMBER"
     private const val TOKEN = "bubble.webnotification.token"
     private const val PHONE = "bubble.webnotification.phone"
+    private const val CLICK_READY_TIMEOUT_MS = 2_500L
+    private const val CLICK_READY_POLL_MS = 32L
+    private const val DISMISS_AFTER_CLICK_MS = 900L
     private val main = Handler(Looper.getMainLooper())
 
     private data class Active(val web: WebNotification, val androidTag: String, val androidId: Int,
@@ -280,7 +284,10 @@ internal object VoiceNotifications {
         val item = Active(web, androidTag, id, tabId, targetUrl)
         active[token] = item; tokenByObject[web] = token
         val click = PendingIntent.getBroadcast(context, token.hashCode(), Intent(context, VoiceNotificationReceiver::class.java).apply {
-            action = CLICK; data = Uri.parse("bubble://web-notification/$token/click"); putExtra(TOKEN, token)
+            action = CLICK
+            data = Uri.parse("bubble://web-notification/$token/click")
+            putExtra(TOKEN, token)
+            if (tabId != null) putExtra(BrowserActivity.EXTRA_TAB, tabId)
         }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val dismiss = PendingIntent.getBroadcast(context, token.hashCode() xor 0x51a7, Intent(context, VoiceNotificationReceiver::class.java).apply {
             action = DISMISS; data = Uri.parse("bubble://web-notification/$token/dismiss"); putExtra(TOKEN, token)
@@ -315,8 +322,11 @@ internal object VoiceNotifications {
         retire(context, token, false); runCatching { web.dismiss() }
     }
 
-    internal fun handle(context: Context, action: String?, token: String?, phone: String? = null) {
-        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { handle(context, action, token, phone) }; return }
+    internal fun handle(context: Context, action: String?, token: String?, phone: String? = null, tabId: String? = null) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post { handle(context, action, token, phone, tabId) }
+            return
+        }
         if (action == COPY_NUMBER) {
             val value = phone?.takeIf { VoiceContactPolicy.telUri(it) != null } ?: return
             context.getSystemService(ClipboardManager::class.java)
@@ -324,13 +334,61 @@ internal object VoiceNotifications {
             Toast.makeText(context, "Phone number copied", Toast.LENGTH_SHORT).show()
             return
         }
-        if (token.isNullOrBlank()) return
-        val item = active.remove(token) ?: return
+        if (token.isNullOrBlank()) {
+            if (action == CLICK && tabId != null) openTabFallback(context, tabId)
+            return
+        }
+        val item = active.remove(token)
+        if (item == null) {
+            if (action == CLICK && tabId != null) openTabFallback(context, tabId)
+            return
+        }
         tokenByObject.remove(item.web); slotToToken.entries.removeAll { it.value == token }
         context.getSystemService(NotificationManager::class.java).cancel(item.androidTag, item.androidId)
         if (action == CLICK) {
-            runCatching { item.web.click() }; runCatching { item.web.dismiss() }; openTarget(context, item)
+            if (Policy.isVoice(item.targetUrl)) {
+                // Give Google Voice the same ordering it gets in a normal browser: first make its
+                // existing client visible/focused, then fire notificationclick. Google Voice owns
+                // the private conversation/message payload and can route its current tab precisely.
+                openTarget(context, item)
+                clickVoiceWhenActive(item)
+            } else {
+                runCatching { item.web.click() }
+                main.postDelayed({ runCatching { item.web.dismiss() } }, DISMISS_AFTER_CLICK_MS)
+                openTarget(context, item)
+            }
         } else runCatching { item.web.dismiss() }
+    }
+
+    private fun clickVoiceWhenActive(item: Active) {
+        val deadline = SystemClock.uptimeMillis() + CLICK_READY_TIMEOUT_MS
+        val expectedTab = item.tabId
+        val task = object : Runnable {
+            override fun run() {
+                val workspace = Workspace.peek()
+                val tab = expectedTab?.let { id -> workspace?.tabs?.firstOrNull { it.id == id } }
+                val ready = if (expectedTab == null) {
+                    workspace?.chatVisible == true
+                } else {
+                    workspace?.selectedId == expectedTab && workspace.chatVisible && tab?.session?.isOpen == true
+                }
+                if (!ready && SystemClock.uptimeMillis() < deadline) {
+                    main.postDelayed(this, CLICK_READY_POLL_MS)
+                    return
+                }
+                runCatching { item.web.click() }
+                // WebNotification.click() dispatches the site's notification click but does not
+                // dismiss it. Delay dismissal so Google Voice's notificationclick/waitUntil work
+                // can switch the already-visible client to the exact conversation/message first.
+                main.postDelayed({ runCatching { item.web.dismiss() } }, DISMISS_AFTER_CLICK_MS)
+            }
+        }
+        main.post(task)
+    }
+
+    private fun openTabFallback(context: Context, tabId: String) {
+        try { NotificationReturnActivity.pending(context, tabId, FloatingMode.CHAT).send() }
+        catch (_: PendingIntent.CanceledException) { }
     }
 
     private fun retire(context: Context, token: String, dismissWeb: Boolean) {
@@ -460,9 +518,13 @@ internal object VoiceNotifications {
 
 class VoiceNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        VoiceNotifications.handle(context.applicationContext, intent.action,
+        VoiceNotifications.handle(
+            context.applicationContext,
+            intent.action,
             intent.getStringExtra("bubble.webnotification.token"),
-            intent.getStringExtra("bubble.webnotification.phone"))
+            intent.getStringExtra("bubble.webnotification.phone"),
+            intent.getStringExtra(BrowserActivity.EXTRA_TAB)
+        )
     }
 }
 
