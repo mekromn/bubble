@@ -16,9 +16,14 @@ import java.util.WeakHashMap
 /**
  * One aggressive high-refresh policy for fullscreen and floating rendering.
  *
- * Window/display-mode votes alone are not enough for Bubble's raw floating renderer because the
- * webpage lives in its own SurfaceView/Surface. On Android 11+ every real SurfaceView producer gets
- * an explicit Surface.setFrameRate() contract too. Android 16's FRAME_RATE_COMPATIBILITY_AT_LEAST is
+ * Bubble only has a refresh-rate preference; it does not need to request a display resolution or
+ * other mode property. On modern Android, preferredRefreshRate is therefore the correct Window vote.
+ * Do not also set preferredDisplayModeId: Android explicitly ignores preferredRefreshRate whenever a
+ * mode id is set, and the mode-id path is less appropriate for a multi-window overlay scene.
+ *
+ * Window votes alone are not enough for Bubble's raw floating renderer because the webpage lives in
+ * its own SurfaceView/Surface. On Android 11+ every real SurfaceView producer therefore gets an
+ * explicit Surface.setFrameRate() contract too. Android 16's FRAME_RATE_COMPATIBILITY_AT_LEAST is
  * designed for UI/scrolling/fling, so use it when available.
  *
  * Android 15+ touch boost is explicitly enabled and the power-savings-balanced frame-rate policy is
@@ -34,23 +39,24 @@ internal object RenderPolicy {
             ?: context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
             ?: return 0f
         val current = display.mode
-        val mode = display.supportedModes
+        val rate = display.supportedModes
             .asSequence()
             .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
-            .maxByOrNull { it.refreshRate }
-            ?: current
+            .maxOfOrNull { it.refreshRate }
+            ?: current.refreshRate
 
         params?.let {
-            // Exact same-resolution maximum mode request for both fullscreen and overlay windows.
-            it.preferredDisplayModeId = mode.modeId
-            it.preferredRefreshRate = mode.refreshRate
+            // Refresh only. Do not set preferredDisplayModeId: doing so makes Android ignore this
+            // preferredRefreshRate and can produce different arbitration for overlay vs Activity windows.
+            it.preferredDisplayModeId = 0
+            it.preferredRefreshRate = rate
             if (Build.VERSION.SDK_INT >= 35) {
                 it.setFrameRateBoostOnTouchEnabled(true)
                 it.setFrameRatePowerSavingsBalanced(false)
             }
         }
-        voteTree(view, mode.refreshRate)
-        return mode.refreshRate
+        voteTree(view, rate)
+        return rate
     }
 
     /** Apply the same producer-level rate contract to an already-selected maximum rate. */
