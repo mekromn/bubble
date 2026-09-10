@@ -22,15 +22,15 @@ name: Verify current Bubble changes
 # - Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 #
 # TAB / NOTIFICATION ROUTING:
-# - Fullscreen chooser dismissal synchronously reconciles the selected resident GeckoSession onto
-#   the existing fullscreen GeckoView; LiveGeckoView remains a lean lifecycle wrapper.
-# - NotificationReturnActivity preserves the exact target tab id and, when reusing an existing
-#   fullscreen BrowserActivity, selects that tab and synchronously binds its resident GeckoSession
-#   before launching/reusing the singleTask Activity. This avoids stopped-onNewIntent stale-tab races.
-# - Google Voice web-notification taps foreground the exact resident Voice tab first, wait until it is
-#   selected/visible/open, then fire Gecko WebNotification.click(). The underlying notification is
-#   dismissed only afterward so Voice's own notificationclick handler can switch that current tab to
-#   the exact message/conversation instead of Bubble merely opening generic voice.google.com.
+# - NotificationReturnActivity preserves the exact target tab and synchronously rebinds fullscreen.
+# - Google Voice WebNotification.click() is delayed until its resident tab is selected/visible/open.
+#
+# VOICE UI 2.7:
+# - The integrated copy-number icon is anchored beside Voice's call control even when the header
+#   shows only a contact name; number lookup searches selected-thread/accessibility metadata at use.
+# - When Voice returns foreground with a newly-unread conversation, a conservative exact-origin
+#   fallback can reveal the mobile conversation list and activate the highest-confidence unread row.
+# - No Google CSS class names, network calls, account APIs, or persisted message content are used.
 on:
   push:
     branches: [rebuild-v2]
