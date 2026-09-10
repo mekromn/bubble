@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewParent
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -43,6 +44,11 @@ import org.mozilla.geckoview.GeckoSession
  * (the glass header/footer live in separate windows), putting the SurfaceView above this one Window is
  * safe and removes any dependence on overlay-window hole punching while preserving the direct Surface
  * compositor path.
+ *
+ * Gecko accessibility is intentionally hosted by the attached FrameLayout parent, not by the raw
+ * SurfaceView. SessionAccessibility sends platform events by casting its configured View to
+ * ViewParent, matching normal GeckoView (which is a ViewGroup). SurfaceView is not a ViewParent and
+ * caused the physical Pixel tab-switch ClassCastException captured by DiagnosticLog.
  */
 internal class FloatingGeckoWindow(private val context: Context) {
     private val manager = context.getSystemService(WindowManager::class.java)
@@ -199,6 +205,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         private var session: GeckoSession? = null
         private var display: GeckoDisplay? = null
+        private var accessibilityHost: View? = null
         private var surfacePublished = false
         private var surfaceWidth = 0
         private var surfaceHeight = 0
@@ -260,9 +267,10 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 return
             }
             val oldDisplay = display
+            val oldAccessibilityHost = accessibilityHost
             DiagnosticLog.event(
                 "RAW_DISPLAY",
-                "unbind begin ${DiagnosticLog.sessionLabel(expected)} display=${id(oldDisplay)} published=$surfacePublished holderValid=${holder.surface.isValid} attached=$isAttachedToWindow"
+                "unbind begin ${DiagnosticLog.sessionLabel(expected)} display=${id(oldDisplay)} a11yHost=${id(oldAccessibilityHost)} published=$surfacePublished holderValid=${holder.surface.isValid} attached=$isAttachedToWindow"
             )
             if (surfacePublished && oldDisplay != null) {
                 runCatching { oldDisplay.surfaceDestroyed() }
@@ -273,11 +281,15 @@ internal class FloatingGeckoWindow(private val context: Context) {
             publishFailurePosted = false
             display = null
             session = null
+            accessibilityHost = null
             runCatching {
                 if (expected.textInput.view === this) expected.textInput.setView(null)
             }.onFailure { DiagnosticLog.error("RAW_INPUT", "textInput.setView(null) failed ${id(expected)}", it) }
             runCatching {
-                if (expected.accessibility.view === this) expected.accessibility.setView(null)
+                val activeAccessibilityView = expected.accessibility.view
+                if (activeAccessibilityView === oldAccessibilityHost || activeAccessibilityView === this) {
+                    expected.accessibility.setView(null)
+                }
             }.onFailure { DiagnosticLog.error("RAW_INPUT", "accessibility.setView(null) failed ${id(expected)}", it) }
             if (oldDisplay != null) {
                 runCatching { expected.releaseDisplay(oldDisplay) }
@@ -295,6 +307,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 error
             )
             val oldDisplay = display
+            val oldAccessibilityHost = accessibilityHost
             if (surfacePublished && oldDisplay != null) {
                 runCatching { oldDisplay.surfaceDestroyed() }
                     .onFailure { DiagnosticLog.error("RAW_DISPLAY", "cleanup surfaceDestroyed failed display=${id(oldDisplay)}", it) }
@@ -303,10 +316,15 @@ internal class FloatingGeckoWindow(private val context: Context) {
             publishFailurePosted = false
             display = null
             session = null
+            accessibilityHost = null
             runCatching { if (target.textInput.view === this) target.textInput.setView(null) }
                 .onFailure { DiagnosticLog.error("RAW_INPUT", "cleanup textInput detach failed", it) }
-            runCatching { if (target.accessibility.view === this) target.accessibility.setView(null) }
-                .onFailure { DiagnosticLog.error("RAW_INPUT", "cleanup accessibility detach failed", it) }
+            runCatching {
+                val activeAccessibilityView = target.accessibility.view
+                if (activeAccessibilityView === oldAccessibilityHost || activeAccessibilityView === this) {
+                    target.accessibility.setView(null)
+                }
+            }.onFailure { DiagnosticLog.error("RAW_INPUT", "cleanup accessibility detach failed", it) }
             if (oldDisplay != null) {
                 runCatching { target.releaseDisplay(oldDisplay) }
                     .onFailure { DiagnosticLog.error("RAW_DISPLAY", "cleanup releaseDisplay failed display=${id(oldDisplay)}", it) }
@@ -316,7 +334,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         private fun configureInput(target: GeckoSession) {
             target.textInput.setView(this)
-            target.accessibility.setView(this)
+            val host = parent as? View
+                ?: throw IllegalStateException("Raw Gecko SurfaceView is missing its page accessibility host")
+            check(host is ViewParent) { "Raw Gecko accessibility host must implement ViewParent" }
+            accessibilityHost = host
+            target.accessibility.setView(host)
             val metrics = resources.displayMetrics
             val value = TypedValue()
             val factor = if (context.theme.resolveAttribute(android.R.attr.listPreferredItemHeight, value, true)) {
@@ -325,7 +347,10 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 0.075f * metrics.densityDpi
             }
             target.panZoomController.setScrollFactor(factor)
-            DiagnosticLog.event("RAW_INPUT", "configured session=${id(target)} factor=$factor view=${id(this)}")
+            DiagnosticLog.event(
+                "RAW_INPUT",
+                "configured session=${id(target)} factor=$factor textView=${id(this)} a11yHost=${id(host)} a11yHostClass=${host.javaClass.simpleName} viewParent=${host is ViewParent}"
+            )
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
@@ -487,7 +512,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
 
         override fun onKeyMultiple(keyCode: Int, repeatCount: Int, event: KeyEvent): Boolean {
-            if (super.onKeyMultiple(keyCode, repeatCount, event)) return true
+            if (super.onKeyMultiple(keyCode, event)) return true
             return session?.textInput?.onKeyMultiple(keyCode, repeatCount, event) ?: false
         }
 
