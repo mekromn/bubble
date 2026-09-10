@@ -1,6 +1,5 @@
 package com.mekromn.bubble
 
-import android.os.Build
 import org.mozilla.geckoview.GeckoRuntimeSettings
 
 /**
@@ -15,7 +14,7 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
  */
 internal object GeckoTurboPolicy {
     fun settings(): GeckoRuntimeSettings {
-        val builder = GeckoRuntimeSettings.Builder()
+        return GeckoRuntimeSettings.Builder()
             // Logging/debug plumbing is not part of the product. GeckoView debug logging is on by
             // default, so disable it explicitly rather than relying on a build flavor.
             .remoteDebuggingEnabled(false)
@@ -41,11 +40,6 @@ internal object GeckoTurboPolicy {
             // Preserve the high-fidelity/full-web path explicitly.
             .javaScriptEnabled(true)
             .webFontsEnabled(true)
-
-        // GeckoView App Zygote preloads the content service on Android 10+, reducing content-process
-        // startup latency. It is intentionally enabled only where GeckoView supports it.
-        if (Build.VERSION.SDK_INT >= 29) builder.appZygoteProcessEnabled(true)
-
-        return builder.build()
+            .build()
     }
 }
