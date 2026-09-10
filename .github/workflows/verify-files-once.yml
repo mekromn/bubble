@@ -23,9 +23,11 @@ name: Verify current Bubble changes
 #   TextureView rendering path.
 # - Raw display teardown happens before its Android Surface window is removed, and async SurfaceHolder
 #   publication failures are caught/unwound so a handoff race cannot terminate the process.
-# - Raw touch goes to PanZoomController; IME/key input goes to SessionTextInput; accessibility motion
-#   is forwarded to SessionAccessibility. Gecko can request a replacement Surface through the supplied
-#   GeckoDisplay.NewSurfaceProvider implementation.
+# - Raw touch goes to PanZoomController; IME/key input goes to SessionTextInput. Gecko accessibility is
+#   hosted on the attached page FrameLayout/ViewParent, NOT on RawGeckoSurfaceView itself. Physical
+#   Build-104 diagnostics proved SessionAccessibility.sendEvent casts its configured View to
+#   ViewParent; using SurfaceView there caused the floating tab-switch ClassCastException after an
+#   otherwise successful raw surface publication.
 # - The raw page SurfaceView lives in its own PixelFormat.OPAQUE hardware-accelerated
 #   TYPE_APPLICATION_OVERLAY window physically bounded between the 52dp header and 48dp footer.
 # - FloatingWindow remains the single geometry authority. The page sibling follows move/resize, and
@@ -41,8 +43,7 @@ name: Verify current Bubble changes
 #   handoff, including targetHadSession before ensureSession so never-before-opened tabs are explicit.
 # - Normal LiveGeckoView fullscreen set/release ownership is traced as well as RawSessionBridge,
 #   GeckoDisplay acquire/release, Surface create/change/destroy/publish, input binding, page-window
-#   attach/remove and selected-tab/session identity. This distinguishes tabs that previously owned a
-#   fullscreen display from first-display tabs opened directly from the floating chooser.
+#   attach/remove and selected-tab/session identity.
 # - Logs never include page contents, cookies, auth headers, tokens or URL query strings.
 # - Uncaught Java/Kotlin exceptions force-flush the breadcrumb tail plus stack and thread dump.
 # - Android 11+ ApplicationExitInfo is recorded on next launch so native Gecko crashes, signals, ANRs,
