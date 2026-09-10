@@ -20,8 +20,11 @@ import kotlin.math.min
 
 internal enum class FloatingMode { BUBBLE, CHOOSER, CHAT }
 
-/** One interactive black-glass overlay. Existing GeckoSessions are handed between this
- * TextureView and fullscreen SurfaceView; chrome never creates a replacement session. */
+/**
+ * One interactive black-glass chrome overlay plus a separate first-class Gecko page window.
+ * Existing GeckoSessions are handed between the floating SurfaceView and fullscreen SurfaceView;
+ * chrome never creates a replacement session and Gecko never uses TextureView.
+ */
 internal class FloatingWindow(private val service: BubbleService, private val workspace: Workspace) {
     private val context=themedWindowContext(service)
     private val manager=context.getSystemService(WindowManager::class.java)
@@ -53,7 +56,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var count: GlyphView?=null
     private var backControl: GlyphView?=null
     private var bubble: GlassBubble?=null
-    private var gecko: LiveGeckoView?=null
+    private var geckoWindow: FloatingGeckoWindow?=null
+    private val gecko: LiveGeckoView? get()=geckoWindow?.view
     private var backCallback: android.window.OnBackInvokedCallback?=null
     private var backDispatcher: android.window.OnBackInvokedDispatcher?=null
     var mode=FloatingMode.BUBBLE
@@ -165,6 +169,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(destroyed || mode==FloatingMode.BUBBLE || hiding)return
         if(service.prefersEdge()) { exitToRestingEdge(); return }
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true)
+        geckoWindow?.hide()
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
         val end=headBox(); val radius=d(32)
@@ -178,17 +183,17 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     internal fun hideToNotification() {
         if(destroyed || hiding)return
         if(!service.canPark()) { service.park(); return }
-        QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
+        QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel(); geckoWindow?.hide()
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         hiding=true
         root.animate().cancel(); root.animate().withEndAction(null)
         if(!ValueAnimator.areAnimatorsEnabled()) { if(!service.park())hiding=false; return }
         root.animate().alpha(0f).setDuration(140).setInterpolator(Ui.ease).withEndAction {
-            if(!destroyed && !service.park()) { hiding=false; root.alpha=1f }
+            if(!destroyed && !service.park()) { hiding=false; root.alpha=1f; render() }
         }.start()
     }
     private fun exitToRestingEdge() {
-        QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
+        QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel(); geckoWindow?.hide()
         context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         hiding=true; root.animate().cancel(); root.animate().withEndAction(null)
         if(!ValueAnimator.areAnimatorsEnabled()) { service.showMinimized(); return }
@@ -235,7 +240,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
     }
     private fun switchContents(next: FloatingMode) {
-        gecko?.let { workspace.detachSurface(it); (it.parent as? ViewGroup)?.removeView(it) }
+        gecko?.let { workspace.detachSurface(it) }
+        geckoWindow?.hide()
         mode=next; workspace.floatingVisible=next==FloatingMode.CHAT; build(next); workspace.applyPolicy()
     }
     private fun build(next: FloatingMode) {
@@ -285,8 +291,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
             column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
         } else {
-            val web=gecko ?: LiveGeckoView(context).also { it.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW); gecko=it }
-            val content=FrameLayout(context); content.addView(web,FrameLayout.LayoutParams(-1,-1))
+            if(geckoWindow==null)geckoWindow=FloatingGeckoWindow(context)
+            val content=FrameLayout(context)
             error=Ui.text(context,"",13f,Ui.TEXT).apply {
                 setPadding(d(20),d(20),d(20),d(20)); background=Ui.shape(context,Ui.SURFACE,20f)
                 gravity=Gravity.CENTER; visibility=View.GONE; setOnClickListener { workspace.retry() }
@@ -462,16 +468,24 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         val profileState=if(tab.profileId==ProfilePolicy.DEFAULT_ID)state else "${workspace.profileName(tab.profileId)} · $state"
         if(subtitle?.text!=profileState)subtitle?.text=profileState
-        gecko?.let { view -> val session=tab.session; if(session!=null && session.isOpen)workspace.attachSurface(view,session) else if(view.session!=null)workspace.detachSurface(view) }
+        val view=gecko
+        if(tab.error==null && view!=null) {
+            geckoWindow?.show(pageBox(rectangle))
+            val session=tab.session
+            if(session!=null && session.isOpen)workspace.attachSurface(view,session) else if(view.session!=null)workspace.detachSurface(view)
+        } else {
+            geckoWindow?.hide()
+        }
         error?.visibility=if(tab.error==null)View.GONE else View.VISIBLE
         val message=tab.error?.plus("\n\nTap to retry").orEmpty(); if(error?.text?.toString()!=message)error?.text=message
         if(tab.unread && workspace.chatVisible) { tab.unread=false; Replies.clear(context,tab.id); workspace.changed(true) }
     }
     private fun fullscreen() {
         QuickPanel.dismissFor(root)
+        geckoWindow?.hide()
         try { service.startActivity(Intent(service,BrowserActivity::class.java).apply {
             flags=Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP; putExtra(BrowserActivity.EXTRA_TAB,workspace.selectedId)
-        }) } catch(_:RuntimeException) { Toast.makeText(context,"Could not open the browser window",Toast.LENGTH_SHORT).show() }
+        }) } catch(_:RuntimeException) { Toast.makeText(context,"Could not open the browser window",Toast.LENGTH_SHORT).show(); render() }
     }
     fun offerExternal(raw: String) { Toast.makeText(context,"Open fullscreen to confirm this external-app link.",Toast.LENGTH_LONG).show() }
     private fun flags(next: FloatingMode): Int {
@@ -488,6 +502,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         return WindowBox(d(4),d(28),(p.x-d(8)).coerceAtLeast(1),(p.y-d(60)).coerceAtLeast(1))
     }
     private fun headBox()=WindowGeometry.placed(safeArea(),workspace.bubbleX,workspace.bubbleY,d(64),d(64))
+    private fun pageBox(panel: WindowBox): WindowBox {
+        val top=d(52); val bottom=d(48)
+        return WindowBox(panel.x,panel.y+top,panel.width,(panel.height-top-bottom).coerceAtLeast(1))
+    }
     private fun panelBox(forMode: FloatingMode): WindowBox?=when(forMode) {
         FloatingMode.CHAT -> chatBox
         FloatingMode.CHOOSER -> chooserBox
@@ -519,7 +537,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         rectangle=fitted; target=fitted
         params.x=fitted.x; params.y=fitted.y; params.width=fitted.width; params.height=fitted.height; params.flags=flags(mode)
         OverlayGlass.apply(context,manager,params,mode!=FloatingMode.BUBBLE)
-        try { manager.updateViewLayout(root,params) } catch(_:RuntimeException) { service.stopSelf() }
+        try {
+            manager.updateViewLayout(root,params)
+            if(mode==FloatingMode.CHAT)geckoWindow?.sync(pageBox(fitted))
+        } catch(_:RuntimeException) { service.stopSelf() }
     }
     private fun drag(event: MotionEvent,resize: Boolean,isHead: Boolean): Boolean {
         if(hiding)return true
@@ -556,7 +577,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
                 if(wasDragging)place(target,false)
                 dragging=false
                 if(shouldHide) {
-                    hiding=true; dismiss.hide(); root.pivotX=root.width/2f; root.pivotY=root.height/2f
+                    hiding=true; dismiss.hide(); geckoWindow?.hide(); root.pivotX=root.width/2f; root.pivotY=root.height/2f
                     root.animate().scaleX(.35f).scaleY(.35f).alpha(0f).setDuration(130).setInterpolator(Ui.ease).withEndAction {
                         if(!destroyed && !service.park()) { hiding=false; root.alpha=1f; root.scaleX=1f; root.scaleY=1f; place(headBox(),false) }
                     }.start()
@@ -606,9 +627,9 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         QuickPanel.dismissFor(root); destroyed=true; motion.cancel(); dismiss.hide(true); workspace.unlisten(listener); main.removeCallbacksAndMessages(null)
         root.animate().cancel(); root.animate().withEndAction(null)
         if(Build.VERSION.SDK_INT>=33)backCallback?.let { backDispatcher?.unregisterOnBackInvokedCallback(it) }
-        gecko?.let { workspace.detachSurface(it) }; workspace.floatingVisible=false; workspace.applyPolicy()
+        gecko?.let { workspace.detachSurface(it) }; geckoWindow?.destroy(); geckoWindow=null
+        workspace.floatingVisible=false; workspace.applyPolicy()
         try { manager.removeView(root) } catch(_:RuntimeException) { }
-        gecko=null
     }
     private fun d(n: Int)=Ui.dp(context,n.toFloat())
     companion object {
