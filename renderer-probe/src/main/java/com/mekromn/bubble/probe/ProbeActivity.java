@@ -140,7 +140,7 @@ public final class ProbeActivity extends Activity {
             try{
                 File file=new File(dir,token+".json");
                 if(failure!=null)report=TrialPlan.json("schema",1,"spec",spec,"status",failure,"controllerElapsedMs",elapsed);
-                else report=new JSONObject(Files.readString(file.toPath()));
+                else report=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
                 report.put("controllerElapsedMs",elapsed);write(file,report.toString(2));
                 new File(dir,token+".pending.json").delete();
             }catch(Exception e){report=TrialPlan.json("status","REPORT_READ_ERROR","spec",spec,"error",e.toString());}
