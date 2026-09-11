@@ -18,20 +18,28 @@ assert.equal(source.includes("window !== window.top || location.origin !== 'http
 // change therefore needs a real built-in extension version bump so existing Bubble profiles receive it.
 assert.match(workspace, /ensureBuiltIn\("resource:\/\/android\/assets\/chat-monitor\/", "chat-monitor@bubble\.local"\)/,
   'Bubble must continue installing the packaged monitor through ensureBuiltIn');
-assert.equal(manifest.version, '2.7',
-  'Built-in extension version must advance so existing Bubble profiles receive the hardened Voice UI');
-assert.match(source, /SCRIPT_VERSION = '2\.7'/,
+assert.equal(manifest.version, '2.8',
+  'Built-in extension version must advance so existing Bubble profiles receive the exact-header copy fix');
+assert.match(source, /SCRIPT_VERSION = '2\.8'/,
   'Voice UI execution marker must match the packaged extension generation');
 
 assert.match(source, /bubble-voice-copy-number/, 'A stable one-copy-control id is required');
-assert.match(source, /actionRow\.insertBefore\(button, found\.call\)/,
-  'Copy number control must sit immediately before the existing call control');
-assert.match(source, /return \{root, call, phone: ''\}/,
-  'A contact-name-only Voice header must still be accepted even when no visible phone number exists');
-assert.match(source, /phoneForHeader\(found\.root\)/,
-  'Copy action must resolve the number from active-thread metadata at click/install time');
-assert.match(source, /navigator\.clipboard\.writeText\(phone\)/,
-  'One tap must use the browser clipboard API when available');
+assert.match(source, /function headerCallControl\(\)/,
+  'Copy placement must be anchored from the active conversation call control');
+assert.match(source, /function visibleHeaderPhone\(call\)/,
+  'A compact visible number on the same header row as the call control must be preferred');
+assert.match(source, /function callMetadataPhones\(call\)/,
+  'Name-only headers may use only call/header metadata as the number fallback');
+assert.match(source, /if \(metadata\.length && metadata\.some\(item => item\.digits !== visiblePhone\.phone\.digits\)\) return null/,
+  'Visible header number and call metadata disagreement must fail closed instead of copying the wrong number');
+assert.match(source, /info\.phoneNode\.append\(button\)/,
+  'When the number is visibly rendered, the copy button must be inline immediately after that exact number element');
+assert.match(source, /const current = resolveHeaderNumber\(\)/,
+  'Copy action must re-resolve the active header on every tap so stale conversation numbers cannot be copied');
+assert.equal(/selectedThreadRoots|phoneForHeader|deepPhone/.test(source), false,
+  'Copy-number resolution must not scan selected rows, message history, or broad descendant text for arbitrary numbers');
+assert.match(source, /navigator\.clipboard\.writeText\(current\.phone\.display\)/,
+  'One tap must copy the freshly-verified active-header number');
 assert.match(source, /document\.execCommand\('copy'\)/,
   'Gecko-compatible local clipboard fallback must remain available');
 assert.match(source, /aria-label', 'Copy phone number'/,
@@ -40,7 +48,7 @@ assert.match(source, /digits\.length >= 7 && digits\.length <= 15/,
   'Only plausible phone-number candidates may be copied');
 
 assert.match(source, /function unreadRows\(\)/,
-  'Voice notification return must have a semantic unread-conversation discovery path');
+  'Voice notification return must retain a semantic unread-conversation discovery path');
 assert.match(source, /\[aria-label\*="unread" i\]/,
   'Unread routing must prefer accessible semantics rather than Google minified class names');
 assert.match(source, /function revealConversationList\(\)/,
@@ -55,4 +63,4 @@ assert.equal(/fetch\s*\(|XMLHttpRequest|sendNativeMessage|localStorage|sessionSt
 assert.equal(/\.click\(\)[\s\S]{0,80}(?:call|dial|phone)/iu.test(source), false,
   'The fallback must never synthesize a Voice call/dial action');
 
-console.log('Exact-origin Google Voice copy control, name-only header support, and local unread-thread fallback passed.');
+console.log('Exact-origin Google Voice active-header copy control and local unread-thread fallback passed.');
