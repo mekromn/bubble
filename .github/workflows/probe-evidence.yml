@@ -1,0 +1,64 @@
+name: Inspect renderer probe evidence
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing probe release to inspect
+        required: true
+        default: bubble-probe-34600006037-1
+  push:
+    branches: [benchmark-probe-build115]
+    paths: ['.github/workflows/probe-evidence.yml']
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read existing emulator artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag || 'bubble-probe-34600006037-1' }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^bubble-probe-[0-9]+-[0-9]+$ ]]
+          mkdir -p evidence
+          gh release download "$RELEASE_TAG" --pattern probe-smoke.tar --pattern probe-smoke-logcat.txt --dir evidence
+          python3 - <<'PY'
+          import json, re, tarfile
+          from pathlib import Path
+          with tarfile.open('evidence/probe-smoke.tar') as archive:
+              for member in archive.getmembers():
+                  if not member.isfile() or not member.name.endswith('.json') or member.size > 2000000:
+                      continue
+                  data = json.load(archive.extractfile(member))
+                  if member.name.endswith('plan.json'):
+                      continue
+                  print('REPORT', member.name)
+                  if 'spec' in data:
+                      for key in ('status','spec','firstContentfulPaint','visualConfirmed','injectedInputEvents','error','lifecycleError','page','capabilities'):
+                          if key in data:
+                              value = data[key]
+                              if key == 'page' and isinstance(value, dict):
+                                  value = {k:v for k,v in value.items() if k not in ('rafIntervalsMs','intervals','frames')}
+                              print(key, json.dumps(value, ensure_ascii=True)[:6000])
+                  else:
+                      print(json.dumps(data)[:2000])
+          lines = Path('evidence/probe-smoke-logcat.txt').read_text(errors='replace').splitlines()
+          needles = re.compile(r'FATAL EXCEPTION|Fatal signal|AndroidRuntime|Gecko.*(?:[Ee]rror|[Ff]ail|[Ww]arn)|SecurityError|SyntaxError|ReferenceError|TypeError|Content Security|content security|BPROBE:|GeckoConsole|Unable to start|GeckoThread|GeckoLoader|GeckoProcessManager')
+          matches = [i for i,line in enumerate(lines) if needles.search(line)]
+          print('LOG_MATCH_COUNT', len(matches))
+          selected = set()
+          for i in matches[:100] + matches[-100:]:
+              selected.update(range(max(0, i-1), min(len(lines), i+3)))
+          for i in sorted(selected):
+              print(lines[i][:2400])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: existing-probe-smoke-evidence
+          path: evidence/
+          retention-days: 7
