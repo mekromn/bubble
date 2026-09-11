@@ -29,16 +29,15 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Persistent physical-device crash diagnostics.
  *
- * IMPORTANT: diagnostics are intentionally parked for performance testing right now. Flip ENABLED
- * back to true for a forensic build. When disabled, install/event/error/memory/session-state helpers
- * return before allocating a writer thread, opening MediaStore, collecting PSS, scanning Workspace
- * tabs, or formatting log lines. The complete Downloads + private-shadow + uncaught-exception +
- * ApplicationExitInfo implementation remains here for the next debugging cycle.
+ * Diagnostics are intentionally ENABLED on this forensic native-renderer build. Logs are mirrored
+ * to Downloads/Bubble Logs and an app-private shadow, uncaught Java exceptions are synchronously
+ * flushed, and the next process launch records ApplicationExitInfo including native crash traces
+ * when Android provides them.
  *
  * Never log page text, cookies, request headers, auth/session tokens, form contents or URL queries.
  */
 internal object DiagnosticLog {
-    const val ENABLED = false
+    const val ENABLED = true
 
     private const val TAG = "BubbleDiag"
     private const val PREFS = "bubble_diagnostics"
@@ -181,7 +180,7 @@ internal object DiagnosticLog {
     private fun stackLine(area: String, error: Throwable): String {
         val text = buildString {
             append(error.javaClass.name).append(": ").append(error.message.orEmpty()).append("\\n")
-            error.stackTrace.forEach { append("  at ").append(it).append("\\n") }
+            error.stackTrace.forEach { append("  at ").append(error).append("\\n") }
             var cause = error.cause
             var depth = 0
             while (cause != null && cause !== error && depth++ < 8) {
