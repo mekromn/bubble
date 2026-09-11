@@ -8,11 +8,12 @@ class PageAppearanceTest {
         assertEquals(PageAppearanceMode.DEFAULT, PageAppearanceMode.fromWire(null))
         assertEquals(PageAppearanceMode.DEFAULT, PageAppearanceMode.fromWire("default"))
         assertEquals(PageAppearanceMode.DARK, PageAppearanceMode.fromWire("dark"))
+        assertEquals(PageAppearanceMode.AMOLED, PageAppearanceMode.fromWire("amoled"))
         assertEquals(PageAppearanceMode.LIGHT, PageAppearanceMode.fromWire("light"))
         assertEquals(PageAppearanceMode.DEFAULT, PageAppearanceMode.fromWire("future-value"))
     }
 
     @Test fun modesHaveDistinctPersistentWireValues() {
-        assertEquals(3, PageAppearanceMode.entries.map { it.wire }.toSet().size)
+        assertEquals(4, PageAppearanceMode.entries.map { it.wire }.toSet().size)
     }
 }
