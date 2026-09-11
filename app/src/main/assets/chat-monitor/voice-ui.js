@@ -9,7 +9,7 @@
 
   const ID = 'bubble-voice-copy-number';
   const STYLE_ID = 'bubble-voice-copy-number-style';
-  const SCRIPT_VERSION = '2.7';
+  const SCRIPT_VERSION = '2.8';
   const ROUTE_COOLDOWN_MS = 2600;
   let timer = 0;
   let routeTimer = 0;
@@ -37,9 +37,16 @@
     for (const rawValue of matches) {
       const raw = rawValue.trim().replace(/[.,;:]+$/u, '');
       const digits = raw.replace(/\D/gu, '');
-      if (digits.length >= 7 && digits.length <= 15) return raw;
+      if (digits.length >= 7 && digits.length <= 15) return {display: raw, digits};
     }
-    return '';
+    return null;
+  }
+
+  function phoneOnlyText(node) {
+    if (!(node instanceof Element) || !visible(node)) return null;
+    const raw = String(node.textContent || '').replace(/\u00a0/gu, ' ').trim();
+    if (!raw || raw.length > 40 || !/^[+\d\s().-]+$/u.test(raw)) return null;
+    return phoneFrom(raw);
   }
 
   function attributeValues(node, includeText = true) {
@@ -52,35 +59,6 @@
     ];
     if (includeText) values.push(node.textContent);
     return values;
-  }
-
-  function nodePhone(node) {
-    if (!(node instanceof Element)) return '';
-    const href = node.getAttribute('href') || '';
-    if (/^tel:/iu.test(href)) {
-      const fromTel = phoneFrom(decodeURIComponent(href.slice(4)));
-      if (fromTel) return fromTel;
-    }
-    for (const value of attributeValues(node)) {
-      const phone = phoneFrom(value);
-      if (phone) return phone;
-    }
-    return '';
-  }
-
-  function deepPhone(root) {
-    if (!(root instanceof Element)) return '';
-    const direct = nodePhone(root);
-    if (direct) return direct;
-    const selectors = [
-      'a[href^="tel:" i]', '[data-phone-number]', '[data-number]', '[data-value]',
-      '[aria-label]', '[aria-description]', '[title]'
-    ].join(',');
-    for (const node of root.querySelectorAll(selectors)) {
-      const value = nodePhone(node);
-      if (value) return value;
-    }
-    return '';
   }
 
   function labelOf(node) {
@@ -97,138 +75,93 @@
   }
 
   function isCallControl(node) {
-    const label = labelOf(node);
-    return /\b(call|calling|phone|dial)\b/iu.test(label) && !/copy|history|settings|help/iu.test(label);
+    if (!(node instanceof Element) || !visible(node)) return false;
+    const href = node.getAttribute('href') || '';
+    if (/^tel:/iu.test(href)) return true;
+    const label = normalize([
+      node.getAttribute('aria-label'), node.getAttribute('aria-description'), node.getAttribute('title'),
+      node.getAttribute('data-tooltip'), node.getAttribute('data-tooltip-text'), node.getAttribute('data-tooltip-label')
+    ].filter(Boolean).join(' '));
+    return /(^|\b)(call|calling|dial)(\b|$)/iu.test(label) && !/copy|history|settings|help/iu.test(label);
   }
 
-  function controlsIn(root) {
-    if (!(root instanceof Element)) return [];
-    return [...root.querySelectorAll('button,[role="button"],a[role="button"]')].filter(visible);
-  }
-
-  function geometricCallFallback(root, phoneNode = null) {
-    const controls = controlsIn(root);
-    if (controls.length < 2) return null;
-    const menus = controls.filter(isMenuControl);
-    for (const menu of menus) {
-      const menuRect = menu.getBoundingClientRect();
-      const candidates = controls.filter(node => {
-        if (node === menu || isMenuControl(node) || isBackControl(node)) return false;
-        const rect = node.getBoundingClientRect();
-        return Math.abs(rect.top - menuRect.top) <= Math.max(rect.height, menuRect.height, 28) && rect.right <= menuRect.left + 6;
-      }).sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-      if (candidates[0]) return candidates[0];
-    }
-    if (phoneNode) {
-      const phoneRect = phoneNode.getBoundingClientRect();
-      const candidates = controls.filter(node => {
-        if (isMenuControl(node) || isBackControl(node)) return false;
-        const rect = node.getBoundingClientRect();
-        return rect.left > phoneRect.right && Math.abs(rect.top - phoneRect.top) < 90;
-      }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-      if (candidates[0]) return candidates[0];
-    }
-    return null;
-  }
-
-  function callButtonIn(root, phoneNode = null) {
-    const controls = controlsIn(root);
-    return controls.find(isCallControl) || geometricCallFallback(root, phoneNode);
-  }
-
-  function selectedThreadRoots() {
-    const selectors = [
-      '[aria-selected="true"]', '[aria-current="true"]', '[aria-current="page"]',
-      '[data-selected="true"]', '[data-active="true"]'
-    ].join(',');
-    return [...document.querySelectorAll(selectors)].filter(node => node instanceof Element);
-  }
-
-  function headerName(root) {
-    if (!(root instanceof Element)) return '';
-    const controls = new Set(controlsIn(root));
-    const chunks = [];
-    for (const node of root.querySelectorAll('h1,h2,h3,[role="heading"],span,div')) {
-      if (!(node instanceof Element) || controls.has(node) || !visible(node)) continue;
-      const text = normalize(node.textContent);
-      if (!text || text.length > 100 || /^\+?[\d\s().-]+$/u.test(text)) continue;
-      if (/^(messages?|calls?|voicemail|more|menu|back|call)$/iu.test(text)) continue;
-      chunks.push(text);
-    }
-    return chunks.sort((a, b) => a.length - b.length)[0] || '';
-  }
-
-  function phoneForHeader(root) {
-    const direct = deepPhone(root);
-    if (direct) return direct;
-    for (const selected of selectedThreadRoots()) {
-      const phone = deepPhone(selected);
-      if (phone) return phone;
-    }
-    const name = headerName(root);
-    if (name) {
-      const candidates = [...document.querySelectorAll('[role="listitem"],[role="option"],[role="row"],a,button,[tabindex]')];
-      for (const node of candidates) {
-        if (!(node instanceof Element)) continue;
-        const text = normalize(node.textContent);
-        if (!text || !text.includes(name)) continue;
-        const phone = deepPhone(node);
-        if (phone) return phone;
-        let parent = node.parentElement;
-        for (let depth = 0; depth < 4 && parent; depth++, parent = parent.parentElement) {
-          const found = deepPhone(parent);
-          if (found) return found;
-        }
-      }
-    }
-    return '';
-  }
-
-  function candidatePhoneNodes() {
+  function headerCallControl() {
     const selector = [
-      'main a[href^="tel:" i]', 'main [data-phone-number]', 'main [data-number]', 'main [aria-label]',
-      'main span', 'main div', 'main button', 'body header a[href^="tel:" i]', 'body header [data-phone-number]',
-      'body header [data-number]', 'body header [aria-label]', 'body header span', 'body header div', 'body header button'
+      'main a[href^="tel:" i]', 'main button', 'main [role="button"]', 'main a[role="button"]',
+      'header a[href^="tel:" i]', 'header button', 'header [role="button"]', 'header a[role="button"]'
     ].join(',');
     return [...document.querySelectorAll(selector)]
-      .filter(node => visible(node) && node !== document.body && (node.textContent?.length || 0) <= 220)
-      .map(node => ({node, phone: nodePhone(node), rect: node.getBoundingClientRect()}))
-      .filter(item => item.phone && item.rect.top >= 24 && item.rect.top <= Math.min(innerHeight * 0.48, 560))
-      .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+      .filter(isCallControl)
+      .map(node => ({node, rect: node.getBoundingClientRect()}))
+      .filter(item => item.rect.top >= 0 && item.rect.top <= Math.min(innerHeight * 0.42, 460) && item.rect.left >= innerWidth * 0.42)
+      .sort((a, b) => a.rect.top - b.rect.top || b.rect.right - a.rect.right)[0]?.node || null;
   }
 
-  function conversationHeader() {
-    const nodes = candidatePhoneNodes();
-    for (const item of nodes) {
-      let root = item.node;
-      for (let depth = 0; depth < 9 && root; depth++, root = root.parentElement) {
-        const rect = root.getBoundingClientRect();
-        if (rect.height > 280 || rect.width < 220) continue;
-        const call = callButtonIn(root, item.node);
-        if (call) return {root, call, phone: item.phone || phoneForHeader(root)};
-      }
+  function visibleHeaderPhone(call) {
+    if (!(call instanceof Element)) return null;
+    const callRect = call.getBoundingClientRect();
+    const callY = (callRect.top + callRect.bottom) / 2;
+    const band = Math.max(56, callRect.height * 1.8);
+    const selector = [
+      'main span', 'main div', 'main p', 'main a',
+      'header span', 'header div', 'header p', 'header a'
+    ].join(',');
+    const candidates = [];
+    for (const node of document.querySelectorAll(selector)) {
+      if (!(node instanceof Element) || node.contains(call) || call.contains(node)) continue;
+      const phone = phoneOnlyText(node);
+      if (!phone) continue;
+      const rect = node.getBoundingClientRect();
+      const y = (rect.top + rect.bottom) / 2;
+      if (Math.abs(y - callY) > band) continue;
+      if (rect.left >= callRect.left || rect.right > callRect.left + 24) continue;
+      if (rect.top > Math.min(innerHeight * 0.42, 460)) continue;
+      candidates.push({node, phone, rect, distance: Math.abs(y - callY)});
     }
+    candidates.sort((a, b) =>
+      a.distance - b.distance ||
+      (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height) ||
+      b.rect.right - a.rect.right
+    );
+    return candidates[0] || null;
+  }
 
-    // Contact names often replace the raw number in Voice. Find the top action row first and do not
-    // require a visible phone number before exposing Bubble's copy control.
-    const calls = [...document.querySelectorAll('main button,main [role="button"],main a[role="button"],header button,header [role="button"],header a[role="button"]')]
-      .filter(node => visible(node) && (isCallControl(node) || (!isMenuControl(node) && !isBackControl(node))))
-      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-    for (const call of calls) {
-      const callRect = call.getBoundingClientRect();
-      if (callRect.top > Math.min(innerHeight * 0.34, 360) || callRect.right < innerWidth * 0.45) continue;
-      let root = call.parentElement;
-      let fallback = null;
-      for (let depth = 0; depth < 8 && root; depth++, root = root.parentElement) {
-        const rect = root.getBoundingClientRect();
-        if (rect.width < 220 || rect.height > 260) continue;
-        fallback = fallback || root;
-        const phone = phoneForHeader(root);
-        if (phone) return {root, call, phone};
-        if (controlsIn(root).some(isMenuControl)) return {root, call, phone: ''};
+  function callMetadataPhones(call) {
+    if (!(call instanceof Element)) return [];
+    const nodes = [call];
+    let parent = call.parentElement;
+    for (let depth = 0; depth < 3 && parent; depth++, parent = parent.parentElement) nodes.push(parent);
+    const unique = new Map();
+    for (const node of nodes) {
+      const href = node.getAttribute('href');
+      const values = [
+        href && /^tel:/iu.test(href) ? decodeURIComponent(href.slice(4)) : null,
+        node.getAttribute('data-phone-number'), node.getAttribute('data-number'), node.getAttribute('data-value'),
+        node.getAttribute('aria-label'), node.getAttribute('aria-description'), node.getAttribute('title')
+      ];
+      for (const value of values) {
+        const phone = phoneFrom(value);
+        if (phone) unique.set(phone.digits, phone);
       }
-      if (fallback) return {root: fallback, call, phone: phoneForHeader(fallback)};
     }
+    return [...unique.values()];
+  }
+
+  /**
+   * Resolve only from the active header. Message history and other conversation rows are deliberately
+   * excluded. A visible header number is authoritative; call-control metadata may corroborate it or
+   * provide a fallback when Voice shows only a contact name. If the two disagree, refuse to copy.
+   */
+  function resolveHeaderNumber() {
+    const call = headerCallControl();
+    if (!call) return null;
+    const visiblePhone = visibleHeaderPhone(call);
+    const metadata = callMetadataPhones(call);
+    if (visiblePhone) {
+      if (metadata.length && metadata.some(item => item.digits !== visiblePhone.phone.digits)) return null;
+      return {call, phoneNode: visiblePhone.node, phone: visiblePhone.phone, source: 'visible-header'};
+    }
+    if (metadata.length === 1) return {call, phoneNode: null, phone: metadata[0], source: 'call-metadata'};
     return null;
   }
 
@@ -238,16 +171,15 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${ID} {
-        width: 40px !important; height: 40px !important; min-width: 40px !important;
-        margin: 0 2px !important; padding: 0 !important; border: 0 !important;
+        width: 32px !important; height: 32px !important; min-width: 32px !important;
+        margin: 0 0 0 7px !important; padding: 0 !important; border: 0 !important;
         border-radius: 50% !important; background: transparent !important;
-        color: inherit !important; opacity: .82; display: inline-flex !important;
+        color: inherit !important; opacity: .90; display: inline-flex !important;
         align-items: center !important; justify-content: center !important;
         vertical-align: middle !important; cursor: pointer !important;
-        flex: 0 0 40px !important; position: relative !important; z-index: 2 !important;
+        flex: 0 0 32px !important; position: relative !important; z-index: 2 !important;
         -webkit-tap-highlight-color: transparent !important;
       }
-      #${ID}[data-resolved="false"] { opacity: .58; }
       #${ID}:active { background: rgba(127,127,127,.20) !important; opacity: 1; }
       #${ID} svg { width: 21px !important; height: 21px !important; fill: none !important;
         stroke: currentColor !important; stroke-width: 2 !important; stroke-linecap: round !important;
@@ -272,34 +204,36 @@
     button.innerHTML = ok
       ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg>'
       : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
-    button.setAttribute('aria-label', ok ? 'Phone number copied' : 'Phone number not found yet');
+    button.setAttribute('aria-label', ok ? 'Phone number copied' : 'Could not verify active phone number');
     button.title = button.getAttribute('aria-label');
     setTimeout(() => {
       if (!button.isConnected) return;
       button.innerHTML = old;
       button.setAttribute('aria-label', 'Copy phone number');
-      button.title = button.dataset.phone ? `Copy ${button.dataset.phone}` : 'Find and copy phone number';
-    }, 1200);
+      button.title = button.dataset.phone ? `Copy ${button.dataset.phone}` : 'Copy phone number';
+    }, 1100);
   }
 
   async function copyNumber(button) {
-    const found = conversationHeader();
-    const phone = button.dataset.phone || found?.phone || (found ? phoneForHeader(found.root) : '');
-    if (!phone) { flash(button, false); return; }
-    button.dataset.phone = phone;
-    button.dataset.resolved = 'true';
+    // Re-resolve on every tap so a stale button from the previous conversation can never copy its number.
+    const current = resolveHeaderNumber();
+    if (!current) { flash(button, false); schedule(0); return; }
+    button.dataset.phone = current.phone.display;
+    button.dataset.phoneDigits = current.phone.digits;
     let ok = false;
-    try { await navigator.clipboard.writeText(phone); ok = true; }
-    catch (_) { ok = copyFallback(phone); }
+    try { await navigator.clipboard.writeText(current.phone.display); ok = true; }
+    catch (_) { ok = copyFallback(current.phone.display); }
     flash(button, ok);
   }
 
-  function createButton(phone) {
+  function createButton(info) {
     const button = document.createElement('button');
-    button.id = ID; button.type = 'button'; button.dataset.phone = phone || '';
-    button.dataset.resolved = phone ? 'true' : 'false';
+    button.id = ID; button.type = 'button';
+    button.dataset.phone = info.phone.display;
+    button.dataset.phoneDigits = info.phone.digits;
+    button.dataset.source = info.source;
     button.setAttribute('aria-label', 'Copy phone number');
-    button.title = phone ? `Copy ${phone}` : 'Find and copy phone number';
+    button.title = `Copy ${info.phone.display}`;
     button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="10" height="10" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
     button.addEventListener('click', event => {
       event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); void copyNumber(button);
@@ -311,29 +245,44 @@
     timer = 0;
     if (location.origin !== 'https://voice.google.com') return;
     document.documentElement.dataset.bubbleVoiceUi = SCRIPT_VERSION;
-    const found = conversationHeader();
+    const info = resolveHeaderNumber();
     const existing = document.getElementById(ID);
-    if (!found) return; // Keep an already-integrated button during transient Voice rerenders.
+    if (!info) { existing?.remove(); return; }
     ensureStyle();
-    const phone = found.phone || phoneForHeader(found.root);
+
+    const expectedParent = info.phoneNode && !info.phoneNode.matches('a,button,[role="button"]')
+      ? info.phoneNode
+      : info.phoneNode?.parentElement || info.call.parentElement;
+    if (!expectedParent) { existing?.remove(); return; }
+
     if (existing) {
-      if (phone) existing.dataset.phone = phone;
-      existing.dataset.resolved = existing.dataset.phone ? 'true' : 'false';
-      existing.title = existing.dataset.phone ? `Copy ${existing.dataset.phone}` : 'Find and copy phone number';
-      if (existing.parentElement === found.call.parentElement && existing.nextElementSibling === found.call) return;
+      const sameNumber = existing.dataset.phoneDigits === info.phone.digits;
+      const sameParent = existing.parentElement === expectedParent;
+      if (sameNumber && sameParent) {
+        existing.dataset.phone = info.phone.display;
+        existing.dataset.source = info.source;
+        existing.title = `Copy ${info.phone.display}`;
+        return;
+      }
       existing.remove();
     }
-    const button = createButton(phone);
-    const actionRow = found.call.parentElement;
-    if (actionRow) actionRow.insertBefore(button, found.call);
-    else found.root.append(button);
+
+    const button = createButton(info);
+    if (info.phoneNode && expectedParent === info.phoneNode) {
+      // Exact mockup behavior: icon is inline immediately after the visible active-header number.
+      info.phoneNode.append(button);
+    } else if (info.phoneNode?.parentElement) {
+      info.phoneNode.parentElement.insertBefore(button, info.phoneNode.nextSibling);
+    } else if (info.call.parentElement) {
+      // Name-only header: only allowed when the call control itself exposes one unambiguous number.
+      info.call.parentElement.insertBefore(button, info.call);
+    }
   }
 
   function clickableConversationAncestor(node) {
     let current = node instanceof Element ? node : null;
     for (let depth = 0; depth < 8 && current; depth++, current = current.parentElement) {
       const rect = current.getBoundingClientRect();
-      const role = normalize(current.getAttribute('role'));
       const clickable = current.matches('a,button,[tabindex],[role="listitem"],[role="option"],[role="row"],[role="button"]');
       if (clickable && rect.height >= 38 && rect.height <= 180 && rect.width >= 180) return current;
     }
@@ -389,7 +338,6 @@
     const rows = unreadRows();
     if (rows.length) {
       const target = rows[0].row;
-      // If Google already selected the target, do nothing. Otherwise use Voice's real row click.
       const selected = target.getAttribute('aria-selected') === 'true' || target.getAttribute('aria-current') === 'true';
       if (!selected) target.click();
       lastRouteAt = now;
@@ -411,7 +359,7 @@
   const observer = new MutationObserver(() => schedule());
   observer.observe(document.documentElement, {subtree: true, childList: true, characterData: true,
     attributes: true, attributeFilter: ['aria-label', 'aria-description', 'aria-selected', 'aria-current', 'title', 'class',
-      'data-tooltip', 'data-tooltip-text', 'data-tooltip-label', 'data-phone-number', 'data-number', 'data-unread', 'href']});
+      'data-tooltip', 'data-tooltip-text', 'data-tooltip-label', 'data-phone-number', 'data-number', 'data-value', 'data-unread', 'href']});
 
   window.addEventListener('pageshow', () => { schedule(60); scheduleRoute(180); }, {passive: true});
   window.addEventListener('focus', () => { schedule(40); scheduleRoute(120); }, {passive: true});
