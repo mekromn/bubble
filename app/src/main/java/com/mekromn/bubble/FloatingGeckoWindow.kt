@@ -84,7 +84,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         return try {
             val rate = RenderPolicy.vote(context, surface, layout)
-            surface.requestedFrameRate = rate
+            surface.producerFrameRate = rate
             manager.addView(root, layout)
             params = layout
             lastBox = safe
@@ -188,7 +188,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var producerHeight = 0
         private val screenOrigin = IntArray(2)
         private var publishFailurePosted = false
-        var requestedFrameRate: Float = 0f
+        var producerFrameRate: Float = 0f
 
         init {
             setBackgroundColor(Color.TRANSPARENT)
@@ -257,7 +257,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             applyFrameRate(androidSurface)
             DiagnosticLog.event(
                 "DIRECT_SURFACE",
-                "created control=${id(control)} surface=${id(androidSurface)} size=${width}x$height rate=$requestedFrameRate"
+                "created control=${id(control)} surface=${id(androidSurface)} size=${width}x$height rate=$producerFrameRate"
             )
             publishSurfaceIfReady()
         }
@@ -408,7 +408,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
 
         private fun applyFrameRate(surface: Surface) {
-            if (requestedFrameRate <= 0f || Build.VERSION.SDK_INT < 30) return
+            if (producerFrameRate <= 0f || Build.VERSION.SDK_INT < 30) return
             runCatching {
                 val compatibility = if (Build.VERSION.SDK_INT >= 36) {
                     Surface.FRAME_RATE_COMPATIBILITY_AT_LEAST
@@ -417,12 +417,12 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 }
                 if (Build.VERSION.SDK_INT >= 31) {
                     surface.setFrameRate(
-                        requestedFrameRate,
+                        producerFrameRate,
                         compatibility,
                         Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
                     )
                 } else {
-                    surface.setFrameRate(requestedFrameRate, compatibility)
+                    surface.setFrameRate(producerFrameRate, compatibility)
                 }
             }
         }
