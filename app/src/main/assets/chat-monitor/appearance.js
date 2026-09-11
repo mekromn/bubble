@@ -5,13 +5,14 @@
   const STYLE_ID = 'bubble-page-appearance';
   const FILTER = 'invert(1) hue-rotate(180deg)';
   const SURFACE_CLASS = 'bubble-force-dark-surface';
-  const VALID = new Set(['default', 'dark', 'light']);
+  const VALID = new Set(['default', 'dark', 'amoled', 'light']);
   let requestedMode = 'default';
   let classifyTimer = 0;
   let observer = null;
   let observerStop = 0;
   let installed = false;
   const root = () => document.documentElement;
+  const darkLike = () => requestedMode === 'dark' || requestedMode === 'amoled';
 
   const parseColor = value => {
     const m = String(value || '').match(/rgba?\(\s*(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)(?:\D+(\d*(?:\.\d+)?))?\s*\)/i);
@@ -56,27 +57,36 @@
     style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      html.bubble-force-dark { color-scheme: dark !important; }
+      html.bubble-force-dark, html.bubble-force-amoled { color-scheme: dark !important; }
       html.bubble-force-light { color-scheme: light !important; }
-      html.bubble-force-dark.bubble-needs-invert { background: #fff !important; }
+      html.bubble-force-dark.bubble-needs-invert,
+      html.bubble-force-amoled.bubble-needs-invert { background: #fff !important; }
+      html.bubble-force-amoled.bubble-needs-invert body { background: #fff !important; }
       html.bubble-force-light.bubble-needs-invert { background: #000 !important; }
       html.bubble-force-dark:not(.bubble-needs-invert) { background: #000 !important; }
+      html.bubble-force-amoled:not(.bubble-needs-invert),
+      html.bubble-force-amoled:not(.bubble-needs-invert) body { background: #000 !important; }
       html.bubble-force-light:not(.bubble-needs-invert) { background: #fff !important; }
       html.bubble-needs-invert :is(img,picture,video,canvas,iframe,svg) {
         filter: ${FILTER} !important;
       }
 
-      /* Mixed-theme SPAs (Google Voice is the important real-world case) can already render their
-         conversation body dark while leaving the app/header chrome bright white. In that state a
-         whole-page inversion would ruin the correctly-dark content, so Bubble retints only large
-         light surfaces occupying the top application-chrome region. */
+      /* Mixed-theme SPAs can already render their content dark while leaving app/header chrome
+         bright. In that state whole-page inversion would ruin the correctly-dark content, so Bubble
+         retints only large light surfaces occupying the top application-chrome region. */
       html.bubble-force-dark .${SURFACE_CLASS} {
         background-color: #111315 !important;
         color: #e8eaed !important;
         border-color: #303134 !important;
         box-shadow: none !important;
       }
-      html.bubble-force-dark .${SURFACE_CLASS} :is(h1,h2,h3,h4,p,span,a,button,[role="button"],[role="link"]) {
+      html.bubble-force-amoled .${SURFACE_CLASS} {
+        background-color: #000 !important;
+        color: #e8eaed !important;
+        border-color: #303134 !important;
+        box-shadow: none !important;
+      }
+      html:is(.bubble-force-dark,.bubble-force-amoled) .${SURFACE_CLASS} :is(h1,h2,h3,h4,p,span,a,button,[role="button"],[role="link"]) {
         color: #e8eaed !important;
       }
       html.bubble-force-dark .${SURFACE_CLASS} :is(input,textarea,[contenteditable="true"]) {
@@ -84,7 +94,12 @@
         color: #e8eaed !important;
         caret-color: #e8eaed !important;
       }
-      html.bubble-force-dark .${SURFACE_CLASS} :is(svg,path) {
+      html.bubble-force-amoled .${SURFACE_CLASS} :is(input,textarea,[contenteditable="true"]) {
+        background-color: #000 !important;
+        color: #e8eaed !important;
+        caret-color: #e8eaed !important;
+      }
+      html:is(.bubble-force-dark,.bubble-force-amoled) .${SURFACE_CLASS} :is(svg,path) {
         color: #e8eaed !important;
         fill: currentColor !important;
       }
@@ -110,7 +125,7 @@
   };
 
   const retintMixedTopChrome = () => {
-    if (requestedMode !== 'dark' || !document.body) { clearRetintedSurfaces(); return; }
+    if (!darkLike() || !document.body) { clearRetintedSurfaces(); return; }
     const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight);
     const topLimit = Math.min(240, Math.max(96, h * .24));
     const candidates = new Set();
@@ -136,8 +151,7 @@
       if (!geometryEligible) return;
 
       // Once Bubble has identified a light top-chrome surface, its own dark CSS changes the
-      // computed background. Re-sampling that transformed color made the class oscillate on/off on
-      // every observer pass. Keep an already-retinted surface while it is still geometrically the
+      // computed background. Keep an already-retinted surface while it is still geometrically the
       // same top bar; remove it only when the DOM/layout moves it out of that role or dark mode ends.
       if (node.classList.contains(SURFACE_CLASS)) {
         keep.add(node);
@@ -155,17 +169,17 @@
 
   const classify = () => {
     const host = root();
-    if (!host || (requestedMode !== 'dark' && requestedMode !== 'light')) return;
+    if (!host || (!darkLike() && requestedMode !== 'light')) return;
     const value = pageLuma();
     if (value === null) {
-      setInvert(requestedMode === 'dark');
+      setInvert(darkLike());
       clearRetintedSurfaces();
       return;
     }
     const nativeDark = value < 0.48;
-    const needsInvert = requestedMode === 'dark' ? !nativeDark : nativeDark;
+    const needsInvert = darkLike() ? !nativeDark : nativeDark;
     setInvert(needsInvert);
-    if (requestedMode === 'dark' && nativeDark && !needsInvert) retintMixedTopChrome();
+    if (darkLike() && nativeDark && !needsInvert) retintMixedTopChrome();
     else clearRetintedSurfaces();
   };
 
@@ -198,14 +212,14 @@
     requestedMode = mode;
     observer?.disconnect(); observer = null;
     clearRetintedSurfaces();
-    host.classList.remove('bubble-force-dark', 'bubble-force-light', 'bubble-needs-invert');
+    host.classList.remove('bubble-force-dark', 'bubble-force-amoled', 'bubble-force-light', 'bubble-needs-invert');
     host.style.removeProperty('filter');
     if (requestedMode === 'default') {
       document.getElementById(STYLE_ID)?.remove();
       return true;
     }
     ensureStyle();
-    host.classList.add(requestedMode === 'dark' ? 'bubble-force-dark' : 'bubble-force-light');
+    host.classList.add(requestedMode === 'amoled' ? 'bubble-force-amoled' : requestedMode === 'dark' ? 'bubble-force-dark' : 'bubble-force-light');
     classify();
     watchStartupPaint();
     const rerun = () => { classify(); scheduleClassify(500); };
