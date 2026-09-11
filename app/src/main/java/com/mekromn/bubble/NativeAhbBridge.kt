@@ -3,13 +3,7 @@ package com.mekromn.bubble
 import android.view.Surface
 import android.view.SurfaceControl
 
-/**
- * JNI bridge for the Android-16-only ANativeWindow + AHardwareBuffer renderer experiment.
- *
- * The native side owns an AImageReader. Gecko renders into the reader's ANativeWindow; the consumer
- * side acquires the same frame as an AHardwareBuffer and submits that exact buffer to SurfaceFlinger
- * through ASurfaceControl. No CPU lock/readback or pixel copy is permitted in this path.
- */
+/** JNI bridge for the Android-16-only ANativeWindow + AHardwareBuffer renderer experiment. */
 internal object NativeAhbBridge {
     init {
         System.loadLibrary("bubble-ahb")
@@ -23,6 +17,12 @@ internal object NativeAhbBridge {
     ): Long
 
     external fun nativeGetProducerSurface(handle: Long): Surface?
+
+    /**
+     * Poll the shared AImageReader consumer even when auto-refresh produced no ordinary frame callback.
+     * Positive = cumulative AHardwareBuffer submissions; 0 = no buffer; negative = forensic error code.
+     */
+    external fun nativePump(handle: Long): Int
 
     external fun nativeSetFrameRate(handle: Long, frameRate: Float)
 
