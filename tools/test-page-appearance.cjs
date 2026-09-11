@@ -25,7 +25,24 @@ assert.match(source, /html\.bubble-force-amoled \.\$\{SURFACE_CLASS\}[\s\S]*back
   'AMOLED mixed-theme surfaces must be true black');
 assert.match(source, /requestedMode === 'dark' \|\| requestedMode === 'amoled'/,
   'AMOLED must share the dark-forcing/inversion behavior rather than becoming a cosmetic-only mode');
-assert.match(source, /requestedMode === 'amoled' \? 'bubble-force-amoled'/,
+assert.match(source, /mode === 'amoled' \? 'bubble-force-amoled'/,
   'AMOLED selection must install its distinct class');
 
-console.log('Per-tab AMOLED black appearance mode guard passed.');
+assert.match(source, /browser\.runtime\.connectNative\('bubbleAppearance'\)/,
+  'Appearance startup must use the connection-based native path');
+assert.match(source, /browser\.runtime\.sendNativeMessage\('bubbleAppearance'/,
+  'Appearance startup must simultaneously keep the one-shot native path');
+assert.match(source, /Use both Gecko native-messaging paths in parallel/,
+  'Refresh races must be handled by redundant native handshakes rather than a delayed fallback only');
+assert.match(source, /window\.addEventListener\('pageshow',[\s\S]*requestMode\(0, true\)/,
+  'Page-show after refresh must re-verify the saved native appearance mode');
+assert.match(source, /window\.addEventListener\('focus',[\s\S]*requestMode\(0, true\)/,
+  'Foreground return must re-verify the saved native appearance mode');
+assert.match(source, /document\.addEventListener\('visibilitychange',[\s\S]*requestMode\(0, true\)/,
+  'Visibility restoration must re-verify the saved native appearance mode');
+assert.match(source, /const reassert = \(\) =>/,
+  'Appearance engine must be able to reassert a site-overwritten root theme class');
+assert.equal(/if \(installed\) return;[\s\S]*sendNativeMessage/.test(source), false,
+  'Installed state must never permanently suppress later native appearance verification');
+
+console.log('Per-tab AMOLED black and refresh-stable appearance mode guard passed.');
