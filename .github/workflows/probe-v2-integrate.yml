@@ -1,0 +1,107 @@
+name: Integrate Renderer Lab v2
+on:
+  workflow_dispatch:
+  push:
+    branches: [benchmark-probe-build115]
+    paths: ['.github/workflows/probe-v2-integrate.yml']
+permissions:
+  contents: write
+concurrency:
+  group: renderer-lab-v2-integration
+  cancel-in-progress: false
+jobs:
+  integrate-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - name: Integrate isolated probe source with exact-anchor guards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/benchmark-probe-build115
+          python3 tools/probe-v2-payload.py
+          python3 tools/integrate-renderer-lab-v2.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('renderer-probe/src/main/java/com/mekromn/bubble/probe/Measurements.java')
+          s=p.read_text().replace('private static JSONArray rows(ArrayList<long[]> source){','private static JSONArray rows(ArrayList<long[]> source) throws JSONException {').replace('synchronized JSONObject report(){','synchronized JSONObject report() throws JSONException {')
+          p.write_text(s)
+          p=Path('renderer-probe/build.gradle.kts')
+          s=p.read_text().replace('versionCode = providers.environmentVariable("GITHUB_RUN_NUMBER").getOrElse("1").toInt()', 'versionCode = 1000 + providers.environmentVariable("GITHUB_RUN_NUMBER").getOrElse("1").toInt()')
+          p.write_text(s)
+          for file in ['report-head.html','report-tail.html','probe-analysis.js','workload.html']:
+              assert Path('renderer-probe/src/main/assets',file).stat().st_size>100
+          assert 'VARIANTS' in Path('renderer-probe/src/main/java/com/mekromn/bubble/probe/TrialPlan.java').read_text()
+          Path('renderer-probe/V2_READY').write_text('Source integrated; runtime validation is a separate gate.\n')
+          PY
+          node tools/test-renderer-probe.cjs
+          node tools/test-probe-v2.cjs
+          python3 tools/test-probe-comparison.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add renderer-probe tools/test-renderer-probe.cjs tools/test-probe-v2.cjs tools/probe-browser-test.cjs
+          git commit -m 'feat(probe): materialize renderer lab v2 measurements, workloads and statistical report'
+          git push origin HEAD:benchmark-probe-build115
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run all six workloads in a real browser
+        run: |
+          npm install --no-save --package-lock=false playwright@1.55.0
+          npx playwright install --with-deps chromium
+          node tools/probe-browser-test.cjs
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+          cache-read-only: false
+      - uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: false
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Compile and test ARM64 with exact integrated source identity
+        run: |
+          set -euo pipefail
+          GITHUB_SHA="$SOURCE_COMMIT" gradle --no-daemon -p renderer-probe testDebugUnitTest assembleDebug lintDebug engineIdentity 2>&1 | tee probe-v2-build.txt
+          mkdir -p dist
+          cp renderer-probe/build/outputs/apk/debug/*.apk dist/Bubble-Renderer-Lab-v2-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk > dist/signature.txt
+          cp renderer-probe/build/engine-identity.txt dist/ENGINE.txt
+          printf '%s\n' "$SOURCE_COMMIT" > dist/SOURCE.txt
+          sha256sum dist/*.apk > dist/SHA256SUMS
+      - name: Publish compiled experimental lab, not a physical performance result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cat > dist/VALIDATION.md <<'EOF'
+          Renderer Lab v2, isolated package com.mekromn.bubble.probe.
+          Gates completed: source guards, repeated-block statistics tests, six-workload Chromium execution, ARM64 Android/NDK compilation, Java unit tests, lint, signing.
+          This workflow does NOT run the upgraded APK on Android. Android device/emulator runtime and physical Pixel performance remain unverified.
+          Do not interpret Chromium workload completion as Gecko/Android validation.
+          Root-window HWUI GPU/jank metrics are not independent Gecko-page GPU/presentation metrics. Missing present fences are not proven dropped frames. C1-C16 native producer paths and genuine Gecko front buffering remain incomplete and are not silently counted as implemented.
+          EOF
+          gh release create "bubble-lab-v2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" dist/*.apk dist/SOURCE.txt dist/ENGINE.txt dist/signature.txt dist/SHA256SUMS dist/VALIDATION.md --target "$SOURCE_COMMIT" --title 'Bubble Renderer Lab v2 — compiled experimental probe' --notes-file dist/VALIDATION.md --prerelease
+      - name: Preserve source and exact validation output
+        if: always()
+        run: |
+          mkdir -p evidence
+          git archive HEAD > evidence/source.tar
+          cp probe-v2-build.txt evidence/ 2>/dev/null || true
+          cp -r renderer-probe/build/reports evidence/ 2>/dev/null || true
+          cp -r dist evidence/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renderer-lab-v2-source-build-and-validation
+          path: evidence/
+          retention-days: 14
