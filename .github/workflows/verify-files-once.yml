@@ -13,6 +13,7 @@ name: Verify current Bubble changes
 # - Native diagnostics remain quiet; existing DiagnosticLog remains implemented and disabled.
 #
 # No notification/theme/Voice feature changes are part of this branch.
+# Verification trigger: compile the combined ANativeWindow + AHardwareBuffer path as one unit.
 on:
   push:
     branches: [anw-ahb-build115]
