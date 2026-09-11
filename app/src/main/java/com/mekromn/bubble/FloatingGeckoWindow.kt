@@ -75,8 +75,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
             params = layout
             lastBox = safe
             attached = true
-            // WindowManager.addView() can return before AttachedSurfaceControl can build a reparent
-            // transaction. Never synchronously require the compositor child here; retry on VSYNC.
             host.preparePipeline(rate)
             host.updateScreenOrigin()
             DiagnosticLog.event("NATIVE_BUFFER", "overlay attached; compositor parenting deferred")
@@ -163,6 +161,10 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var pipelineRetryPosted = false
         private var pipelineRetryCount = 0
         private var pipelineFailureNotified = false
+        private var framePumpPosted = false
+        private var framePumpTicks = 0
+        private var firstSubmittedLogged = false
+        private var lastNegativePumpStatus = 0
         private val screenOrigin = IntArray(2)
 
         private val pipelineRetry = object : Runnable {
@@ -195,6 +197,44 @@ internal class FloatingGeckoWindow(private val context: Context) {
             }
         }
 
+        private val framePump = object : Runnable {
+            override fun run() {
+                framePumpPosted = false
+                val handle = nativeHandle
+                if (!isAttachedToWindow || !surfacePublished || handle == 0L) return
+                framePumpTicks++
+                val status = try {
+                    NativeAhbBridge.nativePump(handle)
+                } catch (error: RuntimeException) {
+                    DiagnosticLog.error("NATIVE_BUFFER", "nativePump threw", error)
+                    return
+                }
+                when {
+                    status > 0 && !firstSubmittedLogged -> {
+                        firstSubmittedLogged = true
+                        DiagnosticLog.event(
+                            "NATIVE_BUFFER",
+                            "first AHardwareBuffer submitted count=$status pumpTick=$framePumpTicks"
+                        )
+                    }
+                    status == 0 && framePumpTicks in PUMP_LOG_POINTS -> {
+                        DiagnosticLog.event(
+                            "NATIVE_BUFFER",
+                            "shared-buffer pump has no image tick=$framePumpTicks"
+                        )
+                    }
+                    status < 0 && status != lastNegativePumpStatus -> {
+                        lastNegativePumpStatus = status
+                        DiagnosticLog.event(
+                            "NATIVE_BUFFER",
+                            "shared-buffer pump error status=$status tick=$framePumpTicks"
+                        )
+                    }
+                }
+                scheduleFramePump()
+            }
+        }
+
         init {
             setBackgroundColor(Color.TRANSPARENT)
             isFocusable = true
@@ -210,7 +250,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         override fun onDetachedFromWindow() {
             removeCallbacks(pipelineRetry)
+            removeCallbacks(framePump)
             pipelineRetryPosted = false
+            framePumpPosted = false
             releasePipeline()
             super.onDetachedFromWindow()
         }
@@ -239,6 +281,12 @@ internal class FloatingGeckoWindow(private val context: Context) {
             if (!isAttachedToWindow || pipelineRetryPosted || nativeHandle != 0L || pipelineFailureNotified) return
             pipelineRetryPosted = true
             postOnAnimation(pipelineRetry)
+        }
+
+        private fun scheduleFramePump() {
+            if (!isAttachedToWindow || framePumpPosted || !surfacePublished || nativeHandle == 0L) return
+            framePumpPosted = true
+            postOnAnimation(framePump)
         }
 
         private fun tryEnsureOutputControl(w: Int, h: Int): SurfaceControl? {
@@ -311,11 +359,16 @@ internal class FloatingGeckoWindow(private val context: Context) {
             pipelineWidth = w.coerceAtLeast(1)
             pipelineHeight = h.coerceAtLeast(1)
             publishFailurePosted = false
+            framePumpTicks = 0
+            firstSubmittedLogged = false
+            lastNegativePumpStatus = 0
             DiagnosticLog.event("NATIVE_BUFFER", "native producer Surface ready handle=$handle")
             return true
         }
 
         private fun recreatePipeline(w: Int, h: Int) {
+            removeCallbacks(framePump)
+            framePumpPosted = false
             val activeDisplay = display
             if (surfacePublished && activeDisplay != null) runCatching { activeDisplay.surfaceDestroyed() }
             surfacePublished = false
@@ -327,7 +380,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         fun releasePipeline() {
             removeCallbacks(pipelineRetry)
+            removeCallbacks(framePump)
             pipelineRetryPosted = false
+            framePumpPosted = false
             pipelineRetryCount = 0
             pipelineFailureNotified = false
             if (surfacePublished) display?.let { runCatching { it.surfaceDestroyed() } }
@@ -344,6 +399,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
             pipelineWidth = 0
             pipelineHeight = 0
             publishFailurePosted = false
+            framePumpTicks = 0
+            firstSubmittedLogged = false
+            lastNegativePumpStatus = 0
             if (!keepOutputControl) releaseOutputControl()
         }
 
@@ -378,6 +436,8 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         fun unbind(expected: GeckoSession) {
             if (session !== expected) return
+            removeCallbacks(framePump)
+            framePumpPosted = false
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
             if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
@@ -396,6 +456,8 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         private fun cleanupAfterBindFailure(target: GeckoSession, error: RuntimeException) {
             DiagnosticLog.error("NATIVE_BUFFER", "GeckoDisplay bind failed", error)
+            removeCallbacks(framePump)
+            framePumpPosted = false
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
             if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
@@ -451,7 +513,8 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 surfacePublished = true
                 publishFailurePosted = false
                 updateScreenOrigin()
-                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success")
+                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success; VSYNC consumer pump armed")
+                scheduleFramePump()
             } catch (error: RuntimeException) {
                 if (!publishFailurePosted) {
                     publishFailurePosted = true
@@ -535,6 +598,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         companion object {
             private const val MAX_PIPELINE_RETRIES = 120
             private val RETRY_LOG_POINTS = setOf(1, 2, 4, 8, 16, 32, 64, 120)
+            private val PUMP_LOG_POINTS = setOf(1, 2, 4, 8, 16, 32, 64, 120, 240)
         }
     }
 
