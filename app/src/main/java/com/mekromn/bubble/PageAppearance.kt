@@ -70,8 +70,9 @@ internal object PageAppearance {
                 port.disconnect()
             }
         }, NATIVE_APP)
-        // Same built-in extension, separate native-app namespace. Resolve the owning profile from
+        // Same built-in extension, separate native-app namespaces. Resolve the owning profile from
         // Bubble's durable logical tab, never from webpage-supplied data.
+        VoicePageBridge.bind(tabId, session, addon)
         val profileId = Workspace.peek()?.tabs?.firstOrNull { it.id == tabId }?.profileId ?: ProfilePolicy.DEFAULT_ID
         ChatVaultBridge.bind(context, tabId, profileId, session, addon)
     }
