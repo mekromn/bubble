@@ -7,20 +7,19 @@ name: Verify current Bubble changes
 # - Gecko renders into an AImageReader-owned ANativeWindow.
 # - Producer BufferQueue is forced to shared-buffer + auto-refresh front-buffer mode.
 # - Allocations require FRONT_BUFFER + COMPOSER_OVERLAY + GPU_FRAMEBUFFER + GPU_SAMPLED_IMAGE.
-# - The consumer acquires that exact frame as AHardwareBuffer with its acquire fence.
-# - The same AHardwareBuffer is submitted 1:1, opaque and unscaled to ASurfaceControl.
+# - Shared-buffer consumer is actively polled every VSYNC because auto-refresh permits acquisition
+#   even when no ordinary onImageAvailable callback was delivered.
+# - The exact acquired frame is submitted as the same AHardwareBuffer, 1:1 and unscaled, to ASurfaceControl.
 # - SurfaceFlinger release fence is returned to AImageReader via AImage_deleteAsync.
 # - No SurfaceView/TextureView floating producer, CPU buffer lock/readback, memcpy, texture blit or fidelity drop.
 # - Android 16/API 36 is deliberately required; there is no fallback so physical A/B is unambiguous.
 # - HWC plane assignment is requested through COMPOSER_OVERLAY/FRONT_BUFFER eligibility; SurfaceFlinger/HWC remains final arbiter.
-# - Native build uses NDK r30 so API 36 native symbols are available.
-# - LL-NDK shared-buffer/auto-refresh controls are runtime-resolved from device libnativewindow and fail closed if unavailable.
-# - AttachedSurfaceControl parenting is deferred/retried on VSYNC because buildReparentTransaction() may legally return null during first attach.
-# - The output SurfaceControl is created at the exact page buffer size before native AHardwareBuffer submission.
-# - Persistent DiagnosticLog remains ENABLED for this forensic build, including compositor-stage breadcrumbs.
+# - Native build uses NDK r30; LL-NDK shared-buffer controls are runtime-resolved from device libnativewindow.
+# - AttachedSurfaceControl parenting is deferred/retried on VSYNC.
+# - Persistent DiagnosticLog remains ENABLED and now records pump/no-buffer/error/submission states.
 #
 # No notification/theme/Voice feature changes are part of this branch.
-# Verification trigger: compile deferred SurfaceControl parenting fix.
+# Verification trigger: compile VSYNC-driven shared-buffer consumer pump.
 on:
   push:
     branches: [anw-ahb-build115]
