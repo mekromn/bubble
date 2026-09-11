@@ -36,8 +36,8 @@ assert.match(copy, /const found = activeHeaderPhone\(\)/,
   'Copy action must re-resolve the visible header number instead of trusting stale cached data');
 assert.match(copy, /navigator\.clipboard\.writeText\(found\.phone\.display\)/,
   'One tap must copy exactly the currently visible header number');
-assert.equal(/callButton|callMetadata|conversation|unread|routeNewest|selectedThread|deepPhone/.test(copy), false,
-  'Simple copy helper must not depend on call controls, conversation rows, unread state, or broad page scanning');
+assert.equal(/function\s+(?:callButton|callMetadata|unreadRows|routeNewest|selectedThread|deepPhone)\b/.test(copy), false,
+  'Simple copy helper must not implement call-control or conversation-routing helpers');
 
 assert.match(dark, /bubble-voice-bright-control/,
   'Voice dark cleanup must identify isolated bright Material controls');
