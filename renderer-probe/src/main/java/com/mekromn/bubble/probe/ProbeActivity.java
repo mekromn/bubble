@@ -52,6 +52,7 @@ public final class ProbeActivity extends Activity {
     private String suiteId;
     private Runnable deadline;
     private long launchTime;
+    private String lastPhase="not-started";
     private Button quick,matrix,extended;
 
     @Override public void onCreate(Bundle state) {
@@ -103,7 +104,7 @@ public final class ProbeActivity extends Activity {
         main.postDelayed(()->{if(resumed&&!active&&!saving&&!queue.isEmpty())launchNext();},1500);
     }
     private void launchNext(){
-        current=queue.removeFirst();active=true;trialPid=0;launchTime=SystemClock.elapsedRealtime();
+        current=queue.removeFirst();active=true;trialPid=0;lastPhase="launching";launchTime=SystemClock.elapsedRealtime();
         String token=current.optString("token");status.setText((completed+1)+" / "+total+" · "+current.optString("variant")+" · "+(current.optBoolean("floating")?"floating":"fullscreen window"));
         File checkpoint=new File(suiteDir,token+".pending.json");
         JSONObject checkpointData=TrialPlan.json("status","PENDING_OR_INTERRUPTED","spec",current,"controllerStartElapsedMs",launchTime);
@@ -112,8 +113,8 @@ public final class ProbeActivity extends Activity {
         ResultReceiver receiver=new ResultReceiver(main){
             @Override protected void onReceiveResult(int code,Bundle data){
                 if(!active||current!=spec||!token.equals(data.getString("token")))return;
-                if(code==1){trialPid=data.getInt("pid");return;}
-                if(code==3){status.setText((completed+1)+" / "+total+" · "+spec.optString("variant")+" · "+data.getString("phase"));return;}
+                if(code==1){trialPid=data.getInt("pid");lastPhase=data.getString("phase","starting");return;}
+                if(code==3){lastPhase=data.getString("phase","unknown");status.setText((completed+1)+" / "+total+" · "+spec.optString("variant")+" · "+data.getString("phase"));return;}
                 if(code==2)finishTrial(null);
             }
         };
@@ -134,12 +135,13 @@ public final class ProbeActivity extends Activity {
         if(!active)return;
         main.removeCallbacks(deadline);active=false;saving=true;
         JSONObject spec=current;File dir=suiteDir;String token=spec.optString("token");long elapsed=SystemClock.elapsedRealtime()-launchTime;
+        String terminalPhase=lastPhase;
         killTrial();
         files.execute(()->{
             JSONObject report;
             try{
                 File file=new File(dir,token+".json");
-                if(failure!=null)report=TrialPlan.json("schema",1,"spec",spec,"status",failure,"controllerElapsedMs",elapsed);
+                if(failure!=null)report=TrialPlan.json("schema",1,"spec",spec,"status",failure,"controllerElapsedMs",elapsed,"lastObservedPhase",terminalPhase);
                 else report=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
                 report.put("controllerElapsedMs",elapsed);write(file,report.toString(2));
                 new File(dir,token+".pending.json").delete();

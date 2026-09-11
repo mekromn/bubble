@@ -24,8 +24,20 @@ const canvas=document.getElementById('paint'), ctx=canvas.getContext('2d', {alph
 canvas.width=Math.round(innerWidth*devicePixelRatio); canvas.height=Math.round(64*devicePixelRatio);
 const marker=document.getElementById('marker');
 const raf=[], longTasks=[]; let observer=null;
-try { observer=new PerformanceObserver(list=>{for(const e of list.getEntries()) if(measureStart && e.startTime>=measureStart) longTasks.push(e.duration)}); observer.observe({type:'longtask',buffered:false}); } catch (_) {}
-let first=0, last=0, measureStart=0, frameId=0, done=false;
+const supportedEntries=typeof PerformanceObserver==='function' ? (PerformanceObserver.supportedEntryTypes||[]) : [];
+let longTaskApiSupported=false;
+if(supportedEntries.includes('longtask')) {
+  try {
+    observer=new PerformanceObserver(list=>{for(const e of list.getEntries()) if(measureStart && e.startTime>=measureStart) longTasks.push(e.duration)});
+    observer.observe({type:'longtask',buffered:false}); longTaskApiSupported=true;
+  } catch (_) { observer=null; }
+}
+let first=null, last=0, measureStart=0, frameId=0, done=false;
+const readinessStarted=performance.now(), readinessLimitMs=15000;
+let initialContentfulPaintMs=null;
+// Do not scroll or inject APZ input before the initial paint. Such input can suppress
+// Gecko's FCP signal (Mozilla bug 2069900), contaminating the readiness measurement.
+marker.textContent=C.label+' | waiting for initial content paint';
 const visibility=[]; document.addEventListener('visibilitychange',()=>visibility.push({at:performance.now(),state:document.visibilityState}));
 function send(phase, extra={}) {document.title='BPROBE:'+JSON.stringify({token:C.token,phase,...extra});}
 function summary(a) {
@@ -35,7 +47,20 @@ function summary(a) {
 }
 function frame(t) {
   if(done) return;
-  if(!first) {first=t; send('warmup',{cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,userAgent:navigator.userAgent});}
+  if(first===null) {
+    const paints=performance.getEntriesByType('paint');
+    const fcp=paints.find(entry=>entry.name==='first-contentful-paint');
+    if(!fcp) {
+      if(t-readinessStarted>=readinessLimitMs) {
+        done=true;observer?.disconnect();
+        send('readiness-failed',{reason:'PAGE_FIRST_PAINT_TIMEOUT',paintEntryTypes:supportedEntries,waitedMs:t-readinessStarted});
+      } else requestAnimationFrame(frame);
+      return;
+    }
+    initialContentfulPaintMs=fcp.startTime;
+    first=t;
+    send('warmup',{initialContentfulPaintMs,readinessMs:t-readinessStarted,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,userAgent:navigator.userAgent});
+  }
   const elapsed=t-first;
   if(!measureStart && elapsed>=C.warmupMs) {measureStart=t; last=t; send('measure',{pageStartMs:t});}
   else if(measureStart) {raf.push(Math.round((t-last)*1000)/1000);last=t;}
@@ -51,10 +76,11 @@ function frame(t) {
   if(measureStart && t-measureStart>=C.measureMs) {
     done=true; observer?.disconnect();
     send('done',{raf:summary(raf),durationMs:t-measureStart,frameId,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,
-      finalScroll:pane.scrollTop,longTasks,longTaskApiSupported:!!observer,visibility,visibilityState:document.visibilityState});
+      finalScroll:pane.scrollTop,initialContentfulPaintMs,longTasks,longTaskApiSupported,visibility,visibilityState:document.visibilityState});
     return;
   }
   requestAnimationFrame(frame);
 }
+send('waiting-for-paint',{paintEntryTypes:supportedEntries});
 requestAnimationFrame(frame);
 </script></body></html>

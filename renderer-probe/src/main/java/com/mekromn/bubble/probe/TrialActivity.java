@@ -54,6 +54,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final ArrayList<Double> uiIntervals=new ArrayList<>();
     private final JSONArray refreshEvents=new JSONArray();
+    private final ArrayList<JSONObject> lifecycleEvents=new ArrayList<>();
     private JSONObject spec,capabilities,startEnvironment,endEnvironment,pageReport,engineIdentity;
     private ResultReceiver receiver;
     private String token,suite,html;
@@ -68,7 +69,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private SurfaceControl output;
     private Surface producer;
     private long nativeHandle,lastUiNs;
-    private boolean ending,started,measuring,firstPaint,visualConfirmed,controlCreating,published;
+    private boolean ending,started,measuring,firstPaint,firstComposite,visualConfirmed,controlCreating,published;
+    private int viewReadyRetries;
     private boolean touchedDuringMeasurement;
     private int viewportWidth,viewportHeight,retries;
     private float maxRate,vote;
@@ -119,6 +121,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private String label(){return spec.optString("variant")+" · "+(spec.optBoolean("floating")?"FLOATING":"FULLSCREEN WINDOW")+" · "+spec.optString("workload");}
     private Button button(String text,Runnable action){Button b=new Button(this);b.setText(text);b.setTextSize(11);b.setOnClickListener(v->{touchedDuringMeasurement|=measuring;action.run();});return b;}
     private void signal(int code,String phase){
+        lifecycleEvents.add(TrialPlan.json("elapsedNs",SystemClock.elapsedRealtimeNanos(),"phase",phase));
+        android.util.Log.i("BubbleProbe",token+" "+phase);
         Bundle b=new Bundle();b.putString("token",token);b.putInt("pid",Process.myPid());b.putString("phase",phase);receiver.send(code,b);
     }
     private void prepare(){
@@ -148,12 +152,14 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private void startEngine(File profile){
         if(ending)return;
         try{
+            signal(3,"creating-engine");
             runtime=GeckoRuntime.create(this,new GeckoRuntimeSettings.Builder().arguments(new String[]{"-profile",profile.getAbsolutePath()}).build());
             session=new GeckoSession(new GeckoSessionSettings.Builder().allowJavascript(true)
                 .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE).viewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE).suspendMediaWhenInactive(false).build());
             session.setContentDelegate(new GeckoSession.ContentDelegate(){
                 @Override public void onTitleChange(GeckoSession s,String title){receivePage(title);}
-                @Override public void onFirstContentfulPaint(GeckoSession s){firstPaint=true;}
+                @Override public void onFirstContentfulPaint(GeckoSession s){firstPaint=true;lifecycleEvents.add(TrialPlan.json("elapsedNs",SystemClock.elapsedRealtimeNanos(),"phase","gecko-first-contentful-paint"));}
+                @Override public void onFirstComposite(GeckoSession s){firstComposite=true;lifecycleEvents.add(TrialPlan.json("elapsedNs",SystemClock.elapsedRealtimeNanos(),"phase","gecko-first-composite"));}
                 @Override public void onCrash(GeckoSession s){end("GECKO_CONTENT_CRASH",null);}
                 @Override public void onKill(GeckoSession s){end("GECKO_CONTENT_KILLED",null);}
             });
@@ -184,13 +190,33 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
                 input.setFocusableInTouchMode(true);input.setRequestedFrameRate(vote);page.addView(input,new FrameLayout.LayoutParams(-1,-1));
             }
             attachPage();
-            if(geckoView!=null)page.post(()->{voteTree(page);startWorkload();});
+            if(geckoView!=null)page.postOnAnimation(this::awaitViewSurface);
             else{
                 session.getAccessibility().setView(page); // A real ViewParent, not the SurfaceView.
                 session.getTextInput().setView(page.getChildAt(0));
                 if(raw==null)page.postOnAnimation(this::createRelay);
             }
         }catch(RuntimeException e){end("SETUP_ERROR: "+e,null);}
+    }
+    private void awaitViewSurface(){
+        if(ending||started)return;
+        if(!page.isAttachedToWindow()||page.getWidth()!=viewportWidth||page.getHeight()!=viewportHeight||!hasReadySurface(geckoView)){
+            if(++viewReadyRetries>240){end("GECKOVIEW_SURFACE_READINESS_TIMEOUT",null);return;}
+            page.postOnAnimation(this::awaitViewSurface);return;
+        }
+        // Let GeckoView publish its own display normally; never acquire a second display here.
+        voteTree(page);geckoView.requestFocus();session.setActive(true);session.setFocused(true);
+        signal(3,"geckoview-surface-ready");startWorkload();
+    }
+    private boolean hasReadySurface(View view){
+        if(view instanceof SurfaceView){
+            SurfaceView surface=(SurfaceView)view;
+            return surface.getWidth()>0&&surface.getHeight()>0&&surface.getHolder().getSurface().isValid();
+        }
+        if(view instanceof android.view.TextureView)return ((android.view.TextureView)view).isAvailable();
+        if(view instanceof ViewGroup)for(int i=0;i<((ViewGroup)view).getChildCount();i++)
+            if(hasReadySurface(((ViewGroup)view).getChildAt(i)))return true;
+        return false;
     }
     private void voteTree(View view){
         view.setRequestedFrameRate(vote);
@@ -283,7 +309,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     }
     @Override public void requestNewSurface(){main.post(()->end("ENGINE_REQUESTED_NEW_SURFACE",null));}
     private void startWorkload(){
-        if(ending||started)return;started=true;
+        if(ending||started)return;started=true;signal(3,"loading-workload");
         JSONObject config=TrialPlan.json("token",token,"label",spec.optString("variant"),"workload",spec.optString("workload"),"warmupMs",spec.optInt("warmupMs"),"measureMs",spec.optInt("measureMs"));
         String content=html.replace("__CONFIG__",config.toString());
         session.loadUri("data:text/html;charset=utf-8;base64,"+Base64.encodeToString(content.getBytes(StandardCharsets.UTF_8),Base64.NO_WRAP));
@@ -293,6 +319,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         try{
             JSONObject packet=new JSONObject(title.substring(7));if(!token.equals(packet.optString("token")))return;
             switch(packet.optString("phase")){
+                case "waiting-for-paint":progress.setText(label()+"\nWaiting for initial content paint");signal(3,"waiting-for-paint");break;
+                case "readiness-failed":end("PAGE_FIRST_PAINT_TIMEOUT",packet);break;
                 case "warmup":progress.setText(label()+"\nWarm-up · verify that the page is moving");signal(3,"warm-up");
                     if(spec.optString("workload").equals("apz")){apzStart=SystemClock.uptimeMillis();main.post(apzInput);}break;
                 case "measure":
@@ -327,7 +355,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         if(handle!=0)NativeProbe.measuring(handle,false);
         JSONObject report=TrialPlan.json("schema",1,"probeVersion",BuildConfig.VERSION_NAME,"spec",spec,"status",result,"engine",BuildConfig.GECKO_VERSION,"engineRepository",BuildConfig.GECKO_MAVEN,
             "source",BuildConfig.SOURCE_SHA,"engineArtifact",engineIdentity==null?JSONObject.NULL:engineIdentity,"engineProfile","new stock profile per trial; no Bubble extensions or production load",
-            "viewportWidthPx",viewportWidth,"viewportHeightPx",viewportHeight,"requestedHz",vote,"firstContentfulPaint",firstPaint,
+            "viewportWidthPx",viewportWidth,"viewportHeightPx",viewportHeight,"requestedHz",vote,"firstContentfulPaint",firstPaint,"firstComposite",firstComposite,"lifecycleEvents",new JSONArray(lifecycleEvents),
             "visualConfirmed",visualConfirmed,"touchedDuringMeasurement",touchedDuringMeasurement,"injectedInputEvents",injectedInputEvents,"measureBeginAndroidNs",measureBeginNs,"measureEndAndroidNs",measureEndNs,
             "uiChoreographerIntervalsMs",new JSONArray(uiIntervals),"reportedRefreshEvents",refreshEvents,
             "environmentStart",startEnvironment==null?JSONObject.NULL:startEnvironment,"environmentEnd",endEnvironment==null?environment():endEnvironment,
@@ -346,16 +374,20 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             if(page!=null&&spec.optBoolean("floating")&&page.isAttachedToWindow())manager.removeViewImmediate(page);
             if(chrome!=null&&chrome.isAttachedToWindow())manager.removeViewImmediate(chrome);
         }catch(RuntimeException e){try{report.put("lifecycleError",e.toString());report.put("status","LIFECYCLE_ERROR");}catch(Exception ignored){}}
+        final boolean paintObserved=firstPaint;
         worker.execute(()->{
             try{
                 JSONObject nativeReport=handle==0?null:new JSONObject(NativeProbe.finish(handle));
                 report.put("native",nativeReport==null?JSONObject.NULL:nativeReport);
-                if(nativeReport!=null&&result.startsWith("OK")){
+                if(nativeReport!=null&&report.optString("status").startsWith("OK")){
                     if(nativeReport.optLong("submittedTotal")==0)report.put("status","NO_NATIVE_FRAMES");
                     else if(nativeReport.optInt("outstandingAtTeardown")>0)report.put("status","TEARDOWN_LEASE_TIMEOUT");
                     else if(nativeReport.optLong("errorsTotal")>0)report.put("status","NATIVE_FRAME_ERRORS");
                 }
-                if(result.startsWith("OK")&&!firstPaint)report.put("status","NO_FIRST_CONTENTFUL_PAINT");
+                if(!paintObserved){
+                    report.put("paintReadinessFailure","NO_FIRST_CONTENTFUL_PAINT");
+                    if(report.optString("status").startsWith("OK"))report.put("status","NO_FIRST_CONTENTFUL_PAINT");
+                }
                 File file=new File(new File(new File(getFilesDir(),"benchmarks"),suite),token+".json");
                 ProbeActivity.write(file,report.toString(2));
             }catch(Exception e){
