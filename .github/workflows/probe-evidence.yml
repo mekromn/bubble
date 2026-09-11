@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - name: Collect exact probe source and failed smoke artifacts
+      - name: Collect exact sources, engine resources, and failed smoke artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -32,23 +32,14 @@ jobs:
           curl --fail --location --retry 2 --max-time 120 'https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-arm64-v8a/154.0.20260824154132/geckoview-arm64-v8a-154.0.20260824154132.aar' -o engine.aar
           sha256sum engine.aar > evidence/ENGINE_SHA256.txt
           python3 - <<'PY'
-          import io, json, tarfile, zipfile
+          import json, tarfile, zipfile
           from pathlib import Path
-          out = Path('evidence/engine-inspection'); out.mkdir()
+          out=Path('evidence/engine-inspection'); out.mkdir()
           with zipfile.ZipFile('engine.aar') as aar:
               for name in aar.namelist():
-                  if name.endswith('omni.ja'):
-                      with zipfile.ZipFile(io.BytesIO(aar.read(name))) as omni:
-                          for item in omni.namelist():
-                              if item.endswith(('.js','.mjs')) and ('GeckoView' in item or 'ContentDelegate' in item):
-                                  text = omni.read(item).decode('utf8',errors='replace')
-                                  if 'FirstContentfulPaint' in text or 'PaintStatus' in text or 'DOMContentLoaded' in text:
-                                      (out / item.replace('/','__')).write_text(text)
-                                      print('ENGINE_SOURCE',item)
-                                      lines=text.splitlines()
-                                      for i,line in enumerate(lines):
-                                          if 'FirstContentfulPaint' in line or 'PaintStatus' in line:
-                                              print('\n'.join(f'{k+1}: {lines[k]}' for k in range(max(0,i-8),min(len(lines),i+12))))
+                  if name.endswith(('omni.ja','classes.jar')):
+                      (out / name.replace('/','__')).write_bytes(aar.read(name))
+                      print('ENGINE_RESOURCE',name)
           with tarfile.open('evidence/probe-smoke.tar') as archive:
               for member in archive.getmembers():
                   if not member.isfile() or not member.name.endswith('.json') or member.size > 2000000:
