@@ -64,6 +64,7 @@ require('./test-monitor.cjs');
 require('./test-vault.cjs');
 require('./test-vault-live-request.cjs');
 require('./test-vault-handoff-attachment.cjs');
+require('./test-page-appearance.cjs');
 require('./test-voice-ui.cjs');
 require('./test-floating-performance.cjs');
 require('./test-fullscreen-tab-sync.cjs');
