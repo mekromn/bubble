@@ -43,11 +43,26 @@ for (const required of [
   'ASurfaceTransaction_setBufferWithRelease',
   'AImage_deleteAsync',
   'AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE',
+  'AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER',
+  'AHARDWAREBUFFER_USAGE_FRONT_BUFFER',
+  'AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY',
+  'ANativeWindow_setSharedBufferMode',
+  'ANativeWindow_setAutoRefresh',
   'ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_AT_LEAST',
   'ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS',
 ]) {
-  assert.ok(native.includes(required), `Native zero-copy path must contain ${required}`);
+  assert.ok(native.includes(required), `Native zero-copy/front-buffer path must contain ${required}`);
 }
+
+assert.match(native, /kConsumerUsage\s*=\s*[\s\S]*AHARDWAREBUFFER_USAGE_FRONT_BUFFER[\s\S]*AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY/,
+  'Consumer allocation must simultaneously request front-buffer and HWC overlay eligibility');
+assert.match(native, /ANativeWindow_setSharedBufferMode\(renderer->producerWindow, true\)[\s\S]*ANativeWindow_setAutoRefresh\(renderer->producerWindow, true\)/,
+  'Producer BufferQueue must use shared-buffer mode plus auto-refresh, not ordinary back-buffer queueing');
+assert.match(native, /description\.usage[\s\S]*kRequiredPresentedUsage/,
+  'Physical test must refuse buffers that lost front-buffer/HWC usage flags');
+assert.match(native, /ASurfaceTransaction_setPosition\(transaction, renderer->outputControl, 0, 0\)[\s\S]*ASurfaceTransaction_setScale\(transaction, renderer->outputControl, 1\.0f, 1\.0f\)/,
+  'Presented page layer must remain 1:1 and unscaled for maximum HWC eligibility');
+
 for (const forbidden of [
   'AHardwareBuffer_lock(',
   'AHardwareBuffer_lockPlanes(',
@@ -65,7 +80,7 @@ assert.match(native, /AImageReader_acquireLatestImageAsync[\s\S]*ASurfaceTransac
 assert.match(native, /releaseFrame[\s\S]*AImage_deleteAsync\(lease->image, releaseFenceFd\)/,
   'SurfaceFlinger release fence must gate returning the exact buffer to AImageReader');
 assert.match(native, /ASurfaceTransaction_setEnableBackPressure\(transaction, renderer->outputControl, false\)/,
-  'Latency path intentionally prefers newest buffers over forcing stale frames to present');
+  'Latency path intentionally avoids compositor backpressure');
 
 assert.equal(/setViewBackend/.test(live), false,
   'LiveGeckoView must remain a thin lifecycle wrapper');
@@ -105,4 +120,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Resident ChatGPT/Voice sessions must remain active and high priority');
 
-console.log('Floating combined native path: Gecko -> ANativeWindow -> AHardwareBuffer -> ASurfaceControl, fenced zero-copy, no SurfaceView/TextureView/CPU readback.');
+console.log('Floating combined path: shared ANativeWindow front buffer -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, no SurfaceView/TextureView/CPU readback.');
