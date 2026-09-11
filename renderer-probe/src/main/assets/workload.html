@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'">
+<style>
+* {box-sizing:border-box} html,body {margin:0; background:#000; color:#eef1f5; font:16px system-ui; overflow:hidden}
+#viewport {height:100vh; overflow:auto; scroll-behavior:auto} #messages {padding:16px 16px 80px}
+article {margin:12px 0; padding:16px; background:#171c24; border-radius:15px; border:1px solid #394153}
+article:nth-child(even) {margin-left:32px; background:#182127} h3 {margin:0 0 8px; font-size:16px}
+p {margin:8px 0; line-height:1.5} pre {font-size:13px; white-space:pre-wrap; background:#070b10; padding:12px}
+#marker {position:fixed; top:0; left:0; width:100%; height:28px; background:#205447; color:white; z-index:5; font:14px monospace}
+#paint {position:fixed; bottom:0; left:0; height:64px; width:100%; pointer-events:none; z-index:4}
+</style></head><body><div id="viewport"><div id="messages"></div></div><div id="marker"></div><canvas id="paint"></canvas>
+<script>
+'use strict';
+const C = __CONFIG__;
+const pane = document.getElementById('viewport');
+const rows = document.getElementById('messages');
+// Fixed content, fixed node count, and time-based motion. A faster renderer is not given less work.
+for (let i=0;i<180;i++) {
+  const item=document.createElement('article');
+  item.innerHTML='<h3>Local benchmark message '+i+'</h3><p>Identical typography, layout, and motion in every renderer. No network or account data.</p><pre>frame = render(scene, fullResolution);\npresent(frame, acquireFence);</pre><p>Compare frame production separately from presentation.</p>';
+  rows.appendChild(item);
+}
+const canvas=document.getElementById('paint'), ctx=canvas.getContext('2d', {alpha:false});
+canvas.width=Math.round(innerWidth*devicePixelRatio); canvas.height=Math.round(64*devicePixelRatio);
+const marker=document.getElementById('marker');
+const raf=[], longTasks=[]; let observer=null;
+try { observer=new PerformanceObserver(list=>{for(const e of list.getEntries()) if(measureStart && e.startTime>=measureStart) longTasks.push(e.duration)}); observer.observe({type:'longtask',buffered:false}); } catch (_) {}
+let first=0, last=0, measureStart=0, frameId=0, done=false;
+const visibility=[]; document.addEventListener('visibilitychange',()=>visibility.push({at:performance.now(),state:document.visibilityState}));
+function send(phase, extra={}) {document.title='BPROBE:'+JSON.stringify({token:C.token,phase,...extra});}
+function summary(a) {
+  if(!a.length) return {intervals:[],hz:null,p50:null,p95:null,p99:null};
+  const sorted=[...a].sort((a,b)=>a-b), p=q=>sorted[Math.ceil(sorted.length*q)-1];
+  return {intervals:a,hz:1000*a.length/a.reduce((a,b)=>a+b,0),p50:p(.5),p95:p(.95),p99:p(.99)};
+}
+function frame(t) {
+  if(done) return;
+  if(!first) {first=t; send('warmup',{cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,userAgent:navigator.userAgent});}
+  const elapsed=t-first;
+  if(!measureStart && elapsed>=C.warmupMs) {measureStart=t; last=t; send('measure',{pageStartMs:t});}
+  else if(measureStart) {raf.push(Math.round((t-last)*1000)/1000);last=t;}
+  const max=pane.scrollHeight-pane.clientHeight, period=8000;
+  const phase=(elapsed%period)/period, position=(phase<.5?phase*2:2-phase*2)*max;
+  if(C.workload!=='apz') pane.scrollTop=position; else if(frameId===0) pane.scrollTop=max*.5;
+  marker.textContent=C.label+' | '+C.workload+' | frame '+(++frameId);
+  // The changing marker exposes a live page visually without requiring pixel readback in the hot path.
+  if(C.workload==='repaint') {
+    const w=canvas.width,h=canvas.height;ctx.fillStyle='#050810';ctx.fillRect(0,0,w,h);
+    for(let i=0;i<64;i++){ctx.fillStyle='hsl('+((i*19+elapsed*.07)%360)+' 70% 55%)';const x=((elapsed*.16+i*w/32)%(w+80))-40;ctx.fillRect(x,(i%4)*h/4,32,h/4);}
+  } else {ctx.fillStyle='#050810';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#76ddc1';ctx.fillRect((elapsed*.15)%canvas.width,0,12,canvas.height);}
+  if(measureStart && t-measureStart>=C.measureMs) {
+    done=true; observer?.disconnect();
+    send('done',{raf:summary(raf),durationMs:t-measureStart,frameId,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,
+      finalScroll:pane.scrollTop,longTasks,longTaskApiSupported:!!observer,visibility,visibilityState:document.visibilityState});
+    return;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>

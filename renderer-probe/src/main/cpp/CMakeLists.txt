@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(bubble_probe)
+add_library(bubble-probe SHARED probe.cpp)
+target_compile_features(bubble-probe PRIVATE cxx_std_17)
+target_compile_options(bubble-probe PRIVATE -Wall -Wextra -Werror=return-type)
+target_link_libraries(bubble-probe android mediandk nativewindow EGL GLESv3 log sync)
