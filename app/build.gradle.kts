@@ -1,8 +1,12 @@
 plugins { id("com.android.application") }
+
+val geckoAbi = providers.gradleProperty("geckoAbi").getOrElse("arm64-v8a")
+
 android {
     namespace = "com.mekromn.bubble"
     compileSdk = 37
     compileSdkMinor = 1
+    ndkVersion = "29.0.14206865"
     defaultConfig {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
@@ -10,9 +14,22 @@ android {
         versionCode = 46
         versionName = "0.7.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += geckoAbi }
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-Wall", "-Wextra")
+                arguments += "-DANDROID_PLATFORM=android-36"
+            }
+        }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { buildConfig = true }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     signingConfigs {
         getByName("debug") {
             storeFile = file("signing/bubble-debug.jks")
@@ -28,8 +45,7 @@ android {
     lint { abortOnError = true; disable += "OldTargetApi" }
 }
 dependencies {
-    val abi = providers.gradleProperty("geckoAbi").getOrElse("arm64-v8a")
-    implementation("org.mozilla.geckoview:geckoview-$abi:154.0.20260824154132")
+    implementation("org.mozilla.geckoview:geckoview-$geckoAbi:154.0.20260824154132")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation("androidx.core:core-ktx:1.19.0")
     testImplementation("junit:junit:4.13.2")
