@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 const live = fs.readFileSync('app/src/main/java/com/mekromn/bubble/LiveGeckoView.kt', 'utf8');
 const floating = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt', 'utf8');
 const page = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt', 'utf8');
-const bridge = fs.readFileSync('app/src/main/java/com/mekromn/bubble/NativeAhbBridge.kt', 'utf8');
 const native = fs.readFileSync('app/src/main/cpp/bubble_ahb.cpp', 'utf8');
 const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt', 'utf8');
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
@@ -54,8 +53,16 @@ for (const required of [
   assert.ok(native.includes(required), `Native zero-copy/front-buffer path must contain ${required}`);
 }
 
-assert.match(native, /kConsumerUsage\s*=\s*[\s\S]*AHARDWAREBUFFER_USAGE_FRONT_BUFFER[\s\S]*AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY/,
-  'Consumer allocation must simultaneously request front-buffer and HWC overlay eligibility');
+const usageBlock = native.match(/constexpr uint64_t kConsumerUsage\s*=([\s\S]*?);/);
+assert.ok(usageBlock, 'Consumer usage block must exist');
+assert.ok(usageBlock[1].includes('AHARDWAREBUFFER_USAGE_FRONT_BUFFER'),
+  'Consumer allocation must request front-buffer semantics');
+assert.ok(usageBlock[1].includes('AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY'),
+  'Consumer allocation must request HWC overlay eligibility at the same time');
+assert.ok(usageBlock[1].includes('AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER'),
+  'Consumer allocation must remain GPU render-target capable');
+assert.ok(usageBlock[1].includes('AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE'),
+  'Consumer allocation must remain SurfaceFlinger GPU-composition compatible when HWC falls back');
 assert.match(native, /ANativeWindow_setSharedBufferMode\(renderer->producerWindow, true\)[\s\S]*ANativeWindow_setAutoRefresh\(renderer->producerWindow, true\)/,
   'Producer BufferQueue must use shared-buffer mode plus auto-refresh, not ordinary back-buffer queueing');
 assert.match(native, /description\.usage[\s\S]*kRequiredPresentedUsage/,
