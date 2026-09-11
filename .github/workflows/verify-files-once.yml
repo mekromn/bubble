@@ -1,4 +1,5 @@
 name: Verify current Bubble changes
+# Verification target: simple Google Voice notification rollback + fixed /u/0/messages destination.
 # Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
 # The signed ARM64 APK is published immediately after compile/signing; emulator/runtime verification
 # continues afterward and upgrades the same release from EARLY manual-test to verified when green.
