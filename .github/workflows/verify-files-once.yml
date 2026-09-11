@@ -14,11 +14,12 @@ name: Verify current Bubble changes
 # - Android 16/API 36 is deliberately required; there is no fallback so physical A/B is unambiguous.
 # - HWC plane assignment is requested through COMPOSER_OVERLAY/FRONT_BUFFER eligibility; SurfaceFlinger/HWC remains final arbiter.
 # - Native build uses NDK r30 so API 36 native symbols are available.
+# - LL-NDK shared-buffer/auto-refresh controls are runtime-resolved from the device libnativewindow and fail closed if unavailable.
 # - Native callback teardown is race-safe and r30 C++ SurfaceControl signatures are used.
 # - Native diagnostics remain quiet; existing DiagnosticLog remains implemented and disabled.
 #
 # No notification/theme/Voice feature changes are part of this branch.
-# Verification trigger: compile corrected r30 front-buffer/HWC renderer.
+# Verification trigger: compile dlsym-resolved combined renderer.
 on:
   push:
     branches: [anw-ahb-build115]
