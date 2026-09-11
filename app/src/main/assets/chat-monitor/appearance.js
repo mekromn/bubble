@@ -11,6 +11,7 @@
   let observer = null;
   let observerStop = 0;
   let installed = false;
+  let handshakeGeneration = 0;
   const root = () => document.documentElement;
   const darkLike = () => requestedMode === 'dark' || requestedMode === 'amoled';
 
@@ -71,9 +72,6 @@
         filter: ${FILTER} !important;
       }
 
-      /* Mixed-theme SPAs can already render their content dark while leaving app/header chrome
-         bright. In that state whole-page inversion would ruin the correctly-dark content, so Bubble
-         retints only large light surfaces occupying the top application-chrome region. */
       html.bubble-force-dark .${SURFACE_CLASS} {
         background-color: #111315 !important;
         color: #e8eaed !important;
@@ -129,41 +127,25 @@
     const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight);
     const topLimit = Math.min(240, Math.max(96, h * .24));
     const candidates = new Set();
-
-    // Semantic app bars first, then sample the top region so obfuscated Google class names do not
-    // matter. We only accept large, genuinely light rectangles and never touch images/media.
     document.querySelectorAll('header,[role="banner"],nav[aria-label]').forEach(node => candidates.add(node));
     for (const y of [18, 48, 82, 118, 166, 214]) {
       if (y >= topLimit) continue;
       for (const x of [w * .08, w * .28, w * .5, w * .72, w * .92]) {
         let node = document.elementFromPoint(x, y);
-        for (let depth = 0; node instanceof Element && node !== document.body && depth < 7; depth++, node = node.parentElement) {
-          candidates.add(node);
-        }
+        for (let depth = 0; node instanceof Element && node !== document.body && depth < 7; depth++, node = node.parentElement) candidates.add(node);
       }
     }
-
     const keep = new Set();
     candidates.forEach(node => {
       if (!(node instanceof Element) || node.matches('img,picture,video,canvas,iframe,svg')) return;
       const rect = node.getBoundingClientRect();
       const geometryEligible = rect.bottom > 0 && rect.top < topLimit && rect.width >= w * .46 && rect.height >= 34 && rect.height <= topLimit * 1.35;
       if (!geometryEligible) return;
-
-      // Once Bubble has identified a light top-chrome surface, its own dark CSS changes the
-      // computed background. Keep an already-retinted surface while it is still geometrically the
-      // same top bar; remove it only when the DOM/layout moves it out of that role or dark mode ends.
-      if (node.classList.contains(SURFACE_CLASS)) {
-        keep.add(node);
-        return;
-      }
+      if (node.classList.contains(SURFACE_CLASS)) { keep.add(node); return; }
       const value = nodeLuma(node);
       if (value !== null && value > .78) keep.add(node);
     });
-
-    document.querySelectorAll(`.${SURFACE_CLASS}`).forEach(node => {
-      if (!keep.has(node)) node.classList.remove(SURFACE_CLASS);
-    });
+    document.querySelectorAll(`.${SURFACE_CLASS}`).forEach(node => { if (!keep.has(node)) node.classList.remove(SURFACE_CLASS); });
     keep.forEach(node => node.classList.add(SURFACE_CLASS));
   };
 
@@ -171,11 +153,7 @@
     const host = root();
     if (!host || (!darkLike() && requestedMode !== 'light')) return;
     const value = pageLuma();
-    if (value === null) {
-      setInvert(darkLike());
-      clearRetintedSurfaces();
-      return;
-    }
+    if (value === null) { setInvert(darkLike()); clearRetintedSurfaces(); return; }
     const nativeDark = value < 0.48;
     const needsInvert = darkLike() ? !nativeDark : nativeDark;
     setInvert(needsInvert);
@@ -188,6 +166,21 @@
     classifyTimer = setTimeout(classify, delay);
   };
 
+  const expectedClass = mode => mode === 'amoled' ? 'bubble-force-amoled' : mode === 'dark' ? 'bubble-force-dark' : mode === 'light' ? 'bubble-force-light' : '';
+
+  const reassert = () => {
+    const host = root();
+    if (!host || !installed) return;
+    const expected = expectedClass(requestedMode);
+    const wrong = ['bubble-force-dark', 'bubble-force-amoled', 'bubble-force-light'].some(name => name !== expected && host.classList.contains(name));
+    if ((expected && !host.classList.contains(expected)) || wrong || (requestedMode !== 'default' && !document.getElementById(STYLE_ID))) {
+      install(requestedMode);
+      return;
+    }
+    if (requestedMode === 'default' && (expected || document.getElementById(STYLE_ID))) install('default');
+    else if (requestedMode !== 'default') scheduleClassify(0);
+  };
+
   const watchStartupPaint = () => {
     observer?.disconnect(); observer = null;
     observerStop = performance.now() + 12000;
@@ -195,6 +188,7 @@
     if (!host) return;
     observer = new MutationObserver(() => {
       if (performance.now() > observerStop) { observer?.disconnect(); observer = null; return; }
+      reassert();
       scheduleClassify(120);
     });
     observer.observe(host, {subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style']});
@@ -219,61 +213,61 @@
       return true;
     }
     ensureStyle();
-    host.classList.add(requestedMode === 'amoled' ? 'bubble-force-amoled' : requestedMode === 'dark' ? 'bubble-force-dark' : 'bubble-force-light');
+    host.classList.add(expectedClass(requestedMode));
     classify();
     watchStartupPaint();
-    const rerun = () => { classify(); scheduleClassify(500); };
+    const rerun = () => { reassert(); classify(); scheduleClassify(500); };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', rerun, {once: true});
     window.addEventListener('load', rerun, {once: true});
-    window.addEventListener('pageshow', rerun);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleClassify(80); });
-    for (const delay of [60, 180, 450, 900, 1800, 3500, 6500, 10000]) setTimeout(classify, delay);
+    for (const delay of [60, 180, 450, 900, 1800, 3500, 6500, 10000]) setTimeout(reassert, delay);
     return true;
   };
 
-  const retry = attempt => {
-    if (installed || attempt >= 12) return;
-    setTimeout(() => requestMode(attempt + 1), Math.min(900, 75 * (attempt + 1)));
+  const acceptMode = mode => {
+    if (!VALID.has(mode)) return false;
+    if (!installed || requestedMode !== mode) install(mode);
+    else reassert();
+    return true;
   };
 
-  const portFallback = attempt => {
-    if (installed) return;
+  const requestMode = (attempt = 0, force = false) => {
+    const generation = ++handshakeGeneration;
+    let answered = false;
+    let port = null;
+    const accept = response => {
+      if (generation !== handshakeGeneration || answered) return;
+      const mode = response && typeof response.mode === 'string' ? response.mode : '';
+      if (!VALID.has(mode)) return;
+      answered = true;
+      acceptMode(mode);
+      try { port?.disconnect(); } catch (_) {}
+    };
+
+    // Use both Gecko native-messaging paths in parallel. A document-start race in one path must not
+    // be able to strand a refreshed page on the website's own theme.
     try {
-      const port = browser.runtime.connectNative('bubbleAppearance');
-      let answered = false;
-      const finish = message => {
-        if (answered || installed) return;
-        const mode = message && typeof message.mode === 'string' ? message.mode : '';
-        if (!VALID.has(mode)) return;
-        answered = true;
-        install(mode);
-        try { port.disconnect(); } catch (_) {}
-      };
-      port.onMessage.addListener(finish);
-      setTimeout(() => {
-        if (!answered && !installed) {
-          try { port.disconnect(); } catch (_) {}
-          retry(attempt);
-        }
-      }, 350);
-    } catch (_) {
-      retry(attempt);
-    }
+      port = browser.runtime.connectNative('bubbleAppearance');
+      port.onMessage.addListener(accept);
+    } catch (_) {}
+    try {
+      browser.runtime.sendNativeMessage('bubbleAppearance', {event: 'appearance'}).then(accept).catch(() => {});
+    } catch (_) {}
+
+    setTimeout(() => {
+      if (generation !== handshakeGeneration) return;
+      try { port?.disconnect(); } catch (_) {}
+      if (!answered && attempt < 20) setTimeout(() => requestMode(attempt + 1, true), Math.min(500, 40 + attempt * 30));
+      else if (answered || installed || force) reassert();
+    }, 180);
   };
 
-  const requestMode = attempt => {
-    if (installed) return;
-    try {
-      browser.runtime.sendNativeMessage('bubbleAppearance', {event: 'appearance'})
-        .then(response => {
-          const mode = response && typeof response.mode === 'string' ? response.mode : '';
-          if (!VALID.has(mode)) { portFallback(attempt); return; }
-          install(mode);
-        })
-        .catch(() => portFallback(attempt));
-    } catch (_) {
-      portFallback(attempt);
-    }
-  };
-  requestMode(0);
+  // Re-verify the native source of truth after reload/page-show and every foreground return. This is
+  // intentionally not gated by `installed`: the saved per-tab mode remains authoritative forever.
+  window.addEventListener('pageshow', () => { reassert(); requestMode(0, true); });
+  window.addEventListener('focus', () => { reassert(); requestMode(0, true); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { reassert(); requestMode(0, true); }
+  }, {passive: true});
+
+  requestMode(0, true);
 })();
