@@ -12,6 +12,7 @@ name: Verify current Bubble changes
 # - No TextureView, bitmap copy/readback, App Zygote, Gecko pref, notification, theme or Voice change.
 # - Source guards explicitly require the direct SurfaceControl producer rather than SurfaceView.
 # - Kotlin state naming avoids Android View.requestedFrameRate API collisions.
+# - NewApi lint suppression is scoped only to this Android-12+-gated experimental renderer file.
 #
 # This workflow intentionally runs only on the isolated zero-copy branch so rebuild-v2 stays untouched.
 on:
