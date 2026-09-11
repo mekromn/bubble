@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins { id("com.android.application") version "9.3.0" }
 val abi = providers.gradleProperty("geckoAbi").getOrElse("arm64-v8a")
 val engineVersion = providers.gradleProperty("geckoVersion").getOrElse("154.0.20260824154132")
@@ -48,7 +50,7 @@ tasks.register("engineIdentity") {
     doLast {
         val artifacts = configurations.getByName("debugRuntimeClasspath").resolvedConfiguration.resolvedArtifacts
         val aar = artifacts.single { it.moduleVersion.id.group == "org.mozilla.geckoview" && it.extension == "aar" }.file
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = MessageDigest.getInstance("SHA-256")
         aar.inputStream().use { stream -> val b = ByteArray(65536); while (true) { val n = stream.read(b); if (n < 0) break; digest.update(b, 0, n) } }
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         val out = layout.buildDirectory.file("engine-identity.txt").get().asFile

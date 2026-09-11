@@ -17,6 +17,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -41,6 +42,7 @@ std::string quote(const char* text) {
     return out+'"';
 }
 jstring text(JNIEnv* env, const std::string& s) { return env->NewStringUTF(s.c_str()); }
+int64_t fenceTime(int fd);
 struct Sample {
     int64_t acquired=0, submitted=0, imageTimestamp=0, latch=0, completed=0, present=-1;
     uint64_t bufferId=0;
@@ -59,6 +61,8 @@ struct State : std::enable_shared_from_this<State> {
     std::mutex dataMutex;
     std::condition_variable changed;
     std::vector<std::shared_ptr<Sample>> samples;
+    std::deque<std::shared_ptr<Sample>> pendingFences;
+    uint64_t unresolvedFenceDrops=0;
     uint64_t usage=0;
     uint32_t format=0, width=0, height=0;
     bool samplesTruncated=false;
@@ -95,9 +99,21 @@ void completeFrame(void* context, ASurfaceTransactionStats* stats) {
         complete->sample->latch=ASurfaceTransactionStats_getLatchTime(stats);
         complete->sample->completed=nowNs();
         complete->sample->presentFd=ASurfaceTransactionStats_getPresentFenceFd(stats);
+        if (complete->sample->presentFd>=0) {
+            // Bounded diagnostic ownership: never keep a file descriptor for every measured frame.
+            if (complete->state->pendingFences.size()>=32) {
+                auto oldest=complete->state->pendingFences.front();
+                complete->state->pendingFences.pop_front();
+                oldest->present=fenceTime(oldest->presentFd);
+                if (oldest->present<0) complete->state->unresolvedFenceDrops++;
+                close(oldest->presentFd); oldest->presentFd=-1;
+            }
+            complete->state->pendingFences.push_back(complete->sample);
+        }
     }
     complete->state->completions--;
     complete->state->changed.notify_all();
+    complete->state->wake();
 }
 void available(void* context, AImageReader*) {
     auto* s=static_cast<State*>(context);
@@ -161,6 +177,16 @@ void consume(const std::shared_ptr<State>& s) {
     // Drain already-queued frames even if listener notifications coalesced; releases wake us as well.
     s->wake();
 }
+void resolveFences(const std::shared_ptr<State>& s) {
+    std::lock_guard<std::mutex> lock(s->dataMutex);
+    for (auto it=s->pendingFences.begin();it!=s->pendingFences.end();) {
+        const int64_t timestamp=fenceTime((*it)->presentFd);
+        if (timestamp>0) {
+            (*it)->present=timestamp; close((*it)->presentFd); (*it)->presentFd=-1;
+            it=s->pendingFences.erase(it);
+        } else ++it;
+    }
+}
 void runWorker(const std::shared_ptr<State>& s) {
     pthread_setname_np(pthread_self(),"BubbleProbeRx");
     while (!s->stopping.load()) {
@@ -168,6 +194,7 @@ void runWorker(const std::shared_ptr<State>& s) {
         const int result=poll(&fd,1,-1);
         if (result<=0) continue;
         uint64_t count=0; (void)read(s->wakeFd,&count,sizeof(count));
+        resolveFences(s);
         if (!s->stopping.load()) consume(s);
     }
 }
@@ -284,12 +311,12 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_mekromn_bubble_probe_NativeProbe_f
         std::lock_guard<std::mutex> lock(s->dataMutex);
         bool first=true;
         for(auto& f:s->samples){
-            f->present=fenceTime(f->presentFd);
+            if (f->presentFd>=0) f->present=fenceTime(f->presentFd);
             if(f->presentFd>=0){close(f->presentFd);f->presentFd=-1;}
             if(!first)out<<',';first=false;
             out<<'['<<f->acquired<<','<<f->submitted<<','<<f->imageTimestamp<<','<<f->latch<<','<<f->completed<<','<<f->present<<','<<f->bufferId<<']';
         }
-        out<<"],\"samplesTruncated\":"<<(s->samplesTruncated?"true":"false")<<'}';
+        out<<"],\"unresolvedFenceDrops\":"<<s->unresolvedFenceDrops<<",\"samplesTruncated\":"<<(s->samplesTruncated?"true":"false")<<'}';
     }
     {std::lock_guard<std::mutex> lock(registryMutex);registry.erase(h);if(!drained)quarantine.push_back(s);}
     return text(env,out.str());
