@@ -7,4 +7,10 @@
              Do not suppress the rule for any other Activity or replace actual runtime back tests. -->
         <ignore path="src/main/java/com/mekromn/bubble/BrowserActivity.kt" />
     </issue>
+    <issue id="NewApi">
+        <!-- zero-copy-build115 is an Android-12+-only renderer A/B. FloatingGeckoWindow explicitly
+             refuses to attach this transport below API 31 before any direct SurfaceControl operation.
+             Keep NewApi checking enabled everywhere else. -->
+        <ignore path="src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt" />
+    </issue>
 </lint>
