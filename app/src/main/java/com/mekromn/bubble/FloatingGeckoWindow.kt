@@ -23,22 +23,7 @@ import android.widget.Toast
 import org.mozilla.geckoview.GeckoDisplay
 import org.mozilla.geckoview.GeckoSession
 
-/**
- * Build-115-derived Android-16 native buffer experiment.
- *
- * Floating page pixels follow one zero-copy queue:
- * Gecko -> AImageReader ANativeWindow -> AHardwareBuffer -> ASurfaceControl -> SurfaceFlinger.
- *
- * [NativeBufferHost] is only the Android input/IME/accessibility endpoint. It does not own a render
- * Surface. The producer Surface published to Gecko comes from the AImageReader's ANativeWindow in
- * native code. The AImageReader consumer obtains that exact frame as AHardwareBuffer and submits the
- * same allocation to SurfaceFlinger with acquire/release fences; no CPU lock/readback or pixel copy
- * occurs in Bubble.
- *
- * This experimental transport intentionally requires Android 16/API 36 so it can use
- * ASurfaceTransaction_setBufferWithRelease. There is no fallback on this branch because a fallback
- * would make physical A/B results ambiguous.
- */
+/** Android-16 combined ANativeWindow + AHardwareBuffer floating renderer experiment. */
 @SuppressLint("NewApi")
 internal class FloatingGeckoWindow(private val context: Context) {
     private val manager = context.getSystemService(WindowManager::class.java)
@@ -52,7 +37,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
     private val root = FrameLayout(context).apply {
         setBackgroundColor(Color.BLACK)
         addView(host, FrameLayout.LayoutParams(-1, -1))
-        // RawSessionBridge remains detached bookkeeping only.
     }
 
     private var params: WindowManager.LayoutParams? = null
@@ -64,13 +48,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
             Toast.makeText(context, "ANativeWindow + AHardwareBuffer test requires Android 16", Toast.LENGTH_LONG).show()
             return false
         }
-
         val safe = box.copy(width = box.width.coerceAtLeast(1), height = box.height.coerceAtLeast(1))
         if (attached) {
             sync(safe)
             return true
         }
-
         val layout = WindowManager.LayoutParams(
             safe.width,
             safe.height,
@@ -86,19 +68,21 @@ internal class FloatingGeckoWindow(private val context: Context) {
             title = "Bubble ANativeWindow AHardwareBuffer page"
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
-
         return try {
             val rate = RenderPolicy.vote(context, host, layout)
+            DiagnosticLog.event("NATIVE_BUFFER", "overlay add begin size=${safe.width}x${safe.height} rate=$rate")
             manager.addView(root, layout)
             params = layout
             lastBox = safe
             attached = true
-            if (!host.ensurePipeline(rate)) {
-                throw IllegalStateException("Could not create native ANativeWindow/AHardwareBuffer pipeline")
-            }
+            // WindowManager.addView() can return before AttachedSurfaceControl can build a reparent
+            // transaction. Never synchronously require the compositor child here; retry on VSYNC.
+            host.preparePipeline(rate)
             host.updateScreenOrigin()
+            DiagnosticLog.event("NATIVE_BUFFER", "overlay attached; compositor parenting deferred")
             true
         } catch (error: RuntimeException) {
+            DiagnosticLog.error("NATIVE_BUFFER", "overlay attach failed", error)
             Log.e(TAG, "Could not attach native-buffer Gecko window", error)
             runCatching { if (root.isAttachedToWindow) manager.removeViewImmediate(root) }
             host.releasePipeline()
@@ -124,7 +108,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             lastBox = safe
             host.updateScreenOrigin()
         } catch (error: RuntimeException) {
-            Log.e(TAG, "Could not move native-buffer Gecko window", error)
+            DiagnosticLog.error("NATIVE_BUFFER", "overlay move failed", error)
             hide()
         }
     }
@@ -146,9 +130,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private val raw: NativeBufferHost
     ) : LiveGeckoView(context) {
         private var bound: GeckoSession? = null
-
         override fun getSession(): GeckoSession? = bound
-
         override fun setSession(session: GeckoSession) {
             if (bound === session) {
                 raw.publishSurfaceIfReady()
@@ -157,7 +139,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
             releaseSession()
             if (raw.bind(session)) bound = session
         }
-
         override fun releaseSession(): GeckoSession? {
             val old = bound ?: return null
             bound = null
@@ -171,7 +152,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var session: GeckoSession? = null
         private var display: GeckoDisplay? = null
         private var accessibilityHost: View? = null
-
         private var outputControl: SurfaceControl? = null
         private var nativeHandle: Long = 0L
         private var producerSurface: Surface? = null
@@ -180,7 +160,40 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var pipelineFrameRate = 0f
         private var surfacePublished = false
         private var publishFailurePosted = false
+        private var pipelineRetryPosted = false
+        private var pipelineRetryCount = 0
+        private var pipelineFailureNotified = false
         private val screenOrigin = IntArray(2)
+
+        private val pipelineRetry = object : Runnable {
+            override fun run() {
+                pipelineRetryPosted = false
+                if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36 || nativeHandle != 0L) return
+                val w = width.coerceAtLeast(1)
+                val h = height.coerceAtLeast(1)
+                if (createPipeline(w, h)) {
+                    DiagnosticLog.event("NATIVE_BUFFER", "pipeline ready after retries=$pipelineRetryCount size=${w}x$h")
+                    pipelineRetryCount = 0
+                    pipelineFailureNotified = false
+                    publishSurfaceIfReady()
+                    return
+                }
+                pipelineRetryCount++
+                if (pipelineRetryCount in RETRY_LOG_POINTS) {
+                    DiagnosticLog.event(
+                        "NATIVE_BUFFER",
+                        "pipeline not ready retry=$pipelineRetryCount rootSC=${rootSurfaceControl != null} size=${w}x$h"
+                    )
+                }
+                if (pipelineRetryCount < MAX_PIPELINE_RETRIES) {
+                    schedulePipelineStart()
+                } else if (!pipelineFailureNotified) {
+                    pipelineFailureNotified = true
+                    DiagnosticLog.event("NATIVE_BUFFER", "pipeline gave up after $pipelineRetryCount VSYNC retries")
+                    Toast.makeText(context, "Native buffer compositor layer never became ready", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
 
         init {
             setBackgroundColor(Color.TRANSPARENT)
@@ -190,14 +203,14 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         override fun onAttachedToWindow() {
             super.onAttachedToWindow()
-            if (Build.VERSION.SDK_INT >= 36 && pipelineFrameRate > 0f) {
-                ensurePipeline(pipelineFrameRate)
-                publishSurfaceIfReady()
-            }
+            DiagnosticLog.event("NATIVE_BUFFER", "host attached rootSC=${rootSurfaceControl != null}")
+            if (pipelineFrameRate > 0f) schedulePipelineStart()
             updateScreenOrigin()
         }
 
         override fun onDetachedFromWindow() {
+            removeCallbacks(pipelineRetry)
+            pipelineRetryPosted = false
             releasePipeline()
             super.onDetachedFromWindow()
         }
@@ -207,55 +220,90 @@ internal class FloatingGeckoWindow(private val context: Context) {
             if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow || w <= 0 || h <= 0) return
             if (nativeHandle != 0L && (w != pipelineWidth || h != pipelineHeight)) {
                 recreatePipeline(w, h)
+            } else if (nativeHandle == 0L && pipelineFrameRate > 0f) {
+                schedulePipelineStart()
             }
         }
 
-        fun ensurePipeline(rate: Float): Boolean {
-            if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow) return false
-            pipelineFrameRate = rate
+        fun preparePipeline(rate: Float) {
+            pipelineFrameRate = rate.takeIf { it > 0f } ?: 120f
             if (nativeHandle != 0L && producerSurface?.isValid == true) {
-                NativeAhbBridge.nativeSetFrameRate(nativeHandle, rate)
-                return true
+                NativeAhbBridge.nativeSetFrameRate(nativeHandle, pipelineFrameRate)
+                publishSurfaceIfReady()
+                return
             }
-            return createPipeline(width.coerceAtLeast(1), height.coerceAtLeast(1))
+            schedulePipelineStart()
         }
 
-        private fun ensureOutputControl(): SurfaceControl {
+        private fun schedulePipelineStart() {
+            if (!isAttachedToWindow || pipelineRetryPosted || nativeHandle != 0L || pipelineFailureNotified) return
+            pipelineRetryPosted = true
+            postOnAnimation(pipelineRetry)
+        }
+
+        private fun tryEnsureOutputControl(w: Int, h: Int): SurfaceControl? {
             outputControl?.takeIf { it.isValid }?.let { return it }
             releaseOutputControl()
-            val rootControl = rootSurfaceControl
-                ?: throw IllegalStateException("Native buffer host has no AttachedSurfaceControl")
-            val control = SurfaceControl.Builder()
-                .setName("Bubble AHardwareBuffer output")
-                .build()
-            val transaction = rootControl.buildReparentTransaction(control)
-                ?: run {
-                    control.release()
-                    throw IllegalStateException("Could not attach AHardwareBuffer output layer")
-                }
-            transaction
-                .setLayer(control, 1)
-                .setVisibility(control, true)
-                .setOpaque(control, true)
-                .apply()
-            outputControl = control
-            return control
+            val attachedControl = rootSurfaceControl ?: return null
+            val control = try {
+                SurfaceControl.Builder()
+                    .setName("Bubble AHardwareBuffer output")
+                    .setBufferSize(w.coerceAtLeast(1), h.coerceAtLeast(1))
+                    .build()
+            } catch (error: RuntimeException) {
+                DiagnosticLog.error("NATIVE_BUFFER", "SurfaceControl.Builder failed", error)
+                return null
+            }
+            val transaction = try {
+                attachedControl.buildReparentTransaction(control)
+            } catch (error: RuntimeException) {
+                DiagnosticLog.error("NATIVE_BUFFER", "buildReparentTransaction threw", error)
+                null
+            }
+            if (transaction == null) {
+                control.release()
+                return null
+            }
+            return try {
+                transaction
+                    .setLayer(control, 1)
+                    .setVisibility(control, true)
+                    .setOpaque(control, true)
+                    .apply()
+                outputControl = control
+                DiagnosticLog.event("NATIVE_BUFFER", "SurfaceControl child parented size=${w}x$h")
+                control
+            } catch (error: RuntimeException) {
+                DiagnosticLog.error("NATIVE_BUFFER", "SurfaceControl reparent apply failed", error)
+                runCatching { control.release() }
+                null
+            }
         }
 
         private fun createPipeline(w: Int, h: Int): Boolean {
             if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow) return false
-            val control = ensureOutputControl()
-            val handle = NativeAhbBridge.nativeCreate(
-                w.coerceAtLeast(1),
-                h.coerceAtLeast(1),
-                control,
-                pipelineFrameRate
-            )
-            if (handle == 0L) return false
-            val surface = NativeAhbBridge.nativeGetProducerSurface(handle)
+            val control = tryEnsureOutputControl(w, h) ?: return false
+            DiagnosticLog.event("NATIVE_BUFFER", "nativeCreate begin size=${w}x$h rate=$pipelineFrameRate")
+            val handle = try {
+                NativeAhbBridge.nativeCreate(w.coerceAtLeast(1), h.coerceAtLeast(1), control, pipelineFrameRate)
+            } catch (error: RuntimeException) {
+                DiagnosticLog.error("NATIVE_BUFFER", "nativeCreate threw", error)
+                0L
+            }
+            if (handle == 0L) {
+                DiagnosticLog.event("NATIVE_BUFFER", "nativeCreate returned 0")
+                return false
+            }
+            val surface = try {
+                NativeAhbBridge.nativeGetProducerSurface(handle)
+            } catch (error: RuntimeException) {
+                DiagnosticLog.error("NATIVE_BUFFER", "nativeGetProducerSurface threw", error)
+                null
+            }
             if (surface == null || !surface.isValid) {
                 surface?.release()
-                NativeAhbBridge.nativeDestroy(handle)
+                runCatching { NativeAhbBridge.nativeDestroy(handle) }
+                DiagnosticLog.event("NATIVE_BUFFER", "producer Surface invalid")
                 return false
             }
             nativeHandle = handle
@@ -263,27 +311,26 @@ internal class FloatingGeckoWindow(private val context: Context) {
             pipelineWidth = w.coerceAtLeast(1)
             pipelineHeight = h.coerceAtLeast(1)
             publishFailurePosted = false
+            DiagnosticLog.event("NATIVE_BUFFER", "native producer Surface ready handle=$handle")
             return true
         }
 
         private fun recreatePipeline(w: Int, h: Int) {
             val activeDisplay = display
-            if (surfacePublished && activeDisplay != null) {
-                runCatching { activeDisplay.surfaceDestroyed() }
-            }
+            if (surfacePublished && activeDisplay != null) runCatching { activeDisplay.surfaceDestroyed() }
             surfacePublished = false
             releaseNativeProducer(keepOutputControl = true)
-            if (!createPipeline(w, h)) {
-                Toast.makeText(context, "Native buffer resize failed", Toast.LENGTH_LONG).show()
-                return
-            }
-            publishSurfaceIfReady()
+            pipelineRetryCount = 0
+            pipelineFailureNotified = false
+            if (createPipeline(w, h)) publishSurfaceIfReady() else schedulePipelineStart()
         }
 
         fun releasePipeline() {
-            if (surfacePublished) {
-                display?.let { runCatching { it.surfaceDestroyed() } }
-            }
+            removeCallbacks(pipelineRetry)
+            pipelineRetryPosted = false
+            pipelineRetryCount = 0
+            pipelineFailureNotified = false
+            if (surfacePublished) display?.let { runCatching { it.surfaceDestroyed() } }
             surfacePublished = false
             releaseNativeProducer(keepOutputControl = false)
         }
@@ -293,9 +340,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             producerSurface = null
             val oldHandle = nativeHandle
             nativeHandle = 0L
-            if (oldHandle != 0L) {
-                runCatching { NativeAhbBridge.nativeDestroy(oldHandle) }
-            }
+            if (oldHandle != 0L) runCatching { NativeAhbBridge.nativeDestroy(oldHandle) }
             pipelineWidth = 0
             pipelineHeight = 0
             publishFailurePosted = false
@@ -305,9 +350,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private fun releaseOutputControl() {
             val control = outputControl ?: return
             outputControl = null
-            runCatching {
-                if (control.isValid) SurfaceControl.Transaction().reparent(control, null).apply()
-            }
+            runCatching { if (control.isValid) SurfaceControl.Transaction().reparent(control, null).apply() }
             runCatching { control.release() }
         }
 
@@ -321,14 +364,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 session = next
                 configureInput(next)
                 display = next.acquireDisplay()
-                if (pipelineFrameRate <= 0f) {
-                    pipelineFrameRate = display?.let { this.display }?.run {
-                        this@NativeBufferHost.display?.let { _ -> requestedFrameRate.takeIf { it > 0f } ?: 120f }
-                    } ?: 120f
-                }
-                if (nativeHandle == 0L && isAttachedToWindow) ensurePipeline(pipelineFrameRate)
+                if (pipelineFrameRate <= 0f) pipelineFrameRate = requestedFrameRate.takeIf { it > 0f } ?: 120f
+                schedulePipelineStart()
                 publishSurfaceIfReady()
                 updateScreenOrigin()
+                DiagnosticLog.event("NATIVE_BUFFER", "GeckoDisplay bound; waiting for producer if needed")
                 display != null
             } catch (error: RuntimeException) {
                 cleanupAfterBindFailure(next, error)
@@ -340,17 +380,13 @@ internal class FloatingGeckoWindow(private val context: Context) {
             if (session !== expected) return
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
-            if (surfacePublished && oldDisplay != null) {
-                runCatching { oldDisplay.surfaceDestroyed() }
-            }
+            if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
             surfacePublished = false
             publishFailurePosted = false
             display = null
             session = null
             accessibilityHost = null
-            runCatching {
-                if (expected.textInput.view === this) expected.textInput.setView(null)
-            }
+            runCatching { if (expected.textInput.view === this) expected.textInput.setView(null) }
             runCatching {
                 val active = expected.accessibility.view
                 if (active === oldAccessibilityHost || active === this) expected.accessibility.setView(null)
@@ -359,7 +395,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
 
         private fun cleanupAfterBindFailure(target: GeckoSession, error: RuntimeException) {
-            Log.e(TAG, "Could not bind native-buffer GeckoDisplay", error)
+            DiagnosticLog.error("NATIVE_BUFFER", "GeckoDisplay bind failed", error)
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
             if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
@@ -399,7 +435,8 @@ internal class FloatingGeckoWindow(private val context: Context) {
             val current = session ?: return
             if (!isAttachedToWindow) return
             if (nativeHandle == 0L || producerSurface?.isValid != true) {
-                if (!ensurePipeline(pipelineFrameRate.takeIf { it > 0f } ?: 120f)) return
+                schedulePipelineStart()
+                return
             }
             val androidSurface = producerSurface ?: return
             val w = pipelineWidth.coerceAtLeast(width.coerceAtLeast(1))
@@ -409,14 +446,16 @@ internal class FloatingGeckoWindow(private val context: Context) {
                     .newSurfaceProvider(this)
                     .size(w, h)
                     .build()
+                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged begin size=${w}x$h")
                 gecko.surfaceChanged(info)
                 surfacePublished = true
                 publishFailurePosted = false
                 updateScreenOrigin()
+                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success")
             } catch (error: RuntimeException) {
                 if (!publishFailurePosted) {
                     publishFailurePosted = true
-                    Log.e(TAG, "Could not publish ANativeWindow producer Surface", error)
+                    DiagnosticLog.error("NATIVE_BUFFER", "producer Surface publish failed", error)
                     post {
                         if (session === current) {
                             unbind(current)
@@ -455,15 +494,13 @@ internal class FloatingGeckoWindow(private val context: Context) {
             return true
         }
 
-        override fun onDragEvent(event: DragEvent): Boolean {
-            return session?.panZoomController?.onDragEvent(event) ?: super.onDragEvent(event)
-        }
+        override fun onDragEvent(event: DragEvent): Boolean =
+            session?.panZoomController?.onDragEvent(event) ?: super.onDragEvent(event)
 
         override fun onCheckIsTextEditor(): Boolean = session != null
 
-        override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
-            return session?.textInput?.onCreateInputConnection(outAttrs)
-        }
+        override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? =
+            session?.textInput?.onCreateInputConnection(outAttrs)
 
         override fun onKeyPreIme(keyCode: Int, event: KeyEvent): Boolean {
             if (super.onKeyPreIme(keyCode, event)) return true
@@ -493,6 +530,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
         override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
             super.onWindowFocusChanged(hasWindowFocus)
             Workspace.peek()?.applyPolicy()
+        }
+
+        companion object {
+            private const val MAX_PIPELINE_RETRIES = 120
+            private val RETRY_LOG_POINTS = setOf(1, 2, 4, 8, 16, 32, 64, 120)
         }
     }
 
