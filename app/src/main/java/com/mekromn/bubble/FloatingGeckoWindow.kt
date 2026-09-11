@@ -1,5 +1,6 @@
 package com.mekromn.bubble
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -10,8 +11,8 @@ import android.view.DragEvent
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.SurfaceControl
 import android.view.View
 import android.view.ViewParent
 import android.view.WindowManager
@@ -23,44 +24,35 @@ import org.mozilla.geckoview.GeckoDisplay
 import org.mozilla.geckoview.GeckoSession
 
 /**
- * Raw floating Gecko display.
+ * Build-115-derived Android-16 native buffer experiment.
  *
- * Floating rendering deliberately bypasses GeckoView's SurfaceView/TextureView display wrapper.
- * GeckoSession.acquireDisplay() is connected straight to a plain Android SurfaceView through
- * GeckoDisplay.surfaceChanged(SurfaceInfo). This is the same low-level display API GeckoView itself
- * ultimately uses, but it removes GeckoView's overlay-sensitive surface lifecycle from the hot path.
+ * Floating page pixels follow one zero-copy queue:
+ * Gecko -> AImageReader ANativeWindow -> AHardwareBuffer -> ASurfaceControl -> SurfaceFlinger.
  *
- * Workspace still needs a GeckoView-shaped object for its existing session handoff bookkeeping.
- * RawSessionBridge therefore exists only as a DETACHED adapter object: it is never inserted into a
- * View hierarchy or attached to a Window. That distinction is important. GeckoView has private
- * session/display lifecycle state that our raw display does not own, so letting the adapter receive
- * GeckoView window callbacks creates a split-brain lifecycle and can crash during fullscreen ->
- * floating handoff. The only real attached page View is RawGeckoSurfaceView below.
+ * [NativeBufferHost] is only the Android input/IME/accessibility endpoint. It does not own a render
+ * Surface. The producer Surface published to Gecko comes from the AImageReader's ANativeWindow in
+ * native code. The AImageReader consumer obtains that exact frame as AHardwareBuffer and submits the
+ * same allocation to SurfaceFlinger with acquire/release fences; no CPU lock/readback or pixel copy
+ * occurs in Bubble.
  *
- * The raw SurfaceView is intentionally Z-ordered above its own dedicated page-only overlay window.
- * SurfaceView normally composes behind its containing Window; that is useful in ordinary Activities
- * because Android punches a hole through the app window, but the target Pixel showed our opaque
- * TYPE_APPLICATION_OVERLAY as solid black. Since this dedicated overlay contains only webpage pixels
- * (the glass header/footer live in separate windows), putting the SurfaceView above this one Window is
- * safe and removes any dependence on overlay-window hole punching while preserving the direct Surface
- * compositor path.
- *
- * Gecko accessibility is intentionally hosted by the attached FrameLayout parent, not by the raw
- * SurfaceView. SessionAccessibility sends platform events by casting its configured View to
- * ViewParent, matching normal GeckoView (which is a ViewGroup). SurfaceView is not a ViewParent and
- * caused the physical Pixel tab-switch ClassCastException captured by DiagnosticLog.
+ * This experimental transport intentionally requires Android 16/API 36 so it can use
+ * ASurfaceTransaction_setBufferWithRelease. There is no fallback on this branch because a fallback
+ * would make physical A/B results ambiguous.
  */
+@SuppressLint("NewApi")
 internal class FloatingGeckoWindow(private val context: Context) {
     private val manager = context.getSystemService(WindowManager::class.java)
-    private val surface = RawGeckoSurfaceView(context)
-    val view: LiveGeckoView = RawSessionBridge(context, surface).apply {
+    private val host = NativeBufferHost(context)
+
+    val view: LiveGeckoView = RawSessionBridge(context, host).apply {
         visibility = View.INVISIBLE
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
     }
+
     private val root = FrameLayout(context).apply {
         setBackgroundColor(Color.BLACK)
-        addView(surface, FrameLayout.LayoutParams(-1, -1))
-        // Deliberately DO NOT add RawSessionBridge. It is bookkeeping only, never a window child.
+        addView(host, FrameLayout.LayoutParams(-1, -1))
+        // RawSessionBridge remains detached bookkeeping only.
     }
 
     private var params: WindowManager.LayoutParams? = null
@@ -68,8 +60,12 @@ internal class FloatingGeckoWindow(private val context: Context) {
     private var lastBox: WindowBox? = null
 
     fun show(box: WindowBox): Boolean {
+        if (Build.VERSION.SDK_INT < 36) {
+            Toast.makeText(context, "ANativeWindow + AHardwareBuffer test requires Android 16", Toast.LENGTH_LONG).show()
+            return false
+        }
+
         val safe = box.copy(width = box.width.coerceAtLeast(1), height = box.height.coerceAtLeast(1))
-        DiagnosticLog.event("RAW_WINDOW", "show requested box=$safe attached=$attached ${DiagnosticLog.selectedState()}")
         if (attached) {
             sync(safe)
             return true
@@ -87,27 +83,29 @@ internal class FloatingGeckoWindow(private val context: Context) {
             gravity = Gravity.TOP or Gravity.LEFT
             x = safe.x
             y = safe.y
-            title = "Bubble raw Gecko surface"
+            title = "Bubble ANativeWindow AHardwareBuffer page"
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
         return try {
-            RenderPolicy.vote(context, surface, layout)
-            DiagnosticLog.event("RAW_WINDOW", "addView begin box=$safe root=${id(root)} surface=${id(surface)}")
+            val rate = RenderPolicy.vote(context, host, layout)
             manager.addView(root, layout)
             params = layout
             lastBox = safe
             attached = true
-            DiagnosticLog.event("RAW_WINDOW", "addView success attached=${root.isAttachedToWindow} surfaceAttached=${surface.isAttachedToWindow}")
-            surface.updateScreenOrigin()
+            if (!host.ensurePipeline(rate)) {
+                throw IllegalStateException("Could not create native ANativeWindow/AHardwareBuffer pipeline")
+            }
+            host.updateScreenOrigin()
             true
         } catch (error: RuntimeException) {
-            Log.e(TAG, "Could not attach raw Gecko surface window", error)
-            DiagnosticLog.error("RAW_WINDOW", "addView failed box=$safe", error)
-            Toast.makeText(context, "Raw Gecko window failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "Could not attach native-buffer Gecko window", error)
+            runCatching { if (root.isAttachedToWindow) manager.removeViewImmediate(root) }
+            host.releasePipeline()
             params = null
             lastBox = null
             attached = false
+            Toast.makeText(context, "Native buffer window failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
             false
         }
     }
@@ -117,7 +115,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
         val safe = box.copy(width = box.width.coerceAtLeast(1), height = box.height.coerceAtLeast(1))
         if (lastBox == safe) return
         val layout = params ?: return
-        val previous = lastBox
         layout.x = safe.x
         layout.y = safe.y
         layout.width = safe.width
@@ -125,133 +122,214 @@ internal class FloatingGeckoWindow(private val context: Context) {
         try {
             manager.updateViewLayout(root, layout)
             lastBox = safe
-            // Avoid per-frame disk-noise while dragging. Geometry is only diagnostically interesting
-            // when the Surface dimensions change; simple x/y motion still reaches screenOriginChanged.
-            if (previous?.width != safe.width || previous.height != safe.height) {
-                DiagnosticLog.event("RAW_WINDOW", "resize from=$previous to=$safe surface=${surface.width}x${surface.height}")
-            }
-            surface.updateScreenOrigin()
+            host.updateScreenOrigin()
         } catch (error: RuntimeException) {
-            Log.e(TAG, "Could not move raw Gecko surface window", error)
-            DiagnosticLog.error("RAW_WINDOW", "updateViewLayout failed from=$previous to=$safe", error)
+            Log.e(TAG, "Could not move native-buffer Gecko window", error)
             hide()
         }
     }
 
     fun hide() {
-        DiagnosticLog.event("RAW_WINDOW", "hide begin attached=$attached ${DiagnosticLog.sessionLabel(view.session)}")
-        // Release GeckoDisplay while the Android Surface is still valid. This also makes hide()
-        // idempotently clean up a partially-attached/bind-failed window instead of leaking ownership.
         view.releaseSession()
-        if (!attached) {
-            DiagnosticLog.event("RAW_WINDOW", "hide complete already-detached")
-            return
-        }
+        host.releasePipeline()
+        if (!attached) return
         attached = false
         params = null
         lastBox = null
         runCatching { manager.removeViewImmediate(root) }
-            .onFailure { DiagnosticLog.error("RAW_WINDOW", "removeViewImmediate failed", it) }
-        DiagnosticLog.event("RAW_WINDOW", "hide complete rootAttached=${root.isAttachedToWindow}")
     }
 
-    fun destroy() {
-        DiagnosticLog.event("RAW_WINDOW", "destroy")
-        hide()
-    }
+    fun destroy() = hide()
 
     private class RawSessionBridge(
         context: Context,
-        private val raw: RawGeckoSurfaceView
+        private val raw: NativeBufferHost
     ) : LiveGeckoView(context) {
         private var bound: GeckoSession? = null
 
         override fun getSession(): GeckoSession? = bound
 
         override fun setSession(session: GeckoSession) {
-            DiagnosticLog.event(
-                "RAW_BRIDGE",
-                "setSession requested new=${DiagnosticLog.sessionLabel(session)} old=${DiagnosticLog.sessionLabel(bound)} ${DiagnosticLog.selectedState()}"
-            )
             if (bound === session) {
-                DiagnosticLog.event("RAW_BRIDGE", "setSession no-op same session=${id(session)}")
+                raw.publishSurfaceIfReady()
                 return
             }
             releaseSession()
-            val success = raw.bind(session)
-            if (success) bound = session
-            DiagnosticLog.event(
-                "RAW_BRIDGE",
-                "setSession result success=$success bound=${DiagnosticLog.sessionLabel(bound)} requested=${DiagnosticLog.sessionLabel(session)}"
-            )
+            if (raw.bind(session)) bound = session
         }
 
         override fun releaseSession(): GeckoSession? {
-            val old = bound
-            if (old == null) {
-                DiagnosticLog.event("RAW_BRIDGE", "releaseSession no-op bound=null")
-                return null
-            }
-            DiagnosticLog.event("RAW_BRIDGE", "releaseSession begin ${DiagnosticLog.sessionLabel(old)}")
+            val old = bound ?: return null
             bound = null
             raw.unbind(old)
-            DiagnosticLog.event("RAW_BRIDGE", "releaseSession complete old=${id(old)}")
             return old
         }
     }
 
-    private class RawGeckoSurfaceView(context: Context) : SurfaceView(context),
-        SurfaceHolder.Callback, GeckoDisplay.NewSurfaceProvider {
-
+    @SuppressLint("NewApi")
+    private class NativeBufferHost(context: Context) : View(context), GeckoDisplay.NewSurfaceProvider {
         private var session: GeckoSession? = null
         private var display: GeckoDisplay? = null
         private var accessibilityHost: View? = null
+
+        private var outputControl: SurfaceControl? = null
+        private var nativeHandle: Long = 0L
+        private var producerSurface: Surface? = null
+        private var pipelineWidth = 0
+        private var pipelineHeight = 0
+        private var pipelineFrameRate = 0f
         private var surfacePublished = false
-        private var surfaceWidth = 0
-        private var surfaceHeight = 0
-        private val screenOrigin = IntArray(2)
         private var publishFailurePosted = false
+        private val screenOrigin = IntArray(2)
 
         init {
-            // This MUST happen before the containing Window is added. The page Surface then composes
-            // above this dedicated page-only overlay instead of relying on SurfaceView's normal
-            // behind-window hole-punch path, which stayed black on the Pixel 9 Pro XL.
-            setZOrderOnTop(true)
-            holder.setFormat(PixelFormat.OPAQUE)
-            holder.addCallback(this)
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.TRANSPARENT)
             isFocusable = true
             isFocusableInTouchMode = true
-            DiagnosticLog.event("RAW_SURFACE", "constructed view=${id(this)} zOnTop=true")
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            if (Build.VERSION.SDK_INT >= 36 && pipelineFrameRate > 0f) {
+                ensurePipeline(pipelineFrameRate)
+                publishSurfaceIfReady()
+            }
+            updateScreenOrigin()
+        }
+
+        override fun onDetachedFromWindow() {
+            releasePipeline()
+            super.onDetachedFromWindow()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow || w <= 0 || h <= 0) return
+            if (nativeHandle != 0L && (w != pipelineWidth || h != pipelineHeight)) {
+                recreatePipeline(w, h)
+            }
+        }
+
+        fun ensurePipeline(rate: Float): Boolean {
+            if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow) return false
+            pipelineFrameRate = rate
+            if (nativeHandle != 0L && producerSurface?.isValid == true) {
+                NativeAhbBridge.nativeSetFrameRate(nativeHandle, rate)
+                return true
+            }
+            return createPipeline(width.coerceAtLeast(1), height.coerceAtLeast(1))
+        }
+
+        private fun ensureOutputControl(): SurfaceControl {
+            outputControl?.takeIf { it.isValid }?.let { return it }
+            releaseOutputControl()
+            val rootControl = rootSurfaceControl
+                ?: throw IllegalStateException("Native buffer host has no AttachedSurfaceControl")
+            val control = SurfaceControl.Builder()
+                .setName("Bubble AHardwareBuffer output")
+                .build()
+            val transaction = rootControl.buildReparentTransaction(control)
+                ?: run {
+                    control.release()
+                    throw IllegalStateException("Could not attach AHardwareBuffer output layer")
+                }
+            transaction
+                .setLayer(control, 1)
+                .setVisibility(control, true)
+                .setOpaque(control, true)
+                .apply()
+            outputControl = control
+            return control
+        }
+
+        private fun createPipeline(w: Int, h: Int): Boolean {
+            if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow) return false
+            val control = ensureOutputControl()
+            val handle = NativeAhbBridge.nativeCreate(
+                w.coerceAtLeast(1),
+                h.coerceAtLeast(1),
+                control,
+                pipelineFrameRate
+            )
+            if (handle == 0L) return false
+            val surface = NativeAhbBridge.nativeGetProducerSurface(handle)
+            if (surface == null || !surface.isValid) {
+                surface?.release()
+                NativeAhbBridge.nativeDestroy(handle)
+                return false
+            }
+            nativeHandle = handle
+            producerSurface = surface
+            pipelineWidth = w.coerceAtLeast(1)
+            pipelineHeight = h.coerceAtLeast(1)
+            publishFailurePosted = false
+            return true
+        }
+
+        private fun recreatePipeline(w: Int, h: Int) {
+            val activeDisplay = display
+            if (surfacePublished && activeDisplay != null) {
+                runCatching { activeDisplay.surfaceDestroyed() }
+            }
+            surfacePublished = false
+            releaseNativeProducer(keepOutputControl = true)
+            if (!createPipeline(w, h)) {
+                Toast.makeText(context, "Native buffer resize failed", Toast.LENGTH_LONG).show()
+                return
+            }
+            publishSurfaceIfReady()
+        }
+
+        fun releasePipeline() {
+            if (surfacePublished) {
+                display?.let { runCatching { it.surfaceDestroyed() } }
+            }
+            surfacePublished = false
+            releaseNativeProducer(keepOutputControl = false)
+        }
+
+        private fun releaseNativeProducer(keepOutputControl: Boolean) {
+            producerSurface?.release()
+            producerSurface = null
+            val oldHandle = nativeHandle
+            nativeHandle = 0L
+            if (oldHandle != 0L) {
+                runCatching { NativeAhbBridge.nativeDestroy(oldHandle) }
+            }
+            pipelineWidth = 0
+            pipelineHeight = 0
+            publishFailurePosted = false
+            if (!keepOutputControl) releaseOutputControl()
+        }
+
+        private fun releaseOutputControl() {
+            val control = outputControl ?: return
+            outputControl = null
+            runCatching {
+                if (control.isValid) SurfaceControl.Transaction().reparent(control, null).apply()
+            }
+            runCatching { control.release() }
         }
 
         fun bind(next: GeckoSession): Boolean {
-            DiagnosticLog.event(
-                "RAW_DISPLAY",
-                "bind begin next=${DiagnosticLog.sessionLabel(next)} current=${DiagnosticLog.sessionLabel(session)} display=${id(display)} " +
-                    "published=$surfacePublished holderValid=${holder.surface.isValid} attached=$isAttachedToWindow view=${width}x$height holder=${surfaceWidth}x$surfaceHeight"
-            )
             if (session === next && display != null) {
-                DiagnosticLog.event("RAW_DISPLAY", "bind same-session republish display=${id(display)}")
                 publishSurfaceIfReady()
-                return display != null
+                return true
             }
-            session?.let {
-                DiagnosticLog.event("RAW_DISPLAY", "bind must unbind previous ${DiagnosticLog.sessionLabel(it)}")
-                unbind(it)
-            }
+            session?.let(::unbind)
             return try {
                 session = next
-                DiagnosticLog.event("RAW_DISPLAY", "configureInput begin ${DiagnosticLog.sessionLabel(next)}")
                 configureInput(next)
-                DiagnosticLog.event("RAW_DISPLAY", "acquireDisplay begin ${DiagnosticLog.sessionLabel(next)}")
                 display = next.acquireDisplay()
-                DiagnosticLog.event("RAW_DISPLAY", "acquireDisplay success display=${id(display)} ${DiagnosticLog.sessionLabel(next)}")
+                if (pipelineFrameRate <= 0f) {
+                    pipelineFrameRate = display?.let { this.display }?.run {
+                        this@NativeBufferHost.display?.let { _ -> requestedFrameRate.takeIf { it > 0f } ?: 120f }
+                    } ?: 120f
+                }
+                if (nativeHandle == 0L && isAttachedToWindow) ensurePipeline(pipelineFrameRate)
                 publishSurfaceIfReady()
                 updateScreenOrigin()
-                val success = display != null
-                DiagnosticLog.event("RAW_DISPLAY", "bind complete success=$success display=${id(display)} published=$surfacePublished")
-                success
+                display != null
             } catch (error: RuntimeException) {
                 cleanupAfterBindFailure(next, error)
                 false
@@ -259,23 +337,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
 
         fun unbind(expected: GeckoSession) {
-            if (session !== expected) {
-                DiagnosticLog.event(
-                    "RAW_DISPLAY",
-                    "unbind ignored expected=${DiagnosticLog.sessionLabel(expected)} actual=${DiagnosticLog.sessionLabel(session)} display=${id(display)}"
-                )
-                return
-            }
+            if (session !== expected) return
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
-            DiagnosticLog.event(
-                "RAW_DISPLAY",
-                "unbind begin ${DiagnosticLog.sessionLabel(expected)} display=${id(oldDisplay)} a11yHost=${id(oldAccessibilityHost)} published=$surfacePublished holderValid=${holder.surface.isValid} attached=$isAttachedToWindow"
-            )
             if (surfacePublished && oldDisplay != null) {
                 runCatching { oldDisplay.surfaceDestroyed() }
-                    .onSuccess { DiagnosticLog.event("RAW_DISPLAY", "surfaceDestroyed notified display=${id(oldDisplay)}") }
-                    .onFailure { DiagnosticLog.error("RAW_DISPLAY", "surfaceDestroyed notify failed display=${id(oldDisplay)}", it) }
             }
             surfacePublished = false
             publishFailurePosted = false
@@ -284,61 +350,40 @@ internal class FloatingGeckoWindow(private val context: Context) {
             accessibilityHost = null
             runCatching {
                 if (expected.textInput.view === this) expected.textInput.setView(null)
-            }.onFailure { DiagnosticLog.error("RAW_INPUT", "textInput.setView(null) failed ${id(expected)}", it) }
-            runCatching {
-                val activeAccessibilityView = expected.accessibility.view
-                if (activeAccessibilityView === oldAccessibilityHost || activeAccessibilityView === this) {
-                    expected.accessibility.setView(null)
-                }
-            }.onFailure { DiagnosticLog.error("RAW_INPUT", "accessibility.setView(null) failed ${id(expected)}", it) }
-            if (oldDisplay != null) {
-                runCatching { expected.releaseDisplay(oldDisplay) }
-                    .onSuccess { DiagnosticLog.event("RAW_DISPLAY", "releaseDisplay success session=${id(expected)} display=${id(oldDisplay)}") }
-                    .onFailure { DiagnosticLog.error("RAW_DISPLAY", "releaseDisplay failed session=${id(expected)} display=${id(oldDisplay)}", it) }
             }
-            DiagnosticLog.event("RAW_DISPLAY", "unbind complete session=${id(expected)} oldDisplay=${id(oldDisplay)}")
+            runCatching {
+                val active = expected.accessibility.view
+                if (active === oldAccessibilityHost || active === this) expected.accessibility.setView(null)
+            }
+            if (oldDisplay != null) runCatching { expected.releaseDisplay(oldDisplay) }
         }
 
         private fun cleanupAfterBindFailure(target: GeckoSession, error: RuntimeException) {
-            Log.e(TAG, "Could not acquire/publish raw GeckoDisplay", error)
-            DiagnosticLog.error(
-                "RAW_DISPLAY",
-                "bind failure target=${DiagnosticLog.sessionLabel(target)} display=${id(display)} published=$surfacePublished holderValid=${holder.surface.isValid}",
-                error
-            )
+            Log.e(TAG, "Could not bind native-buffer GeckoDisplay", error)
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
-            if (surfacePublished && oldDisplay != null) {
-                runCatching { oldDisplay.surfaceDestroyed() }
-                    .onFailure { DiagnosticLog.error("RAW_DISPLAY", "cleanup surfaceDestroyed failed display=${id(oldDisplay)}", it) }
-            }
+            if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
             surfacePublished = false
             publishFailurePosted = false
             display = null
             session = null
             accessibilityHost = null
             runCatching { if (target.textInput.view === this) target.textInput.setView(null) }
-                .onFailure { DiagnosticLog.error("RAW_INPUT", "cleanup textInput detach failed", it) }
             runCatching {
-                val activeAccessibilityView = target.accessibility.view
-                if (activeAccessibilityView === oldAccessibilityHost || activeAccessibilityView === this) {
-                    target.accessibility.setView(null)
-                }
-            }.onFailure { DiagnosticLog.error("RAW_INPUT", "cleanup accessibility detach failed", it) }
-            if (oldDisplay != null) {
-                runCatching { target.releaseDisplay(oldDisplay) }
-                    .onFailure { DiagnosticLog.error("RAW_DISPLAY", "cleanup releaseDisplay failed display=${id(oldDisplay)}", it) }
+                val active = target.accessibility.view
+                if (active === oldAccessibilityHost || active === this) target.accessibility.setView(null)
             }
-            Toast.makeText(context, "Raw Gecko display failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+            if (oldDisplay != null) runCatching { target.releaseDisplay(oldDisplay) }
+            Toast.makeText(context, "Native buffer Gecko display failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
         }
 
         private fun configureInput(target: GeckoSession) {
             target.textInput.setView(this)
-            val host = parent as? View
-                ?: throw IllegalStateException("Raw Gecko SurfaceView is missing its page accessibility host")
-            check(host is ViewParent) { "Raw Gecko accessibility host must implement ViewParent" }
-            accessibilityHost = host
-            target.accessibility.setView(host)
+            val parentView = parent as? View
+                ?: throw IllegalStateException("Native buffer host is missing accessibility parent")
+            check(parentView is ViewParent) { "Native buffer accessibility host must implement ViewParent" }
+            accessibilityHost = parentView
+            target.accessibility.setView(parentView)
             val metrics = resources.displayMetrics
             val value = TypedValue()
             val factor = if (context.theme.resolveAttribute(android.R.attr.listPreferredItemHeight, value, true)) {
@@ -347,98 +392,35 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 0.075f * metrics.densityDpi
             }
             target.panZoomController.setScrollFactor(factor)
-            DiagnosticLog.event(
-                "RAW_INPUT",
-                "configured session=${id(target)} factor=$factor textView=${id(this)} a11yHost=${id(host)} a11yHostClass=${host.javaClass.simpleName} viewParent=${host is ViewParent}"
-            )
         }
 
-        override fun surfaceCreated(holder: SurfaceHolder) {
-            DiagnosticLog.event(
-                "RAW_SURFACE",
-                "surfaceCreated surface=${id(holder.surface)} valid=${holder.surface.isValid} view=${width}x$height session=${DiagnosticLog.sessionLabel(session)} display=${id(display)}"
-            )
-            publishSurfaceIfReady()
-        }
-
-        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-            surfaceWidth = width
-            surfaceHeight = height
-            DiagnosticLog.event(
-                "RAW_SURFACE",
-                "surfaceChanged surface=${id(holder.surface)} valid=${holder.surface.isValid} format=$format size=${width}x$height " +
-                    "session=${DiagnosticLog.sessionLabel(session)} display=${id(display)} published=$surfacePublished"
-            )
-            publishSurfaceIfReady()
-        }
-
-        override fun surfaceDestroyed(holder: SurfaceHolder) {
-            DiagnosticLog.event(
-                "RAW_SURFACE",
-                "surfaceDestroyed callback surface=${id(holder.surface)} published=$surfacePublished session=${DiagnosticLog.sessionLabel(session)} display=${id(display)}"
-            )
-            if (surfacePublished) {
-                display?.let { activeDisplay ->
-                    runCatching { activeDisplay.surfaceDestroyed() }
-                        .onSuccess { DiagnosticLog.event("RAW_DISPLAY", "callback surfaceDestroyed notified display=${id(activeDisplay)}") }
-                        .onFailure { DiagnosticLog.error("RAW_DISPLAY", "callback surfaceDestroyed notify failed display=${id(activeDisplay)}", it) }
-                }
+        fun publishSurfaceIfReady() {
+            val gecko = display ?: return
+            val current = session ?: return
+            if (!isAttachedToWindow) return
+            if (nativeHandle == 0L || producerSurface?.isValid != true) {
+                if (!ensurePipeline(pipelineFrameRate.takeIf { it > 0f } ?: 120f)) return
             }
-            surfacePublished = false
-            surfaceWidth = 0
-            surfaceHeight = 0
-        }
-
-        private fun publishSurfaceIfReady() {
-            val gecko = display ?: run {
-                DiagnosticLog.event("RAW_PUBLISH", "skip display=null holderValid=${holder.surface.isValid} session=${DiagnosticLog.sessionLabel(session)}")
-                return
-            }
-            val current = session ?: run {
-                DiagnosticLog.event("RAW_PUBLISH", "skip session=null display=${id(gecko)} holderValid=${holder.surface.isValid}")
-                return
-            }
-            val androidSurface = holder.surface
-            if (!androidSurface.isValid) {
-                DiagnosticLog.event("RAW_PUBLISH", "skip invalid surface display=${id(gecko)} ${DiagnosticLog.sessionLabel(current)}")
-                return
-            }
-            val width = (if (surfaceWidth > 0) surfaceWidth else this.width).coerceAtLeast(1)
-            val height = (if (surfaceHeight > 0) surfaceHeight else this.height).coerceAtLeast(1)
+            val androidSurface = producerSurface ?: return
+            val w = pipelineWidth.coerceAtLeast(width.coerceAtLeast(1))
+            val h = pipelineHeight.coerceAtLeast(height.coerceAtLeast(1))
             try {
-                DiagnosticLog.event(
-                    "RAW_PUBLISH",
-                    "surfaceChanged begin display=${id(gecko)} surface=${id(androidSurface)} size=${width}x$height " +
-                        "surfaceControl=${if (Build.VERSION.SDK_INT >= 29) id(surfaceControl) else "n/a"} ${DiagnosticLog.sessionLabel(current)}"
-                )
-                val builder = GeckoDisplay.SurfaceInfo.Builder(androidSurface)
+                val info = GeckoDisplay.SurfaceInfo.Builder(androidSurface)
                     .newSurfaceProvider(this)
-                    .size(width, height)
-                if (Build.VERSION.SDK_INT >= 29) builder.surfaceControl(surfaceControl)
-                gecko.surfaceChanged(builder.build())
+                    .size(w, h)
+                    .build()
+                gecko.surfaceChanged(info)
                 surfacePublished = true
                 publishFailurePosted = false
-                DiagnosticLog.event("RAW_PUBLISH", "surfaceChanged success display=${id(gecko)} surface=${id(androidSurface)} size=${width}x$height")
                 updateScreenOrigin()
             } catch (error: RuntimeException) {
-                // SurfaceHolder callbacks run on the UI thread. Never let a display handoff race kill
-                // the whole process; unwind this raw display once and leave the chrome alive so the
-                // exact exception is visible/loggable on the physical device.
                 if (!publishFailurePosted) {
                     publishFailurePosted = true
-                    Log.e(TAG, "Could not publish raw Gecko Surface", error)
-                    DiagnosticLog.error(
-                        "RAW_PUBLISH",
-                        "surfaceChanged failed display=${id(gecko)} surface=${id(androidSurface)} size=${width}x$height ${DiagnosticLog.sessionLabel(current)}",
-                        error
-                    )
+                    Log.e(TAG, "Could not publish ANativeWindow producer Surface", error)
                     post {
                         if (session === current) {
-                            DiagnosticLog.event("RAW_PUBLISH", "posted unwind executing ${DiagnosticLog.sessionLabel(current)}")
                             unbind(current)
-                            Toast.makeText(context, "Raw Gecko surface failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
-                        } else {
-                            DiagnosticLog.event("RAW_PUBLISH", "posted unwind skipped session changed current=${id(current)} actual=${id(session)}")
+                            Toast.makeText(context, "Native producer surface failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
                         }
                     }
                 }
@@ -450,19 +432,12 @@ internal class FloatingGeckoWindow(private val context: Context) {
             if (!isAttachedToWindow) return
             getLocationOnScreen(screenOrigin)
             runCatching { gecko.screenOriginChanged(screenOrigin[0], screenOrigin[1]) }
-                .onFailure { DiagnosticLog.error("RAW_DISPLAY", "screenOriginChanged failed display=${id(gecko)} x=${screenOrigin[0]} y=${screenOrigin[1]}", it) }
         }
 
         override fun requestNewSurface() {
-            DiagnosticLog.event(
-                "RAW_SURFACE",
-                "requestNewSurface session=${DiagnosticLog.sessionLabel(session)} display=${id(display)} currentSurface=${id(holder.surface)}"
-            )
             post {
-                DiagnosticLog.event("RAW_SURFACE", "requestNewSurface toggle begin attached=$isAttachedToWindow visibility=$visibility")
-                visibility = View.INVISIBLE
-                visibility = View.VISIBLE
-                DiagnosticLog.event("RAW_SURFACE", "requestNewSurface toggle complete visibility=$visibility")
+                if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36) return@post
+                recreatePipeline(width.coerceAtLeast(1), height.coerceAtLeast(1))
             }
         }
 
@@ -487,7 +462,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
         override fun onCheckIsTextEditor(): Boolean = session != null
 
         override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
-            DiagnosticLog.event("RAW_INPUT", "onCreateInputConnection session=${DiagnosticLog.sessionLabel(session)}")
             return session?.textInput?.onCreateInputConnection(outAttrs)
         }
 
@@ -518,13 +492,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
             super.onWindowFocusChanged(hasWindowFocus)
-            DiagnosticLog.event("RAW_WINDOW", "surface focus=$hasWindowFocus ${DiagnosticLog.sessionLabel(session)}")
             Workspace.peek()?.applyPolicy()
         }
     }
 
     companion object {
-        private const val TAG = "BubbleRawGecko"
-        private fun id(value: Any?): String = if (value == null) "null" else Integer.toHexString(System.identityHashCode(value))
+        private const val TAG = "BubbleNativeBuffers"
     }
 }
