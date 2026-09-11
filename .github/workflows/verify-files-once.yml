@@ -32,7 +32,8 @@ name: Verify current Bubble changes
 # - GeckoRuntime ServiceWorkerDelegate routes clients.openWindow(messageUrl) into that exact tab.
 # - voice-route.js is the final local fallback, scoring rows by phone/contact/message and selecting the
 #   specific conversation if Google's own notificationclick/openWindow path does not navigate it.
-# - Arbitrary message-body phone numbers are never treated as sender identity.
+# - Arbitrary message-body phone numbers are never treated as sender identity; only title/tag/explicit
+#   sender fragments or verified Voice row/header metadata may supply the contact phone number.
 #
 # Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 on:
