@@ -22,7 +22,7 @@ android {
         buildConfigField("String", "SOURCE_SHA", "\"${providers.environmentVariable("GITHUB_SHA").getOrElse("local-uncommitted")}\"")
     }
     buildFeatures { buildConfig = true }
-    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/engineAssets"))
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/engineAssets").get().asFile)
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     signingConfigs {
         getByName("debug") {
