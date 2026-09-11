@@ -15,9 +15,35 @@
 #include <new>
 #include <unistd.h>
 
+// These are LL-NDK/libnativewindow entry points used by Android's EGL mutable-render-buffer path.
+// Some NDK header revisions expose them only through the nativewindow VNDK superset, so keep the
+// stable C declarations here while linking libnativewindow explicitly.
+extern "C" int ANativeWindow_setUsage(ANativeWindow* window, uint64_t usage);
+extern "C" int ANativeWindow_setSharedBufferMode(ANativeWindow* window, bool sharedBufferMode);
+extern "C" int ANativeWindow_setAutoRefresh(ANativeWindow* window, bool autoRefresh);
+
 namespace {
 
 constexpr int kMaxImages = 4;
+
+// Consumer allocation requirements. FRONT_BUFFER asks gralloc for front-buffer semantics;
+// COMPOSER_OVERLAY makes this allocation eligible for direct HWC presentation when submitted via
+// ASurfaceTransaction_setBufferWithRelease. GPU_SAMPLED_IMAGE remains required because SurfaceFlinger
+// may still fall back to GPU composition. GPU_FRAMEBUFFER guarantees the allocation is writable as a
+// GPU color target by Gecko's EGL/WebRender producer.
+constexpr uint64_t kConsumerUsage =
+    AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+    AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+    AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
+    AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
+
+constexpr uint64_t kProducerUsage =
+    AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+    AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
+
+constexpr uint64_t kRequiredPresentedUsage =
+    AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
+    AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
 
 struct FrameLease {
     AImage* image = nullptr;
@@ -47,9 +73,6 @@ void releaseFrame(void* context, int releaseFenceFd) {
 void applyFrameRateLocked(Renderer* renderer) {
     if (renderer == nullptr || renderer->frameRate <= 0.0f) return;
 
-    // This producer ANativeWindow is consumed by AImageReader, so Android documents that this vote
-    // does not itself select the physical display mode. Keep it anyway as producer intent; the
-    // ASurfaceControl vote below is the display-facing contract.
     if (renderer->producerWindow != nullptr) {
         ANativeWindow_setFrameRateWithChangeStrategy(
             renderer->producerWindow,
@@ -67,9 +90,8 @@ void applyFrameRateLocked(Renderer* renderer) {
             renderer->frameRate,
             ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_AT_LEAST,
             ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS);
-        // Prefer newest-frame latency. AImageReader already bounds the queue and acquireLatestImage
-        // discards stale producer frames; disabling compositor backpressure avoids forcing every stale
-        // intermediate frame to be shown before a newer frame can replace it.
+        // Prefer newest-frame latency. Shared/front-buffer mode already allows simultaneous producer
+        // and consumer access; compositor backpressure would only re-introduce queue latency.
         ASurfaceTransaction_setEnableBackPressure(transaction, renderer->outputControl, false);
         ASurfaceTransaction_apply(transaction);
         ASurfaceTransaction_delete(transaction);
@@ -97,6 +119,16 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
 
     AHardwareBuffer* buffer = nullptr;
     if (AImage_getHardwareBuffer(image, &buffer) != AMEDIA_OK || buffer == nullptr) {
+        if (acquireFenceFd >= 0) close(acquireFenceFd);
+        AImage_delete(image);
+        return;
+    }
+
+    AHardwareBuffer_Desc description{};
+    AHardwareBuffer_describe(buffer, &description);
+
+    // Never silently run the physical test without the requested front-buffer/HWC eligibility.
+    if ((description.usage & kRequiredPresentedUsage) != kRequiredPresentedUsage) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
         AImage_delete(image);
         return;
@@ -135,8 +167,8 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
             static_cast<ADataSpace>(dataSpace));
     }
 
-    AHardwareBuffer_Desc description{};
-    AHardwareBuffer_describe(buffer, &description);
+    // Keep buffer size == layer crop size. No scaling/rotation/intermediate texture is requested,
+    // which maximizes the chance that Hardware Composer can assign a physical overlay plane.
     if (description.width > 0 && description.height > 0) {
         const ARect crop{
             0,
@@ -144,6 +176,8 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
             static_cast<int32_t>(description.width),
             static_cast<int32_t>(description.height)};
         ASurfaceTransaction_setCrop(transaction, renderer->outputControl, &crop);
+        ASurfaceTransaction_setPosition(transaction, renderer->outputControl, 0, 0);
+        ASurfaceTransaction_setScale(transaction, renderer->outputControl, 1.0f, 1.0f);
     }
 
     ASurfaceTransaction_apply(transaction);
@@ -152,6 +186,21 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
 
 Renderer* fromHandle(jlong handle) {
     return reinterpret_cast<Renderer*>(static_cast<uintptr_t>(handle));
+}
+
+void destroyRenderer(Renderer* renderer) {
+    if (renderer == nullptr) return;
+    if (renderer->reader != nullptr) {
+        AImageReader_setImageListener(renderer->reader, nullptr);
+        AImageReader_delete(renderer->reader);
+        renderer->reader = nullptr;
+        renderer->producerWindow = nullptr;
+    }
+    if (renderer->outputControl != nullptr) {
+        ASurfaceControl_release(renderer->outputControl);
+        renderer->outputControl = nullptr;
+    }
+    delete renderer;
 }
 
 }  // namespace
@@ -176,27 +225,32 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeCreate(
         return 0;
     }
 
-    // PRIVATE keeps the producer GPU-native. GPU_SAMPLED_IMAGE is mandatory for buffers submitted
-    // through ASurfaceTransaction_setBufferWithRelease because SurfaceFlinger may GPU-compose them.
-    const uint64_t usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
     const media_status_t createStatus = AImageReader_newWithUsage(
         width,
         height,
         AIMAGE_FORMAT_PRIVATE,
-        usage,
+        kConsumerUsage,
         kMaxImages,
         &renderer->reader);
     if (createStatus != AMEDIA_OK || renderer->reader == nullptr) {
-        ASurfaceControl_release(renderer->outputControl);
-        delete renderer;
+        destroyRenderer(renderer);
         return 0;
     }
 
     if (AImageReader_getWindow(renderer->reader, &renderer->producerWindow) != AMEDIA_OK ||
         renderer->producerWindow == nullptr) {
-        AImageReader_delete(renderer->reader);
-        ASurfaceControl_release(renderer->outputControl);
-        delete renderer;
+        destroyRenderer(renderer);
+        return 0;
+    }
+
+    // This is the BufferQueue mechanism used underneath EGL_KHR_mutable_render_buffer and
+    // EGL_ANDROID_front_buffer_auto_refresh: the producer and consumer share the first allocation,
+    // while auto-refresh allows the consumer/compositor to revisit it without waiting for a new
+    // conventional back-buffer swap. Fail closed if either request is rejected.
+    if (ANativeWindow_setUsage(renderer->producerWindow, kProducerUsage) != 0 ||
+        ANativeWindow_setSharedBufferMode(renderer->producerWindow, true) != 0 ||
+        ANativeWindow_setAutoRefresh(renderer->producerWindow, true) != 0) {
+        destroyRenderer(renderer);
         return 0;
     }
 
@@ -206,9 +260,7 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeCreate(
     listener.context = renderer;
     listener.onImageAvailable = onImageAvailable;
     if (AImageReader_setImageListener(renderer->reader, &listener) != AMEDIA_OK) {
-        AImageReader_delete(renderer->reader);
-        ASurfaceControl_release(renderer->outputControl);
-        delete renderer;
+        destroyRenderer(renderer);
         return 0;
     }
 
@@ -256,6 +308,13 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeDestroy(
     renderer->alive.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> guard(renderer->mutex);
 
+    if (renderer->producerWindow != nullptr) {
+        // Disable auto-refresh/shared mode before tearing down the queue so SurfaceFlinger/AImageReader
+        // stop revisiting the shared front buffer while destruction proceeds.
+        ANativeWindow_setAutoRefresh(renderer->producerWindow, false);
+        ANativeWindow_setSharedBufferMode(renderer->producerWindow, false);
+    }
+
     if (renderer->reader != nullptr) {
         AImageReader_setImageListener(renderer->reader, nullptr);
         AImageReader_delete(renderer->reader);
@@ -266,7 +325,5 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeDestroy(
         ASurfaceControl_release(renderer->outputControl);
         renderer->outputControl = nullptr;
     }
-    // AImageReader_delete unregisters its dedicated callback thread. FrameLease objects already handed
-    // to SurfaceFlinger own only their AImage and are released independently by releaseFrame().
     delete renderer;
 }
