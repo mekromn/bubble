@@ -128,10 +128,10 @@ assert.match(render, /Surface\.FRAME_RATE_COMPATIBILITY_AT_LEAST/,
   'Android 16 ordinary Surface producers must keep the at-least refresh policy');
 assert.match(meter, /RenderPolicy\.vote\(a, a\.window\.decorView, attributes\)/,
   'Fullscreen must keep the same maximum-refresh policy');
-assert.match(diagnostics, /const val ENABLED = false/,
-  'Persistent diagnostics remain implemented but disabled');
+assert.match(diagnostics, /const val ENABLED = true/,
+  'Renderer forensic build must keep persistent diagnostics enabled');
 const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPriorityHint\(GeckoSession\.PRIORITY_HIGH\)/g) || [];
 assert.ok(activeHigh.length >= 2,
   'Resident ChatGPT/Voice sessions must remain active and high priority');
 
-console.log('Floating combined path: shared ANativeWindow front buffer -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, runtime-resolved LL-NDK controls, no SurfaceView/TextureView/CPU readback.');
+console.log('Floating combined path: shared ANativeWindow front buffer -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, runtime-resolved LL-NDK controls, diagnostics on, no SurfaceView/TextureView/CPU readback.');
