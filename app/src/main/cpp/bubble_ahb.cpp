@@ -175,7 +175,7 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
             0,
             static_cast<int32_t>(description.width),
             static_cast<int32_t>(description.height)};
-        ASurfaceTransaction_setCrop(transaction, renderer->outputControl, &crop);
+        ASurfaceTransaction_setCrop(transaction, renderer->outputControl, crop);
         ASurfaceTransaction_setPosition(transaction, renderer->outputControl, 0, 0);
         ASurfaceTransaction_setScale(transaction, renderer->outputControl, 1.0f, 1.0f);
     }
