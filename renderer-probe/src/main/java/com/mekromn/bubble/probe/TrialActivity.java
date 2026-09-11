@@ -54,7 +54,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final ArrayList<Double> uiIntervals=new ArrayList<>();
     private Measurements measurements;
-    private Button visibleButton;
+    private boolean injectingSyntheticInput;
+    private long visualFailureReportedNs;
     private final JSONArray refreshEvents=new JSONArray();
     private final ArrayList<JSONObject> lifecycleEvents=new ArrayList<>();
     private JSONObject spec,capabilities,startEnvironment,endEnvironment,pageReport,engineIdentity;
@@ -71,7 +72,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private SurfaceControl output;
     private Surface producer;
     private long nativeHandle,lastUiNs;
-    private boolean ending,started,measuring,firstPaint,firstComposite,visualConfirmed,controlCreating,published;
+    private boolean ending,started,measuring,firstPaint,firstComposite,controlCreating,published;
     private int viewReadyRetries;
     private boolean touchedDuringMeasurement;
     private int viewportWidth,viewportHeight,retries;
@@ -113,8 +114,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         LinearLayout controls=new LinearLayout(this);controls.setOrientation(LinearLayout.VERTICAL);controls.setPadding(18,48,18,0);
         progress=new TextView(this);progress.setTextColor(0xff80e5c8);progress.setTextSize(16);progress.setText(label()+"\nPreparing isolated renderer…");controls.addView(progress);
         LinearLayout buttons=new LinearLayout(this);
-        visibleButton=button("Visible",()->{visualConfirmed=true;progress.setText(label()+"\nVisual confirmation recorded");});buttons.addView(visibleButton);
-        buttons.addView(button("Black / broken",()->end("VISUAL_FAIL",null)));
+        buttons.addView(button("Black / broken",()->{visualFailureReportedNs=SystemClock.elapsedRealtimeNanos();end("VISUAL_FAIL",null);}));
         buttons.addView(button("Stop",()->end("CANCELLED",null)));
         controls.addView(buttons);root.addView(controls,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
         slot=new FrameLayout(this);root.addView(slot);setContentView(root);
@@ -122,7 +122,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         root.post(this::prepare);
     }
     private String label(){return spec.optString("variant")+" · "+(spec.optBoolean("floating")?"FLOATING":"FULLSCREEN WINDOW")+" · "+spec.optString("workload");}
-    private Button button(String text,Runnable action){Button b=new Button(this);b.setText(text);b.setTextSize(11);b.setOnClickListener(v->{touchedDuringMeasurement|=measuring;action.run();});return b;}
+    private Button button(String text,Runnable action){Button b=new Button(this);b.setText(text);b.setTextSize(11);b.setOnClickListener(v->action.run());return b;}
     private void signal(int code,String phase){
         lifecycleEvents.add(TrialPlan.json("elapsedNs",SystemClock.elapsedRealtimeNanos(),"phase",phase));
         android.util.Log.i("BubbleProbe",token+" "+phase);
@@ -176,6 +176,10 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             String renderer=spec.optString("renderer");
             if(renderer.equals("geckoview")||renderer.equals("texture")){
                 geckoView=new GeckoView(this);geckoView.setViewBackend(renderer.equals("texture")?GeckoView.BACKEND_TEXTURE_VIEW:GeckoView.BACKEND_SURFACE_VIEW);
+                geckoView.setOnTouchListener((v,event)->{
+                    if(!injectingSyntheticInput) touchedDuringMeasurement|=measuring;
+                    return false;
+                });
                 geckoView.setRequestedFrameRate(vote);page.addView(geckoView,new FrameLayout.LayoutParams(-1,-1));
             }else if(renderer.equals("raw")){
                 raw=new SurfaceView(this){
@@ -252,9 +256,15 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         MotionEvent event=MotionEvent.obtain(gestureDown,now,action,viewportWidth*.5f,viewportHeight*(from+(to-from)*fraction),0);
         // Synthetic input is confined to this generated, network-blocked document. Never sent to a real tab.
         long dispatchStart=System.nanoTime();
-        if(geckoView!=null)geckoView.dispatchTouchEvent(event);else session.getPanZoomController().onTouchEvent(event);
-        measurements.input(now,dispatchStart,System.nanoTime(),action);
-        event.recycle();injectedInputEvents++;
+        injectingSyntheticInput=true;
+        try {
+            if(geckoView!=null)geckoView.dispatchTouchEvent(event);else session.getPanZoomController().onTouchEvent(event);
+            measurements.input(now,dispatchStart,System.nanoTime(),action);
+            injectedInputEvents++;
+        } finally {
+            injectingSyntheticInput=false;
+            event.recycle();
+        }
     }
     private void attachPage(){
         if(spec.optBoolean("floating")){
@@ -333,12 +343,12 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
                 case "measure":
                     measuring=true;measureBeginNs=SystemClock.elapsedRealtimeNanos();lastUiNs=0;startEnvironment=environment();recordRefresh();
                     if(nativeHandle!=0)NativeProbe.measuring(nativeHandle,true);
-                    measurements.begin();visibleButton.setEnabled(false);
+                    measurements.begin();
                     progress.setText(label()+"\nMeasuring · do not touch or move the window");signal(3,"measuring");break;
                 case "done":
                     measuring=false;measurements.stop();main.removeCallbacks(apzInput);measureEndNs=SystemClock.elapsedRealtimeNanos();pageReport=packet;endEnvironment=environment();
                     Choreographer.getInstance().removeFrameCallback(uiMeter);if(nativeHandle!=0)NativeProbe.measuring(nativeHandle,false);
-                    progress.setText(label()+"\nSaving measured results…");main.postDelayed(()->end(visualConfirmed?"OK_VISIBLE":"OK_VISUAL_UNCONFIRMED",pageReport),400);break;
+                    progress.setText(label()+"\nSaving measured results…");main.postDelayed(()->end("OK_NO_VISUAL_FAILURE_REPORTED",pageReport),400);break;
                 default:break;
             }
         }catch(Exception e){end("PAGE_REPORT_PARSE_ERROR",null);}
@@ -363,7 +373,9 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         JSONObject report=TrialPlan.json("schema",2,"probeVersion",BuildConfig.VERSION_NAME,"spec",spec,"status",result,"engine",BuildConfig.GECKO_VERSION,"engineRepository",BuildConfig.GECKO_MAVEN,
             "source",BuildConfig.SOURCE_SHA,"engineArtifact",engineIdentity==null?JSONObject.NULL:engineIdentity,"engineProfile","new stock profile per trial; no Bubble extensions or production load",
             "viewportWidthPx",viewportWidth,"viewportHeightPx",viewportHeight,"requestedHz",vote,"firstContentfulPaint",firstPaint,"firstComposite",firstComposite,"lifecycleEvents",new JSONArray(lifecycleEvents),
-            "visualConfirmed",visualConfirmed,"touchedDuringMeasurement",touchedDuringMeasurement,"injectedInputEvents",injectedInputEvents,"measureBeginAndroidNs",measureBeginNs,"measureEndAndroidNs",measureEndNs,
+            "visualConfirmed",false,"visualPolicy","ASSUME_VISIBLE_UNLESS_REPORTED",
+            "visualFailureReported",visualFailureReportedNs>0,"visualFailureReportedNs",visualFailureReportedNs,
+            "visualAssessment",visualFailureReportedNs>0?"USER_REPORTED_FAILURE":"NO_FAILURE_REPORTED_NOT_INDEPENDENTLY_VERIFIED","touchedDuringMeasurement",touchedDuringMeasurement,"injectedInputEvents",injectedInputEvents,"measureBeginAndroidNs",measureBeginNs,"measureEndAndroidNs",measureEndNs,
             "uiChoreographerIntervalsMs",new JSONArray(uiIntervals),"reportedRefreshEvents",refreshEvents,
             "environmentStart",startEnvironment==null?JSONObject.NULL:startEnvironment,"environmentEnd",endEnvironment==null?environment():endEnvironment,
             "capabilities",capabilities==null?JSONObject.NULL:capabilities,"page",pageData==null?JSONObject.NULL:pageData,
@@ -382,7 +394,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             if(output!=null&&!controlCreating){output.release();output=null;}
             if(page!=null&&spec.optBoolean("floating")&&page.isAttachedToWindow())manager.removeViewImmediate(page);
             if(chrome!=null&&chrome.isAttachedToWindow())manager.removeViewImmediate(chrome);
-        }catch(RuntimeException e){try{report.put("lifecycleError",e.toString());report.put("status","LIFECYCLE_ERROR");}catch(Exception ignored){}}
+        }catch(RuntimeException e){try{report.put("lifecycleError",e.toString());if(report.optString("status").startsWith("OK"))report.put("status","LIFECYCLE_ERROR");}catch(Exception ignored){}}
         final boolean paintObserved=firstPaint;
         worker.execute(()->{
             try{

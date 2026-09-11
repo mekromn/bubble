@@ -63,14 +63,14 @@ public final class ProbeActivity extends Activity {
         TextView explanation=new TextView(this);explanation.setTextColor(0xffb5c3d3);explanation.setText(
             "Separate app and clean test profile. No Bubble tabs or account data are opened.\n\n"+
             "Same page pixels in fullscreen-window and floating-window tests. rAF is page callback cadence, NOT proof of displayed FPS.\n\n"+
-            "Keep the phone cool. Stop screen recording and other floating apps. Tap Visible during warm-up, or Black whenever a case fails. Results stay on this device.");
+            "Keep the phone cool. Stop screen recording and other floating apps. Do not touch a successful test. Press Black / broken only on failure, or Stop to cancel. Results stay on this device.");
         ui.addView(explanation);
         Button permission=button("Allow floating-window permission",()->startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:"+getPackageName()))));ui.addView(permission);
         ui.addView(button("Renderer Lab · choose workloads and repeated blocks",this::configureLab));
         ui.addView(button("Open latest detailed report",()->startActivity(new Intent(this,ReportActivity.class))));
         quick=button("Quick A/B · 4 cases",()->startSuite(TrialPlan.quick(System.currentTimeMillis())));ui.addView(quick);
-        matrix=button("Matrix · 17 cases",()->startSuite(TrialPlan.matrix(1,false,System.currentTimeMillis())));ui.addView(matrix);
-        extended=button("Repeated matrix · 3 workloads × 3 rounds",()->startSuite(TrialPlan.matrix(3,true,System.currentTimeMillis())));ui.addView(extended);
+        matrix=button("Matrix · "+(TrialPlan.VARIANTS.size()*2)+" cases",()->startSuite(TrialPlan.matrix(1,false,System.currentTimeMillis())));ui.addView(matrix);
+        extended=button("Repeated matrix · 6 workloads × 3 rounds",()->startSuite(TrialPlan.matrix(3,true,System.currentTimeMillis())));ui.addView(extended);
         ui.addView(button("Stop suite",this::stopSuite));ui.addView(button("Export all saved reports to Downloads",this::export));
         status=new TextView(this);status.setTextColor(0xff78e1c4);status.setText("Ready · engine "+BuildConfig.GECKO_VERSION);ui.addView(status);
         results=new TextView(this);results.setTextColor(Color.WHITE);results.setTextSize(13);results.setTextIsSelectable(true);

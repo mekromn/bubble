@@ -30,9 +30,15 @@ final class Measurements {
         synchronized(this){
             if(beginNs==0||intended<beginNs||(endNs>0&&intended>endNs))return;
             listenerDrops+=drops;
-            add(hwui,new long[]{intended,m.getMetric(FrameMetrics.FRAME_TIMELINE_VSYNC_ID),m.getMetric(FrameMetrics.TOTAL_DURATION),m.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION),m.getMetric(FrameMetrics.INPUT_HANDLING_DURATION),m.getMetric(FrameMetrics.ANIMATION_DURATION),m.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION),m.getMetric(FrameMetrics.DRAW_DURATION),m.getMetric(FrameMetrics.SYNC_DURATION),m.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION),m.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION),m.getMetric(FrameMetrics.GPU_DURATION),m.getMetric(FrameMetrics.DEADLINE),m.getMetric(FrameMetrics.FIRST_DRAW_FRAME)});
+            add(hwui,new long[]{intended,frameTimelineId(m),m.getMetric(FrameMetrics.TOTAL_DURATION),m.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION),m.getMetric(FrameMetrics.INPUT_HANDLING_DURATION),m.getMetric(FrameMetrics.ANIMATION_DURATION),m.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION),m.getMetric(FrameMetrics.DRAW_DURATION),m.getMetric(FrameMetrics.SYNC_DURATION),m.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION),m.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION),m.getMetric(FrameMetrics.GPU_DURATION),m.getMetric(FrameMetrics.DEADLINE),m.getMetric(FrameMetrics.FIRST_DRAW_FRAME)});
         }
     };
+    // Public API 36 metric; the SDK's getMetric @IntDef omits it even though the
+    // constant is documented. Keep this workaround local; -1 remains unavailable.
+    @android.annotation.SuppressLint("WrongConstant")
+    private static long frameTimelineId(FrameMetrics metrics) {
+        return metrics.getMetric(FrameMetrics.FRAME_TIMELINE_VSYNC_ID);
+    }
     private final Choreographer.VsyncCallback callback=new Choreographer.VsyncCallback(){
         @Override public void onVsync(Choreographer.FrameData d){
             if(!measuring)return;

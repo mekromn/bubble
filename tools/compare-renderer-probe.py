@@ -28,17 +28,89 @@ def timestamp_rate(ns):
     return summarize([(b-a)/1e6 for a,b in zip(times, times[1:])])
 
 
+LEGACY_COLUMNS = ["acquireNs", "submitNs", "imageTimestampNs", "latchNs",
+                  "completionCallbackNs", "presentFenceSignalNs", "hardwareBufferId"]
+V2_COLUMNS = LEGACY_COLUMNS + ["acquireCallNs", "applyCallNs",
+                              "releaseCallbackNs", "outstandingDepth"]
+
+
+def decode_native_samples(native):
+    """Decode JSON sample arrays by column names, with explicit legacy fallbacks.
+
+    Extra named columns and column reordering are supported. Malformed records are
+    counted/reported, never silently passed off as no frames or no presentation.
+    Hardware-buffer IDs remain integer allocation identifiers, not frame counters.
+    """
+    if not isinstance(native, dict):
+        return [], {"input_rows": 0, "decoded_rows": 0, "rejected_rows": 0,
+                    "schema_source": "absent", "errors": ["native_not_object"]}
+    samples = native.get("samples", [])
+    info = {"input_rows": len(samples) if isinstance(samples, list) else 0,
+            "decoded_rows": 0, "rejected_rows": 0,
+            "schema_source": "sampleColumns", "errors": []}
+    if not isinstance(samples, list):
+        info["errors"].append("samples_not_array")
+        return [], info
+    names = native.get("sampleColumns")
+    if names is None:
+        info["schema_source"] = "explicit_legacy_length_fallback"
+        lengths = {len(r) for r in samples if isinstance(r, list)}
+        if not samples:
+            return [], info
+        if lengths == {7}:
+            names = LEGACY_COLUMNS
+        elif lengths == {11}:
+            names = V2_COLUMNS
+        else:
+            info["errors"].append("missing_or_ambiguous_sample_columns")
+            info["rejected_rows"] = len(samples)
+            return [], info
+    if (not isinstance(names, list) or not all(isinstance(k, str) and k for k in names)
+            or len(names) != len(set(names)) or not set(LEGACY_COLUMNS).issubset(names)):
+        info["errors"].append("invalid_or_incomplete_sample_columns")
+        info["rejected_rows"] = len(samples)
+        return [], info
+    rows = []
+    for index, values in enumerate(samples):
+        if not isinstance(values, list) or len(values) != len(names):
+            info["rejected_rows"] += 1
+            if len(info["errors"]) < 16:
+                info["errors"].append(f"row_{index}_shape_mismatch")
+            continue
+        row = dict(zip(names, values))
+        required = [row[k] for k in LEGACY_COLUMNS]
+        if not all(x is None or (isinstance(x, (int, float)) and not isinstance(x, bool)
+                                 and math.isfinite(x)) for x in required):
+            info["rejected_rows"] += 1
+            if len(info["errors"]) < 16:
+                info["errors"].append(f"row_{index}_invalid_required_value")
+            continue
+        rows.append(row)
+    info["decoded_rows"] = len(rows)
+    return rows, info
+
+
+def observed_delta(rows, start, end):
+    values = []
+    for row in rows:
+        a, b = row.get(start), row.get(end)
+        if (isinstance(a, (int, float)) and isinstance(b, (int, float))
+                and a > 0 and b >= a):
+            values.append((b-a)/1e6)
+    return summarize(values)
+
+
 def load(path):
     if path.is_dir():
         for item in sorted(path.rglob("*.json")):
-            if item.name == "plan.json" or item.name.endswith(".pending.json"):
+            if item.name == "plan.json" or item.name.endswith((".pending.json", ".partial.json")):
                 continue
             yield str(item), json.loads(item.read_text())
     elif zipfile.is_zipfile(path):
         # Read entries in memory; never extract an untrusted archive onto the filesystem.
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
-                if not info.filename.endswith(".json") or info.filename.endswith(("plan.json", ".pending.json")):
+                if not info.filename.endswith(".json") or info.filename.endswith(("plan.json", ".pending.json", ".partial.json")):
                     continue
                 if info.file_size > 8_000_000:
                     raise ValueError(f"Oversized report: {info.filename}")
@@ -58,11 +130,19 @@ def analyze(reports):
         env = report.get("environmentStart") or {}
         end = report.get("environmentEnd") or {}
         raf = summarize((page.get("raf") or {}).get("intervals", []))
-        frames = native.get("samples", [])
-        present = timestamp_rate([f[5] for f in frames if isinstance(f, list) and len(f) == 7])
+        frames, decoding = decode_native_samples(native)
+        presentation_times = [f["presentFenceSignalNs"] for f in frames
+                              if isinstance(f.get("presentFenceSignalNs"), (int, float))
+                              and f["presentFenceSignalNs"] > 0]
+        present = timestamp_rate(presentation_times)
+        latency = observed_delta(frames, "acquireNs", "presentFenceSignalNs")
         problems = []
         if not report.get("status", "").startswith("OK"):
             problems.append(report.get("status", "NO_STATUS"))
+        if decoding["errors"]:
+            problems.append("native_schema_error")
+        if report.get("visualFailureReported"):
+            problems.append("user_reported_visual_failure")
         if not report.get("firstContentfulPaint"):
             problems.append("no_first_paint")
         if report.get("touchedDuringMeasurement"):
@@ -82,8 +162,17 @@ def analyze(reports):
                "raf_hz": raf["hz"], "raf_p95_ms": raf["p95_ms"], "raf_p99_ms": raf["p99_ms"],
                "ui_callback_hz": summarize(report.get("uiChoreographerIntervalsMs", []))["hz"],
                "native_presentation_fence_event_hz": present["hz"], "native_measured_samples": len(frames),
+               "native_input_rows": decoding["input_rows"], "native_rejected_rows": decoding["rejected_rows"],
+               "native_schema_source": decoding["schema_source"], "native_schema_errors": ";".join(decoding["errors"]),
+               "present_observations": len(presentation_times), "unique_present_events": len(set(presentation_times)),
+               "missing_present_observations": len(frames)-len(presentation_times),
+               "present_coverage_pct": 100*len(presentation_times)/len(frames) if frames else None,
+               "observed_acquire_to_present_p50_ms": latency["p50_ms"],
+               "observed_acquire_to_present_p95_ms": latency["p95_ms"],
                "native_submitted_total_including_warmup": native.get("submittedTotal"),
                "requested_hz": report.get("requestedHz"), "android_reported_hz": env.get("reportedDisplayHz"),
+               "visual_policy": report.get("visualPolicy", "LEGACY_CONFIRMATION"),
+               "visual_assessment": report.get("visualAssessment", "LEGACY_RECORDED_STATE"),
                "visual_confirmed": bool(report.get("visualConfirmed")), "thermal_start": env.get("thermalStatus"),
                "thermal_end": end.get("thermalStatus"), "battery_temperature_c": env.get("batteryTemperatureC"),
                "valid_timing_observation": not problems, "problems": ";".join(problems)}
@@ -92,14 +181,20 @@ def analyze(reports):
         # Missing engine identity is not silently pooled across builds.
         identity = engine or (report.get("engine"), report.get("engineRepository"), report.get("source"))
         suite = str(Path(filename).parent)
-        key = (suite, spec.get("round"), spec.get("variant"), spec.get("workload"), str(identity),
+        key = (suite, report.get("source"), spec.get("block", spec.get("round")), spec.get("variant"),
+               spec.get("workload"), spec.get("workloadRevision", "v1"), spec.get("intensity", 1),
+               spec.get("geometry", "matched"), spec.get("instrumentation", "legacy"),
+               spec.get("warmupMs"), spec.get("measureMs"), row["visual_policy"], str(identity),
                report.get("viewportWidthPx"), report.get("viewportHeightPx"), page.get("cssWidth"), page.get("cssHeight"), page.get("dpr"))
-        indexed.setdefault(key, {})[bool(spec.get("floating"))] = (row, report)
+        indexed.setdefault(key, {}).setdefault(bool(spec.get("floating")), []).append((row, report))
     for key, modes in indexed.items():
         if False not in modes or True not in modes:
             continue
-        full, rf = modes[False]
-        floating, ro = modes[True]
+        if len(modes[False]) != 1 or len(modes[True]) != 1:
+            pairs.append({"valid_pair": False, "reason": "DUPLICATE_PAIR", "winner": None})
+            continue
+        full, rf = modes[False][0]
+        floating, ro = modes[True][0]
         ef, eo = rf.get("environmentStart") or {}, ro.get("environmentStart") or {}
         stable = all(ef.get(x) == eo.get(x) for x in ("thermalStatus", "powerSave", "charging"))
         valid = full["valid_timing_observation"] and floating["valid_timing_observation"] and stable
