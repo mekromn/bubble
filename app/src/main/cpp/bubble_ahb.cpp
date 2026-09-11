@@ -20,11 +20,6 @@ namespace {
 
 constexpr int kMaxImages = 4;
 
-// Consumer allocation requirements. FRONT_BUFFER asks gralloc for front-buffer semantics;
-// COMPOSER_OVERLAY makes this allocation eligible for direct HWC presentation when submitted via
-// ASurfaceTransaction_setBufferWithRelease. GPU_SAMPLED_IMAGE remains required because SurfaceFlinger
-// may still fall back to GPU composition. GPU_FRAMEBUFFER guarantees the allocation is writable as a
-// GPU color target by Gecko's EGL/WebRender producer.
 constexpr uint64_t kConsumerUsage =
     AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
     AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
@@ -39,16 +34,21 @@ constexpr uint64_t kRequiredPresentedUsage =
     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
     AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
 
-// These controls are real libnativewindow LL-NDK entry points on Android, but the ordinary app NDK
-// stub deliberately omits them. Resolve the device's system implementation at runtime. This branch
-// fails closed if the Pixel's app linker namespace does not expose all three; it never silently falls
-// back to an ordinary queued BufferQueue and falsely labels it a front-buffer test.
+// nativePump() status codes. Positive values are the cumulative number of successfully submitted
+// AHardwareBuffers. Zero means the shared ImageReader currently has no acquirable buffer.
+constexpr jint kPumpNoBuffer = 0;
+constexpr jint kPumpMaxImages = -2;
+constexpr jint kPumpAcquireError = -3;
+constexpr jint kPumpHardwareBufferError = -4;
+constexpr jint kPumpUsageMismatch = -5;
+constexpr jint kPumpTransactionError = -6;
+
 using SetUsageFn = int (*)(ANativeWindow*, uint64_t);
 using SetSharedBufferModeFn = int (*)(ANativeWindow*, bool);
 using SetAutoRefreshFn = int (*)(ANativeWindow*, bool);
 
 struct FrontBufferApi {
-    void* library = nullptr;  // Intentionally process-lifetime; function pointers must remain valid.
+    void* library = nullptr;
     SetUsageFn setUsage = nullptr;
     SetSharedBufferModeFn setSharedBufferMode = nullptr;
     SetAutoRefreshFn setAutoRefresh = nullptr;
@@ -59,7 +59,6 @@ struct FrontBufferApi {
 };
 
 void* resolveNativeWindowSymbol(void* library, const char* name) {
-    // If libnativewindow is already global in the process, use that exact loaded implementation first.
     void* symbol = dlsym(RTLD_DEFAULT, name);
     if (symbol == nullptr && library != nullptr) symbol = dlsym(library, name);
     return symbol;
@@ -88,9 +87,14 @@ struct Renderer {
     std::mutex mutex;
     std::atomic<bool> alive{true};
     AImageReader* reader = nullptr;
-    ANativeWindow* producerWindow = nullptr;  // Owned by AImageReader; never release directly.
+    ANativeWindow* producerWindow = nullptr;
     ASurfaceControl* outputControl = nullptr;
     float frameRate = 0.0f;
+    uint64_t callbackCount = 0;
+    uint64_t pumpCount = 0;
+    uint64_t submittedCount = 0;
+    media_status_t lastAcquireStatus = AMEDIA_OK;
+    uint64_t lastUsage = 0;
 };
 
 void releaseFrame(void* context, int releaseFenceFd) {
@@ -99,8 +103,6 @@ void releaseFrame(void* context, int releaseFenceFd) {
         if (releaseFenceFd >= 0) close(releaseFenceFd);
         return;
     }
-    // Return exactly the same AHardwareBuffer to AImageReader only after SurfaceFlinger says it is
-    // safe to reuse. AImage_deleteAsync consumes the release fence and keeps this path zero-copy.
     AImage_deleteAsync(lease->image, releaseFenceFd);
     delete lease;
 }
@@ -125,55 +127,59 @@ void applyFrameRateLocked(Renderer* renderer) {
             renderer->frameRate,
             ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_AT_LEAST,
             ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS);
-        // Prefer newest-frame latency. Shared/front-buffer mode already allows simultaneous producer
-        // and consumer access; compositor backpressure would only re-introduce queue latency.
         ASurfaceTransaction_setEnableBackPressure(transaction, renderer->outputControl, false);
         ASurfaceTransaction_apply(transaction);
         ASurfaceTransaction_delete(transaction);
     }
 }
 
-void onImageAvailable(void* context, AImageReader* callbackReader) {
-    auto* renderer = static_cast<Renderer*>(context);
-    if (renderer == nullptr || !renderer->alive.load(std::memory_order_acquire)) return;
-
-    std::lock_guard<std::mutex> guard(renderer->mutex);
-    if (!renderer->alive.load(std::memory_order_relaxed) || renderer->reader != callbackReader ||
-        renderer->outputControl == nullptr) {
-        return;
+jint presentLatestImageLocked(Renderer* renderer, AImageReader* reader) {
+    if (renderer == nullptr || reader == nullptr || renderer->outputControl == nullptr) {
+        return kPumpAcquireError;
     }
 
     AImage* image = nullptr;
     int acquireFenceFd = -1;
     const media_status_t acquireStatus =
-        AImageReader_acquireLatestImageAsync(callbackReader, &image, &acquireFenceFd);
-    if (acquireStatus != AMEDIA_OK || image == nullptr) {
+        AImageReader_acquireLatestImageAsync(reader, &image, &acquireFenceFd);
+    renderer->lastAcquireStatus = acquireStatus;
+
+    if (acquireStatus == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE || image == nullptr) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
-        return;
+        return kPumpNoBuffer;
+    }
+    if (acquireStatus == AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) {
+        if (acquireFenceFd >= 0) close(acquireFenceFd);
+        return kPumpMaxImages;
+    }
+    if (acquireStatus != AMEDIA_OK) {
+        if (acquireFenceFd >= 0) close(acquireFenceFd);
+        if (image != nullptr) AImage_delete(image);
+        return kPumpAcquireError;
     }
 
     AHardwareBuffer* buffer = nullptr;
     if (AImage_getHardwareBuffer(image, &buffer) != AMEDIA_OK || buffer == nullptr) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
         AImage_delete(image);
-        return;
+        return kPumpHardwareBufferError;
     }
 
     AHardwareBuffer_Desc description{};
     AHardwareBuffer_describe(buffer, &description);
+    renderer->lastUsage = description.usage;
 
-    // Never silently run the physical test without the requested front-buffer/HWC eligibility.
     if ((description.usage & kRequiredPresentedUsage) != kRequiredPresentedUsage) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
         AImage_delete(image);
-        return;
+        return kPumpUsageMismatch;
     }
 
     auto* lease = new (std::nothrow) FrameLease{image};
     if (lease == nullptr) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
         AImage_delete(image);
-        return;
+        return kPumpHardwareBufferError;
     }
 
     ASurfaceTransaction* transaction = ASurfaceTransaction_create();
@@ -181,11 +187,9 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
         if (acquireFenceFd >= 0) close(acquireFenceFd);
         AImage_delete(image);
         delete lease;
-        return;
+        return kPumpTransactionError;
     }
 
-    // SurfaceFlinger takes ownership of acquireFenceFd. The release callback receives a new fence
-    // that is handed directly back to AImageReader through AImage_deleteAsync().
     ASurfaceTransaction_setBufferWithRelease(
         transaction,
         renderer->outputControl,
@@ -202,8 +206,6 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
             static_cast<ADataSpace>(dataSpace));
     }
 
-    // Keep buffer size == layer crop size. No scaling/rotation/intermediate texture is requested,
-    // which maximizes the chance that Hardware Composer can assign a physical overlay plane.
     if (description.width > 0 && description.height > 0) {
         const ARect crop{
             0,
@@ -217,6 +219,21 @@ void onImageAvailable(void* context, AImageReader* callbackReader) {
 
     ASurfaceTransaction_apply(transaction);
     ASurfaceTransaction_delete(transaction);
+    renderer->submittedCount++;
+    return static_cast<jint>(renderer->submittedCount > INT32_MAX ? INT32_MAX : renderer->submittedCount);
+}
+
+void onImageAvailable(void* context, AImageReader* callbackReader) {
+    auto* renderer = static_cast<Renderer*>(context);
+    if (renderer == nullptr || !renderer->alive.load(std::memory_order_acquire)) return;
+
+    std::lock_guard<std::mutex> guard(renderer->mutex);
+    if (!renderer->alive.load(std::memory_order_relaxed) || renderer->reader != callbackReader ||
+        renderer->outputControl == nullptr) {
+        return;
+    }
+    renderer->callbackCount++;
+    (void)presentLatestImageLocked(renderer, callbackReader);
 }
 
 Renderer* fromHandle(jlong handle) {
@@ -281,10 +298,6 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeCreate(
         return 0;
     }
 
-    // This is the BufferQueue mechanism used underneath EGL_KHR_mutable_render_buffer and
-    // EGL_ANDROID_front_buffer_auto_refresh: the producer and consumer share the first allocation,
-    // while auto-refresh allows the consumer/compositor to revisit it without waiting for a new
-    // conventional back-buffer swap. Fail closed if any device LL-NDK control is rejected.
     if (frontBuffer.setUsage(renderer->producerWindow, kProducerUsage) != 0 ||
         frontBuffer.setSharedBufferMode(renderer->producerWindow, true) != 0 ||
         frontBuffer.setAutoRefresh(renderer->producerWindow, true) != 0) {
@@ -322,6 +335,27 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeGetProducerSurface(
     return ANativeWindow_toSurface(env, renderer->producerWindow);
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_mekromn_bubble_NativeAhbBridge_nativePump(
+    JNIEnv*,
+    jobject,
+    jlong handle) {
+    Renderer* renderer = fromHandle(handle);
+    if (renderer == nullptr || !renderer->alive.load(std::memory_order_acquire)) {
+        return kPumpAcquireError;
+    }
+    std::lock_guard<std::mutex> guard(renderer->mutex);
+    if (!renderer->alive.load(std::memory_order_relaxed) || renderer->reader == nullptr) {
+        return kPumpAcquireError;
+    }
+    renderer->pumpCount++;
+    const jint status = presentLatestImageLocked(renderer, renderer->reader);
+    if (status <= 0 && renderer->submittedCount > 0) {
+        return static_cast<jint>(renderer->submittedCount > INT32_MAX ? INT32_MAX : renderer->submittedCount);
+    }
+    return status;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_mekromn_bubble_NativeAhbBridge_nativeSetFrameRate(
     JNIEnv*,
@@ -344,8 +378,6 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeDestroy(
     Renderer* renderer = fromHandle(handle);
     if (renderer == nullptr) return;
 
-    // Stop new callbacks first. Do not hold renderer->mutex while unregistering/deleting AImageReader:
-    // a callback may already have observed alive=true and be waiting for the same mutex.
     renderer->alive.store(false, std::memory_order_release);
     AImageReader* readerSnapshot = renderer->reader;
     if (readerSnapshot != nullptr) {
