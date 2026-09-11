@@ -5,7 +5,7 @@ on:
       release_tag:
         description: Existing probe release to inspect
         required: true
-        default: bubble-probe-34600006037-1
+        default: bubble-probe-34603620563-1
   push:
     branches: [benchmark-probe-build115]
     paths: ['.github/workflows/probe-evidence.yml']
@@ -17,42 +17,21 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - name: Collect exact sources, engine resources, and failed smoke artifacts
+      - name: Collect exact source and existing smoke artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag || 'bubble-probe-34600006037-1' }}
+          RELEASE_TAG: ${{ inputs.release_tag || 'bubble-probe-34603620563-1' }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^bubble-probe-[0-9]+-[0-9]+$ ]]
           mkdir -p evidence
-          gh release download "$RELEASE_TAG" --pattern probe-smoke.tar --pattern probe-smoke-logcat.txt --dir evidence
-          git archive HEAD renderer-probe tools docs/RENDERER_PROBE.md .github/workflows/renderer-probe.yml > evidence/probe-source.tar
+          git archive HEAD > evidence/probe-source.tar
           git rev-parse HEAD > evidence/SOURCE_COMMIT.txt
-          curl --fail --location --retry 2 --max-time 120 'https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-arm64-v8a/154.0.20260824154132/geckoview-arm64-v8a-154.0.20260824154132.aar' -o engine.aar
-          sha256sum engine.aar > evidence/ENGINE_SHA256.txt
-          python3 - <<'PY'
-          import json, tarfile, zipfile
-          from pathlib import Path
-          out=Path('evidence/engine-inspection'); out.mkdir()
-          with zipfile.ZipFile('engine.aar') as aar:
-              for name in aar.namelist():
-                  if name.endswith(('omni.ja','classes.jar')):
-                      (out / name.replace('/','__')).write_bytes(aar.read(name))
-                      print('ENGINE_RESOURCE',name)
-          with tarfile.open('evidence/probe-smoke.tar') as archive:
-              for member in archive.getmembers():
-                  if not member.isfile() or not member.name.endswith('.json') or member.size > 2000000:
-                      continue
-                  data=json.load(archive.extractfile(member))
-                  if 'spec' not in data: continue
-                  print('REPORT',member.name,data.get('status'),data['spec'].get('variant'),data['spec'].get('floating'))
-                  native=data.get('native')
-                  if isinstance(native,dict): print('NATIVE',json.dumps({k:v for k,v in native.items() if k!='samples'}))
-          PY
+          gh release download "$RELEASE_TAG" --pattern probe-smoke.tar --pattern probe-smoke-logcat.txt --pattern SMOKE_STATUS.txt --dir evidence
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: existing-probe-smoke-evidence
+          name: exact-probe-source-and-smoke
           path: evidence/
           retention-days: 7
