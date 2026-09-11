@@ -19,21 +19,18 @@ name: Verify current Bubble changes
 # PAGE APPEARANCE:
 # - Per-tab modes are Bubble default / Force dark / AMOLED black / Force light.
 # - AMOLED uses true #000000 primary/retinted surfaces.
-# - Native port + one-shot appearance handshakes run in parallel and re-verify on pageshow/focus/
-#   visibility restore so Refresh cannot strand a tab on the website's default theme.
+# - Appearance re-verifies across reload/pageshow/focus so Refresh should not reset the saved theme.
 #
-# GOOGLE VOICE EXTENSION 3.0 + RICH NOTIFICATIONS:
-# - Active-header copy icon resolves only the current header/call metadata and re-resolves on tap.
-# - voice-dark.js fixes isolated bright controls/popups/inputs; AMOLED keeps primary Voice surfaces black.
-# - Android Voice alerts use Person/MessagingStyle, contact initial/avatar, phone number and full message.
-# - Gecko WebNotification.imageUrl upgrades the contact avatar when available without a second alert.
-# - Missing phone numbers can be enriched locally from explicit metadata on the matching Voice row.
-# - A notification tap first activates the exact resident Voice tab, then fires WebNotification.click().
-# - GeckoRuntime ServiceWorkerDelegate routes clients.openWindow(messageUrl) into that exact tab.
-# - voice-route.js is the final local fallback, scoring rows by phone/contact/message and selecting the
-#   specific conversation if Google's own notificationclick/openWindow path does not navigate it.
-# - Arbitrary message-body phone numbers are never treated as sender identity; only title/tag/explicit
-#   sender fragments or verified Voice row/header metadata may supply the contact phone number.
+# GOOGLE VOICE — SIMPLE/RELIABLE PATH:
+# - Rich MessagingStyle/avatar enrichment, service-worker deep-linking, and page conversation routing
+#   are removed from the active notification path.
+# - Android notifications use the earlier Notification.Builder + BigText path.
+# - Every Voice notification PendingIntent carries a durable fixed target URL.
+# - Every Voice notification tap selects an existing Voice tab and navigates it to exactly
+#   https://voice.google.com/u/0/messages; process-recreation fallback opens that exact URL too.
+# - Extension 3.1 loads only voice-copy.js + voice-dark.js for Voice; retired voice-ui/voice-route do
+#   not execute. voice-copy.js copies only a visibly rendered phone-number-only header value.
+# - Arbitrary message-body phone numbers remain forbidden as sender identity.
 #
 # Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 on:
