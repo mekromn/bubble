@@ -11,16 +11,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <dlfcn.h>
 #include <mutex>
 #include <new>
 #include <unistd.h>
-
-// These are LL-NDK/libnativewindow entry points used by Android's EGL mutable-render-buffer path.
-// Some NDK header revisions expose them only through the nativewindow VNDK superset, so keep the
-// stable C declarations here while linking libnativewindow explicitly.
-extern "C" int ANativeWindow_setUsage(ANativeWindow* window, uint64_t usage);
-extern "C" int ANativeWindow_setSharedBufferMode(ANativeWindow* window, bool sharedBufferMode);
-extern "C" int ANativeWindow_setAutoRefresh(ANativeWindow* window, bool autoRefresh);
 
 namespace {
 
@@ -44,6 +38,47 @@ constexpr uint64_t kProducerUsage =
 constexpr uint64_t kRequiredPresentedUsage =
     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
     AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
+
+// These controls are real libnativewindow LL-NDK entry points on Android, but the ordinary app NDK
+// stub deliberately omits them. Resolve the device's system implementation at runtime. This branch
+// fails closed if the Pixel's app linker namespace does not expose all three; it never silently falls
+// back to an ordinary queued BufferQueue and falsely labels it a front-buffer test.
+using SetUsageFn = int (*)(ANativeWindow*, uint64_t);
+using SetSharedBufferModeFn = int (*)(ANativeWindow*, bool);
+using SetAutoRefreshFn = int (*)(ANativeWindow*, bool);
+
+struct FrontBufferApi {
+    void* library = nullptr;  // Intentionally process-lifetime; function pointers must remain valid.
+    SetUsageFn setUsage = nullptr;
+    SetSharedBufferModeFn setSharedBufferMode = nullptr;
+    SetAutoRefreshFn setAutoRefresh = nullptr;
+
+    bool ready() const {
+        return setUsage != nullptr && setSharedBufferMode != nullptr && setAutoRefresh != nullptr;
+    }
+};
+
+void* resolveNativeWindowSymbol(void* library, const char* name) {
+    // If libnativewindow is already global in the process, use that exact loaded implementation first.
+    void* symbol = dlsym(RTLD_DEFAULT, name);
+    if (symbol == nullptr && library != nullptr) symbol = dlsym(library, name);
+    return symbol;
+}
+
+FrontBufferApi& frontBufferApi() {
+    static FrontBufferApi api = [] {
+        FrontBufferApi resolved{};
+        resolved.library = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
+        resolved.setUsage = reinterpret_cast<SetUsageFn>(
+            resolveNativeWindowSymbol(resolved.library, "ANativeWindow_setUsage"));
+        resolved.setSharedBufferMode = reinterpret_cast<SetSharedBufferModeFn>(
+            resolveNativeWindowSymbol(resolved.library, "ANativeWindow_setSharedBufferMode"));
+        resolved.setAutoRefresh = reinterpret_cast<SetAutoRefreshFn>(
+            resolveNativeWindowSymbol(resolved.library, "ANativeWindow_setAutoRefresh"));
+        return resolved;
+    }();
+    return api;
+}
 
 struct FrameLease {
     AImage* image = nullptr;
@@ -215,6 +250,9 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeCreate(
     jfloat frameRate) {
     if (width <= 0 || height <= 0 || javaSurfaceControl == nullptr) return 0;
 
+    FrontBufferApi& frontBuffer = frontBufferApi();
+    if (!frontBuffer.ready()) return 0;
+
     auto* renderer = new (std::nothrow) Renderer();
     if (renderer == nullptr) return 0;
     renderer->frameRate = frameRate;
@@ -246,10 +284,10 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeCreate(
     // This is the BufferQueue mechanism used underneath EGL_KHR_mutable_render_buffer and
     // EGL_ANDROID_front_buffer_auto_refresh: the producer and consumer share the first allocation,
     // while auto-refresh allows the consumer/compositor to revisit it without waiting for a new
-    // conventional back-buffer swap. Fail closed if either request is rejected.
-    if (ANativeWindow_setUsage(renderer->producerWindow, kProducerUsage) != 0 ||
-        ANativeWindow_setSharedBufferMode(renderer->producerWindow, true) != 0 ||
-        ANativeWindow_setAutoRefresh(renderer->producerWindow, true) != 0) {
+    // conventional back-buffer swap. Fail closed if any device LL-NDK control is rejected.
+    if (frontBuffer.setUsage(renderer->producerWindow, kProducerUsage) != 0 ||
+        frontBuffer.setSharedBufferMode(renderer->producerWindow, true) != 0 ||
+        frontBuffer.setAutoRefresh(renderer->producerWindow, true) != 0) {
         destroyRenderer(renderer);
         return 0;
     }
@@ -316,9 +354,10 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeDestroy(
 
     {
         std::lock_guard<std::mutex> guard(renderer->mutex);
-        if (renderer->producerWindow != nullptr) {
-            ANativeWindow_setAutoRefresh(renderer->producerWindow, false);
-            ANativeWindow_setSharedBufferMode(renderer->producerWindow, false);
+        FrontBufferApi& frontBuffer = frontBufferApi();
+        if (renderer->producerWindow != nullptr && frontBuffer.ready()) {
+            frontBuffer.setAutoRefresh(renderer->producerWindow, false);
+            frontBuffer.setSharedBufferMode(renderer->producerWindow, false);
         }
         if (renderer->reader != nullptr) {
             AImageReader_delete(renderer->reader);
