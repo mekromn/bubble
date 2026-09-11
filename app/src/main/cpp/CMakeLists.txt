@@ -8,11 +8,13 @@ target_compile_options(bubble-ahb PRIVATE -fvisibility=hidden)
 find_library(log-lib log)
 find_library(android-lib android)
 find_library(media-lib mediandk)
+find_library(nativewindow-lib nativewindow)
 
 target_link_libraries(
     bubble-ahb
     PRIVATE
     ${android-lib}
     ${media-lib}
+    ${nativewindow-lib}
     ${log-lib}
 )
