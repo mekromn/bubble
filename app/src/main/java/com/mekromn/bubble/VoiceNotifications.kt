@@ -12,7 +12,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -20,7 +19,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -80,9 +78,7 @@ internal object VoiceContactPolicy {
     )
 
     fun extract(title: String?, text: String?, tag: String?): VoiceContactInfo {
-        // Message bodies are not sender identity. They can legitimately contain some third party's
-        // phone number, so only title/tag or an explicit "message/call from ..." sender fragment may
-        // supply the contact number.
+        // Never treat arbitrary numbers mentioned in the message body as sender identity.
         val senderFragment = explicitSender.find(text.orEmpty().trim())?.groupValues?.getOrNull(1)?.trim()
         val phone = sequenceOf(title, tag, senderFragment).mapNotNull { it?.let(::phoneFrom) }.firstOrNull()
         val fromTitle = cleanName(title.orEmpty(), phone)
@@ -148,24 +144,12 @@ internal object VoiceNotifications {
     private const val COPY_NUMBER = "com.mekromn.bubble.voicenotification.COPY_NUMBER"
     private const val TOKEN = "bubble.webnotification.token"
     private const val PHONE = "bubble.webnotification.phone"
-    private const val CLICK_READY_TIMEOUT_MS = 2_500L
-    private const val CLICK_READY_POLL_MS = 32L
-    private const val PAGE_ROUTE_AFTER_CLICK_MS = 260L
-    private const val DISMISS_AFTER_CLICK_MS = 1_600L
+    private const val TARGET_URL = "bubble.webnotification.target_url"
+    private const val VOICE_MESSAGES_URL = "https://voice.google.com/u/0/messages"
     private val main = Handler(Looper.getMainLooper())
 
-    private data class Active(
-        val web: WebNotification,
-        val androidTag: String,
-        val androidId: Int,
-        val tabId: String?,
-        val targetUrl: String,
-        val title: String,
-        val text: String,
-        var contact: VoiceContactInfo?,
-        val kind: VoiceNoticeKind?,
-        var avatar: Bitmap? = null
-    )
+    private data class Active(val web: WebNotification, val androidTag: String, val androidId: Int,
+        val tabId: String?, val targetUrl: String)
 
     private val active = ConcurrentHashMap<String, Active>()
     private val tokenByObject = Collections.synchronizedMap(IdentityHashMap<WebNotification, String>())
@@ -200,7 +184,8 @@ internal object VoiceNotifications {
 
     fun install(context: Context, runtime: GeckoRuntime, workspace: Workspace) {
         prepare(context); Replies.prepare(context)
-        VoicePageBridge.installServiceWorker(runtime, workspace)
+        // Deliberately simple/reliable path: only mirror Gecko web notifications into Android.
+        // No ServiceWorkerDelegate, notificationclick deep-linking, avatar enrichment, or page routing.
         runtime.setWebNotificationDelegate(object : WebNotificationDelegate {
             override fun onShowNotification(notification: WebNotification) { main.post { show(context, workspace, notification) } }
             override fun onCloseNotification(notification: WebNotification) { main.post { closeFromWeb(context, notification) } }
@@ -258,18 +243,17 @@ internal object VoiceNotifications {
         if (voiceTabs.isEmpty()) { runCatching { web.dismiss() }; return }
         val kind = VoiceNoticeClassifier.classify(web.title, web.text, web.tag)
         lastVoiceKind = kind
-        val manager = context.getSystemService(NotificationManager::class.java)
         if (!notificationsUsable(context, kind.channel)) {
             runCatching { web.dismiss() }
             workspace.notice = "Google Voice produced a web alert, but Android notification delivery is disabled. Open Bubble notification settings."
             workspace.changed()
             return
         }
-        val tab = voiceTabs.singleOrNull()
+        val tab = voiceTabs.singleOrNull() ?: voiceTabs.firstOrNull()
         if (tab != null && tab.id != workspace.selectedId) { tab.unread = true; workspace.changed(true) }
         val contact = VoiceContactPolicy.extract(web.title, web.text, web.tag)
         postWeb(context, web, kind.channel, kind.notificationId, tab?.id,
-            web.source?.takeIf(Policy::isVoice) ?: Policy.VOICE_HOME,
+            VOICE_MESSAGES_URL,
             VoiceContactPolicy.title(kind, web.title, contact),
             web.text.orEmpty().take(4096),
             if (kind == VoiceNoticeKind.INCOMING_CALL) Notification.CATEGORY_CALL else Notification.CATEGORY_MESSAGE,
@@ -296,63 +280,39 @@ internal object VoiceNotifications {
         val slot = if (web.tag.isNotBlank()) "${web.origin}|${web.tag}" else token
         slotToToken.put(slot, token)?.let { old -> retire(context, old, true) }
         val androidTag = "bubble-web:$token"
-        val item = Active(web, androidTag, id, tabId, targetUrl, title, text, contact, voiceKind)
+        val item = Active(web, androidTag, id, tabId, targetUrl)
         active[token] = item; tokenByObject[web] = token
         val click = PendingIntent.getBroadcast(context, token.hashCode(), Intent(context, VoiceNotificationReceiver::class.java).apply {
             action = CLICK
             data = Uri.parse("bubble://web-notification/$token/click")
-            putExtra(TOKEN, token)
+            putExtra(TOKEN, token); putExtra(TARGET_URL, targetUrl)
             if (tabId != null) putExtra(BrowserActivity.EXTRA_TAB, tabId)
         }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val dismiss = PendingIntent.getBroadcast(context, token.hashCode() xor 0x51a7, Intent(context, VoiceNotificationReceiver::class.java).apply {
             action = DISMISS; data = Uri.parse("bubble://web-notification/$token/dismiss"); putExtra(TOKEN, token)
         }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-        fun currentCopyIntent(): PendingIntent? = item.contact?.phone?.let { phone ->
-            if (VoiceContactPolicy.telUri(phone) == null) return@let null
-            PendingIntent.getBroadcast(context, token.hashCode() xor 0x2c09,
-                Intent(context, VoiceNotificationReceiver::class.java).apply {
-                    action = COPY_NUMBER
-                    data = Uri.parse("bubble://web-notification/$token/copy-number")
-                    putExtra(TOKEN, token); putExtra(PHONE, phone)
-                }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val builder = Notification.Builder(context, channel).setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title.take(512)).setContentIntent(click).setDeleteIntent(dismiss)
+            .setAutoCancel(!ongoing).setOnlyAlertOnce(false).setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setCategory(category)
+        if (text.isNotBlank()) builder.setContentText(text.take(512)).setStyle(Notification.BigTextStyle().bigText(text))
+        if (contact != null && voiceKind != null) {
+            builder.setSubText(VoiceContactPolicy.subText(voiceKind, contact).take(256))
+            contact.phone?.let { phone ->
+                VoiceContactPolicy.telUri(phone)?.let(builder::addPerson)
+                val copy = PendingIntent.getBroadcast(context, token.hashCode() xor 0x2c09,
+                    Intent(context, VoiceNotificationReceiver::class.java).apply {
+                        action = COPY_NUMBER
+                        data = Uri.parse("bubble://web-notification/$token/copy-number")
+                        putExtra(TOKEN, token); putExtra(PHONE, phone)
+                    }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                builder.addAction(0, "Copy number", copy)
+            }
         }
-
-        fun build(onlyAlertOnce: Boolean): Notification = VoiceRichNotification.build(context,
-            VoiceRichNotification.Spec(
-                channel = channel,
-                title = item.title,
-                text = item.text,
-                category = category,
-                ongoing = ongoing,
-                click = click,
-                dismiss = dismiss,
-                copyNumber = currentCopyIntent(),
-                contact = item.contact,
-                kind = item.kind,
-                onlyAlertOnce = onlyAlertOnce
-            ), item.avatar)
-
-        try {
-            manager.notify(androidTag, id, build(false)); web.show()
-        } catch (_: SecurityException) {
+        if (ongoing) builder.setOngoing(true)
+        try { manager.notify(androidTag, id, builder.build()); web.show() }
+        catch (_: SecurityException) {
             active.remove(token); tokenByObject.remove(web); slotToToken.remove(slot, token); runCatching { web.dismiss() }
-            return
-        }
-
-        if (voiceKind != null) {
-            if (item.contact?.phone == null) {
-                VoicePageBridge.lookupPhone(tabId, item.contact, item.text) { phone ->
-                    if (phone == null || active[token] !== item) return@lookupPhone
-                    item.contact = (item.contact ?: VoiceContactInfo(null, null)).copy(phone = phone)
-                    runCatching { manager.notify(androidTag, id, build(true)) }
-                }
-            }
-            VoiceRichNotification.loadAvatar(web) { avatar ->
-                if (avatar == null || active[token] !== item) return@loadAvatar
-                item.avatar = avatar
-                runCatching { manager.notify(androidTag, id, build(true)) }
-            }
         }
     }
 
@@ -361,9 +321,10 @@ internal object VoiceNotifications {
         retire(context, token, false); runCatching { web.dismiss() }
     }
 
-    internal fun handle(context: Context, action: String?, token: String?, phone: String? = null, tabId: String? = null) {
+    internal fun handle(context: Context, action: String?, token: String?, phone: String? = null,
+        tabId: String? = null, targetUrl: String? = null) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            main.post { handle(context, action, token, phone, tabId) }
+            main.post { handle(context, action, token, phone, tabId, targetUrl) }
             return
         }
         if (action == COPY_NUMBER) {
@@ -374,60 +335,52 @@ internal object VoiceNotifications {
             return
         }
         if (token.isNullOrBlank()) {
-            if (action == CLICK && tabId != null) openTabFallback(context, tabId)
+            if (action == CLICK) {
+                if (targetUrl?.let(Policy::isVoice) == true) openVoiceMessages(context, tabId)
+                else if (tabId != null) openTabFallback(context, tabId)
+            }
             return
         }
         val item = active.remove(token)
         if (item == null) {
-            if (action == CLICK && tabId != null) openTabFallback(context, tabId)
+            if (action == CLICK) {
+                if (targetUrl?.let(Policy::isVoice) == true) openVoiceMessages(context, tabId)
+                else if (tabId != null) openTabFallback(context, tabId)
+            }
             return
         }
         tokenByObject.remove(item.web); slotToToken.entries.removeAll { it.value == token }
         context.getSystemService(NotificationManager::class.java).cancel(item.androidTag, item.androidId)
         if (action == CLICK) {
             if (Policy.isVoice(item.targetUrl)) {
-                openTarget(context, item)
-                clickVoiceWhenActive(item)
+                // Deterministic Voice behavior: do not dispatch notificationclick or attempt a private
+                // message deep-link. Always open the existing Voice tab at the Messages page.
+                runCatching { item.web.dismiss() }
+                openVoiceMessages(context, item.tabId)
             } else {
                 runCatching { item.web.click() }
-                main.postDelayed({ runCatching { item.web.dismiss() } }, DISMISS_AFTER_CLICK_MS)
+                runCatching { item.web.dismiss() }
                 openTarget(context, item)
             }
         } else runCatching { item.web.dismiss() }
     }
 
-    private fun clickVoiceWhenActive(item: Active) {
-        val deadline = SystemClock.uptimeMillis() + CLICK_READY_TIMEOUT_MS
-        val expectedTab = item.tabId
-        val task = object : Runnable {
-            override fun run() {
-                val workspace = Workspace.peek()
-                val tab = expectedTab?.let { id -> workspace?.tabs?.firstOrNull { it.id == id } }
-                val ready = if (expectedTab == null) {
-                    workspace?.chatVisible == true
-                } else {
-                    workspace?.selectedId == expectedTab && workspace.chatVisible && tab?.session?.isOpen == true
-                }
-                if (!ready && SystemClock.uptimeMillis() < deadline) {
-                    main.postDelayed(this, CLICK_READY_POLL_MS)
-                    return
-                }
-                // Give Google's own service worker first chance. If it calls clients.openWindow(),
-                // VoicePageBridge's ServiceWorkerDelegate returns this exact resident Voice session.
-                VoicePageBridge.prepareNotificationClick(expectedTab)
-                runCatching { item.web.click() }
-                // Some Voice versions focus an existing client without navigating it. The local
-                // exact-origin bridge then matches sender/number/message and selects the conversation.
-                main.postDelayed({
-                    VoicePageBridge.routeNotification(expectedTab, item.contact, item.text)
-                }, PAGE_ROUTE_AFTER_CLICK_MS)
-                main.postDelayed({
-                    VoicePageBridge.clearNotificationClick(expectedTab)
-                    runCatching { item.web.dismiss() }
-                }, DISMISS_AFTER_CLICK_MS)
-            }
+    private fun openVoiceMessages(context: Context, requestedTabId: String?) {
+        val workspace = Workspace.peek()
+        val requested = requestedTabId?.let { id -> workspace?.tabs?.firstOrNull { it.id == id && Policy.isVoice(it.url) } }
+        val tab = requested ?: workspace?.tabs?.firstOrNull { Policy.isVoice(it.url) }
+        if (workspace != null && tab != null) {
+            workspace.select(tab.id)
+            workspace.navigate(VOICE_MESSAGES_URL)
+            try { NotificationReturnActivity.pending(context, tab.id, FloatingMode.CHAT).send(); return }
+            catch (_: PendingIntent.CanceledException) { }
         }
-        main.post(task)
+        try {
+            context.startActivity(Intent(context, BrowserActivity::class.java).apply {
+                action = Intent.ACTION_VIEW; data = Uri.parse(VOICE_MESSAGES_URL)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            })
+        } catch (_: RuntimeException) { }
     }
 
     private fun openTabFallback(context: Context, tabId: String) {
@@ -481,11 +434,18 @@ internal object VoiceNotifications {
         if (!notificationsUsable(context, kind.channel)) return false
         return try {
             val target = Workspace.peek()?.tabs?.firstOrNull { Policy.isVoice(it.url) }?.id
+            val open = PendingIntent.getBroadcast(context, (kind.notificationId + 100) xor 0x717,
+                Intent(context, VoiceNotificationReceiver::class.java).apply {
+                    action = CLICK
+                    data = Uri.parse("bubble://voice-test/${kind.name}/messages")
+                    putExtra(TARGET_URL, VOICE_MESSAGES_URL)
+                    if (target != null) putExtra(BrowserActivity.EXTRA_TAB, target)
+                }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             context.getSystemService(NotificationManager::class.java).notify("voice-test:${kind.name}", kind.notificationId + 100,
                 Notification.Builder(context, kind.channel).setSmallIcon(R.drawable.ic_notification)
                     .setContentTitle(if (kind == VoiceNoticeKind.INCOMING_CALL) "Google Voice call alert test" else "Google Voice alert test")
                     .setContentText("Bubble's ${kind.label.lowercase()} notification channel is working.")
-                    .setContentIntent(NotificationReturnActivity.pending(context, target, FloatingMode.CHAT))
+                    .setContentIntent(open)
                     .setAutoCancel(true).setCategory(if (kind == VoiceNoticeKind.INCOMING_CALL) Notification.CATEGORY_CALL else Notification.CATEGORY_MESSAGE)
                     .setVisibility(Notification.VISIBILITY_PRIVATE).build())
             true
@@ -501,7 +461,7 @@ internal object VoiceNotifications {
         val body = LinearLayout(anchor.context).apply { orientation = LinearLayout.VERTICAL; setPadding(d(10), 0, d(10), d(8)) }
         scroll.addView(body); panel.body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         body.addView(Ui.text(anchor.context,
-            "${readiness(anchor.context)} · protected live tab\nWeb notification events received this session: $voiceWebEvents${lastVoiceKind?.let { " · last: ${it.label}" }.orEmpty()}\n\nVoice tabs stay resident/high-priority while Bubble is running. Each alert type has its own Android channel. Bubble does not persist Voice message contents.",
+            "${readiness(anchor.context)} · protected live tab\nWeb notification events received this session: $voiceWebEvents${lastVoiceKind?.let { " · last: ${it.label}" }.orEmpty()}\n\nVoice tabs stay resident/high-priority while Bubble is running. Each alert type has its own Android channel. Notification taps always open https://voice.google.com/u/0/messages.",
             12f, Ui.MUTED).apply { setPadding(d(6), d(8), d(6), d(10)) })
         fun row(label: String, action: () -> Unit) {
             body.addView(Ui.text(anchor.context, label, 14f, Ui.ACCENT, true).apply {
@@ -567,7 +527,8 @@ class VoiceNotificationReceiver : BroadcastReceiver() {
             intent.action,
             intent.getStringExtra("bubble.webnotification.token"),
             intent.getStringExtra("bubble.webnotification.phone"),
-            intent.getStringExtra(BrowserActivity.EXTRA_TAB)
+            intent.getStringExtra(BrowserActivity.EXTRA_TAB),
+            intent.getStringExtra("bubble.webnotification.target_url")
         )
     }
 }
