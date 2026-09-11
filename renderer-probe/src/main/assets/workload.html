@@ -1,86 +1,37 @@
-<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'">
-<style>
-* {box-sizing:border-box} html,body {margin:0; background:#000; color:#eef1f5; font:16px system-ui; overflow:hidden}
-#viewport {height:100vh; overflow:auto; scroll-behavior:auto} #messages {padding:16px 16px 80px}
-article {margin:12px 0; padding:16px; background:#171c24; border-radius:15px; border:1px solid #394153}
-article:nth-child(even) {margin-left:32px; background:#182127} h3 {margin:0 0 8px; font-size:16px}
-p {margin:8px 0; line-height:1.5} pre {font-size:13px; white-space:pre-wrap; background:#070b10; padding:12px}
-#marker {position:fixed; top:0; left:0; width:100%; height:28px; background:#205447; color:white; z-index:5; font:14px monospace}
-#paint {position:fixed; bottom:0; left:0; height:64px; width:100%; pointer-events:none; z-index:4}
-</style></head><body><div id="viewport"><div id="messages"></div></div><div id="marker"></div><canvas id="paint"></canvas>
-<script>
-'use strict';
-const C = __CONFIG__;
-const pane = document.getElementById('viewport');
-const rows = document.getElementById('messages');
-// Fixed content, fixed node count, and time-based motion. A faster renderer is not given less work.
-for (let i=0;i<180;i++) {
-  const item=document.createElement('article');
-  item.innerHTML='<h3>Local benchmark message '+i+'</h3><p>Identical typography, layout, and motion in every renderer. No network or account data.</p><pre>frame = render(scene, fullResolution);\npresent(frame, acquireFence);</pre><p>Compare frame production separately from presentation.</p>';
-  rows.appendChild(item);
-}
-const canvas=document.getElementById('paint'), ctx=canvas.getContext('2d', {alpha:false});
-canvas.width=Math.round(innerWidth*devicePixelRatio); canvas.height=Math.round(64*devicePixelRatio);
-const marker=document.getElementById('marker');
-const raf=[], longTasks=[]; let observer=null;
-const supportedEntries=typeof PerformanceObserver==='function' ? (PerformanceObserver.supportedEntryTypes||[]) : [];
-let longTaskApiSupported=false;
-if(supportedEntries.includes('longtask')) {
-  try {
-    observer=new PerformanceObserver(list=>{for(const e of list.getEntries()) if(measureStart && e.startTime>=measureStart) longTasks.push(e.duration)});
-    observer.observe({type:'longtask',buffered:false}); longTaskApiSupported=true;
-  } catch (_) { observer=null; }
-}
-let first=null, last=0, measureStart=0, frameId=0, done=false;
-const readinessStarted=performance.now(), readinessLimitMs=15000;
-let initialContentfulPaintMs=null;
-// Do not scroll or inject APZ input before the initial paint. Such input can suppress
-// Gecko's FCP signal (Mozilla bug 2069900), contaminating the readiness measurement.
-marker.textContent=C.label+' | waiting for initial content paint';
-const visibility=[]; document.addEventListener('visibilitychange',()=>visibility.push({at:performance.now(),state:document.visibilityState}));
-function send(phase, extra={}) {document.title='BPROBE:'+JSON.stringify({token:C.token,phase,...extra});}
-function summary(a) {
-  if(!a.length) return {intervals:[],hz:null,p50:null,p95:null,p99:null};
-  const sorted=[...a].sort((a,b)=>a-b), p=q=>sorted[Math.ceil(sorted.length*q)-1];
-  return {intervals:a,hz:1000*a.length/a.reduce((a,b)=>a+b,0),p50:p(.5),p95:p(.95),p99:p(.99)};
-}
-function frame(t) {
-  if(done) return;
-  if(first===null) {
-    const paints=performance.getEntriesByType('paint');
-    const fcp=paints.find(entry=>entry.name==='first-contentful-paint');
-    if(!fcp) {
-      if(t-readinessStarted>=readinessLimitMs) {
-        done=true;observer?.disconnect();
-        send('readiness-failed',{reason:'PAGE_FIRST_PAINT_TIMEOUT',paintEntryTypes:supportedEntries,waitedMs:t-readinessStarted});
-      } else requestAnimationFrame(frame);
-      return;
-    }
-    initialContentfulPaintMs=fcp.startTime;
-    first=t;
-    send('warmup',{initialContentfulPaintMs,readinessMs:t-readinessStarted,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,userAgent:navigator.userAgent});
-  }
-  const elapsed=t-first;
-  if(!measureStart && elapsed>=C.warmupMs) {measureStart=t; last=t; send('measure',{pageStartMs:t});}
-  else if(measureStart) {raf.push(Math.round((t-last)*1000)/1000);last=t;}
-  const max=pane.scrollHeight-pane.clientHeight, period=8000;
-  const phase=(elapsed%period)/period, position=(phase<.5?phase*2:2-phase*2)*max;
-  if(C.workload!=='apz') pane.scrollTop=position; else if(frameId===0) pane.scrollTop=max*.5;
-  marker.textContent=C.label+' | '+C.workload+' | frame '+(++frameId);
-  // The changing marker exposes a live page visually without requiring pixel readback in the hot path.
-  if(C.workload==='repaint') {
-    const w=canvas.width,h=canvas.height;ctx.fillStyle='#050810';ctx.fillRect(0,0,w,h);
-    for(let i=0;i<64;i++){ctx.fillStyle='hsl('+((i*19+elapsed*.07)%360)+' 70% 55%)';const x=((elapsed*.16+i*w/32)%(w+80))-40;ctx.fillRect(x,(i%4)*h/4,32,h/4);}
-  } else {ctx.fillStyle='#050810';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#76ddc1';ctx.fillRect((elapsed*.15)%canvas.width,0,12,canvas.height);}
-  if(measureStart && t-measureStart>=C.measureMs) {
-    done=true; observer?.disconnect();
-    send('done',{raf:summary(raf),durationMs:t-measureStart,frameId,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,
-      finalScroll:pane.scrollTop,initialContentfulPaintMs,longTasks,longTaskApiSupported,visibility,visibilityState:document.visibilityState});
-    return;
-  }
-  requestAnimationFrame(frame);
-}
-send('waiting-for-paint',{paintEntryTypes:supportedEntries});
-requestAnimationFrame(frame);
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'unsafe-inline';style-src 'unsafe-inline';connect-src 'none'"><style>
+*{box-sizing:border-box}html,body{margin:0;background:#05070b;color:#e8eef5;font:16px system-ui;overflow:hidden}#viewport{height:100vh;overflow:auto}#messages{padding:24px 14px 80px}article{padding:16px;margin:12px 0;background:#18212d;border:1px solid #364454;border-radius:16px}article:nth-child(even){margin-left:28px}p{line-height:1.5}pre{padding:12px;background:#080c13;white-space:pre-wrap;font-size:13px}canvas{position:fixed;inset:0;width:100%;height:100%;display:none}#marker{position:fixed;top:0;left:0;padding:5px 10px;background:#183b36;font:12px monospace;z-index:6}.effect{position:fixed;width:120px;height:120px;backdrop-filter:blur(12px);background:#9aafce22;border:1px solid #bbcddd44;border-radius:22px;will-change:transform;display:none}
+</style></head><body><div id="viewport"><div id="messages"></div></div><canvas id="paint"></canvas><canvas id="gpu"></canvas><div id="marker"></div><script>
+'use strict';const C=__CONFIG__,level=Math.max(1,Math.min(6,C.intensity||1)),pane=document.getElementById('viewport'),rows=document.getElementById('messages'),marker=document.getElementById('marker');
+const errors=[],raf=[],cpu=[],inputDelay=[],scrollSamples=[],gpuTimes=[];let done=false,started=null,measureStart=0,last=0,frameId=0,workUnits=0,truncated=false,observer=null;
+function send(phase,extra={}){document.title='BPROBE:'+JSON.stringify({token:C.token,phase,...extra});}
+function fail(reason){if(done)return;done=true;errors.push(reason);send('workload-failed',{reason,errors});}
+addEventListener('error',e=>fail(String(e.message)));addEventListener('unhandledrejection',e=>fail(String(e.reason)));
+for(let i=0;i<180*level;i++){const a=document.createElement('article');a.innerHTML='<h3>Local renderer workload '+i+'</h3><p>Identical full-resolution content, fixed node count, no accounts or networking.</p><pre>frame = render(scene);\npresent(frame, acquireFence);</pre><p>Measure production separately from presentation.</p>';rows.appendChild(a);}
+const initialNodes=rows.childElementCount,longTasks=[],visibility=[];let longTaskApiSupported=false;
+const entries=typeof PerformanceObserver==='function'?(PerformanceObserver.supportedEntryTypes||[]):[];
+if(entries.includes('longtask'))try{observer=new PerformanceObserver(list=>{for(const e of list.getEntries())if(measureStart&&e.startTime>=measureStart)longTasks.push(e.duration);});observer.observe({type:'longtask'});longTaskApiSupported=true;}catch(_){observer=null;}
+document.addEventListener('visibilitychange',()=>visibility.push({at:performance.now(),state:document.visibilityState}));
+for(const kind of ['pointerdown','pointermove','touchstart','touchmove','wheel'])document.addEventListener(kind,e=>{if(measureStart&&inputDelay.length<16000){const delay=performance.now()-e.timeStamp;if(delay>=0&&delay<10000)inputDelay.push(delay);}}, {passive:true});
+const canvas=document.getElementById('paint'),gpuCanvas=document.getElementById('gpu');let ctx=null,gl=null,ext=null,program=null,timeLocation=null,queries=[],currentQuery=null,querySkipped=0,gpuDisjoint=0,gpuTimerSupported=false;const effects=[];
+function size(c){c.width=Math.round(innerWidth*devicePixelRatio);c.height=Math.round(innerHeight*devicePixelRatio);}
+if(C.workload==='repaint'){size(canvas);ctx=canvas.getContext('2d',{alpha:false});if(!ctx)fail('CANVAS_2D_UNAVAILABLE');canvas.style.display='block';}
+if(C.workload==='css')for(let i=0;i<24*level;i++){const v=document.createElement('div');v.className='effect';v.style.left=(i*73%Math.max(1,innerWidth-120))+'px';v.style.top=(i*137%Math.max(1,innerHeight-120))+'px';document.body.appendChild(v);effects.push(v);}
+function shader(type,source){const sh=gl.createShader(type);gl.shaderSource(sh,source);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(sh));return sh;}
+if(C.workload==='webgl')try{size(gpuCanvas);gl=gpuCanvas.getContext('webgl2',{alpha:false,antialias:false,preserveDrawingBuffer:false});if(!gl)throw Error('WEBGL2_UNAVAILABLE');gpuCanvas.style.display='block';program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,'#version 300 es\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0,1);}'));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,'#version 300 es\nprecision highp float;uniform float uTime;out vec4 color;void main(){vec2 p=gl_FragCoord.xy*.003;float v=uTime*.1;for(int i=0;i<'+(12*level)+';i++){v=sin(v+p.x*1.17)+cos(p.y+v*.73);p+=vec2(v*.017);}color=vec4(.5+.5*sin(v),.5+.5*cos(v+1.0),.5+.5*sin(v+2.0),1);}'));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);timeLocation=gl.getUniformLocation(program,'uTime');gl.viewport(0,0,gpuCanvas.width,gpuCanvas.height);ext=gl.getExtension('EXT_disjoint_timer_query_webgl2');gpuTimerSupported=!!ext;gpuCanvas.addEventListener('webglcontextlost',e=>{e.preventDefault();fail('WEBGL_CONTEXT_LOST');});}catch(e){fail(String(e.message));}
+let streamTicks=0;const stream=document.createElement('article'),streamText=document.createTextNode(''),streamCode=document.createElement('pre');stream.appendChild(streamText);stream.appendChild(streamCode);if(C.workload==='stream')rows.appendChild(stream);
+const readinessStart=performance.now();let initialContentfulPaintMs=null;marker.textContent=C.label+' / '+C.workload+' / waiting for paint';
+function stat(a){if(!a.length)return {intervals:[],hz:null,p50:null,p95:null,p99:null};const s=[...a].sort((a,b)=>a-b),q=p=>s[Math.ceil(p*s.length)-1];return {intervals:a,hz:1000*a.length/a.reduce((a,b)=>a+b,0),p50:q(.5),p95:q(.95),p99:q(.99)};}
+function measureGpu(t){if(ext){if(gl.getParameter(ext.GPU_DISJOINT_EXT)){gpuDisjoint++;for(const q of queries)gl.deleteQuery(q.query);queries=[];}else while(queries.length&&gl.getQueryParameter(queries[0].query,gl.QUERY_RESULT_AVAILABLE)){const q=queries.shift(),ns=gl.getQueryParameter(q.query,gl.QUERY_RESULT);if(q.measured)gpuTimes.push(ns/1e6);gl.deleteQuery(q.query);}if(queries.length<8){currentQuery=gl.createQuery();gl.beginQuery(ext.TIME_ELAPSED_EXT,currentQuery);}else querySkipped++;}gl.uniform1f(timeLocation,t/1000);gl.drawArrays(gl.TRIANGLES,0,3);if(currentQuery){gl.endQuery(ext.TIME_ELAPSED_EXT);queries.push({query:currentQuery,measured:!!measureStart});currentQuery=null;}}
+function frame(t){if(done)return;const begin=performance.now();if(started===null){const fcp=performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint');if(!fcp){if(t-readinessStart>=15000){done=true;send('readiness-failed',{reason:'PAGE_FIRST_PAINT_TIMEOUT'});}else requestAnimationFrame(frame);return;}initialContentfulPaintMs=fcp.startTime;started=t;send('warmup',{initialContentfulPaintMs,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,userAgent:navigator.userAgent});if(C.workload==='apz')pane.scrollTop=(pane.scrollHeight-pane.clientHeight)*.5;for(const v of effects)v.style.display='block';marker.textContent=C.label+' / '+C.workload;}
+const elapsed=t-started;if(!measureStart&&elapsed>=C.warmupMs){measureStart=t;last=t;send('measure',{pageStartMs:t});}else if(measureStart){if(raf.length<16000)raf.push(t-last);else truncated=true;last=t;}
+const max=pane.scrollHeight-pane.clientHeight;
+if(C.workload==='scroll')pane.scrollTop=(.5-.5*Math.cos(elapsed*Math.PI/4000))*max;
+if(C.workload==='stream'){const target=Math.floor(elapsed/50);while(streamTicks<target){streamTicks++;streamText.appendData(' token'+streamTicks+' '.repeat(level));if(streamTicks%16===0)streamCode.textContent+='step('+streamTicks+');\n';workUnits++;}pane.scrollTop=pane.scrollHeight;}
+if(C.workload==='repaint'){const w=canvas.width,h=canvas.height;ctx.fillStyle='#070c15';ctx.fillRect(0,0,w,h);for(let i=0;i<256*level;i++){ctx.fillStyle='hsl('+((i*19+elapsed*.05)%360)+' 65% 55%)';ctx.fillRect((i*157+elapsed*.18)%w,(i*113+elapsed*.08)%h,32+i%87,40+i%61);}workUnits+=256*level;}
+if(C.workload==='css'){effects.forEach((v,i)=>v.style.transform='translate('+Math.sin(elapsed*.001+i)*45+'px,'+Math.cos(elapsed*.0012+i)*45+'px) rotate('+Math.sin(elapsed*.0006+i)*20+'deg)');workUnits+=effects.length;}
+if(C.workload==='webgl'){measureGpu(elapsed);workUnits++;}
+frameId++;if(measureStart){if(cpu.length<16000)cpu.push(performance.now()-begin);if(frameId%12===0)scrollSamples.push([t,pane.scrollTop]);}
+if(measureStart&&t-measureStart>=C.measureMs){done=true;observer?.disconnect();send('done',{raf:stat(raf),durationMs:t-measureStart,frameId,cssWidth:innerWidth,cssHeight:innerHeight,dpr:devicePixelRatio,initialNodes,initialContentfulPaintMs,finalScroll:pane.scrollTop,callbackCpuMs:cpu,inputEventTimestampDelayMs:inputDelay,inputTimingScope:'event timeStamp to JavaScript handler; NOT touch-to-photon',scrollSamples,longTasks,longTaskApiSupported,gpuDrawMs:gpuTimes,gpuTimerSupported,gpuDisjoint,gpuQueriesPending:queries.filter(q=>q.measured).length,gpuQuerySkipped:querySkipped,gpuScope:'WebGL test draw only; NOT total Gecko/WebRender GPU',workUnitsIncludingWarmup:workUnits,streamTicksIncludingWarmup:streamTicks,visibility,visibilityState:document.visibilityState,errors,samplesTruncated:truncated});return;}
+requestAnimationFrame(frame);}
+if(!done){send('waiting-for-paint',{paintEntryTypes:entries});requestAnimationFrame(frame);}
 </script></body></html>

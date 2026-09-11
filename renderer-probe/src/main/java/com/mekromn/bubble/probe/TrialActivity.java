@@ -53,6 +53,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     private final Handler main=new Handler(Looper.getMainLooper());
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final ArrayList<Double> uiIntervals=new ArrayList<>();
+    private Measurements measurements;
+    private Button visibleButton;
     private final JSONArray refreshEvents=new JSONArray();
     private final ArrayList<JSONObject> lifecycleEvents=new ArrayList<>();
     private JSONObject spec,capabilities,startEnvironment,endEnvironment,pageReport,engineIdentity;
@@ -102,6 +104,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         }catch(Exception e){finish();return;}
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
             android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> end("CANCELLED", null));
+        measurements=new Measurements(this,token);
         signal(1,"starting");
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         manager=getSystemService(WindowManager.class);displays=getSystemService(DisplayManager.class);
@@ -110,7 +113,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         LinearLayout controls=new LinearLayout(this);controls.setOrientation(LinearLayout.VERTICAL);controls.setPadding(18,48,18,0);
         progress=new TextView(this);progress.setTextColor(0xff80e5c8);progress.setTextSize(16);progress.setText(label()+"\nPreparing isolated renderer…");controls.addView(progress);
         LinearLayout buttons=new LinearLayout(this);
-        buttons.addView(button("Visible",()->{visualConfirmed=true;progress.setText(label()+"\nVisual confirmation recorded");}));
+        visibleButton=button("Visible",()->{visualConfirmed=true;progress.setText(label()+"\nVisual confirmation recorded");});buttons.addView(visibleButton);
         buttons.addView(button("Black / broken",()->end("VISUAL_FAIL",null)));
         buttons.addView(button("Stop",()->end("CANCELLED",null)));
         controls.addView(buttons);root.addView(controls,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
@@ -169,11 +172,11 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
                 }
             });
             session.open(runtime);session.setActive(true);session.setFocused(true);
-            page=new FrameLayout(this);page.setBackgroundColor(Color.BLACK);page.setRequestedFrameRate(vote);
+            page=new FrameLayout(this);page.setBackgroundColor(Color.TRANSPARENT);page.setRequestedFrameRate(vote);
             String renderer=spec.optString("renderer");
             if(renderer.equals("geckoview")||renderer.equals("texture")){
                 geckoView=new GeckoView(this);geckoView.setViewBackend(renderer.equals("texture")?GeckoView.BACKEND_TEXTURE_VIEW:GeckoView.BACKEND_SURFACE_VIEW);
-                geckoView.setRequestedFrameRate(vote);page.addView(geckoView,new FrameLayout.LayoutParams(-1,-1));geckoView.setSession(session);
+                geckoView.setRequestedFrameRate(vote);page.addView(geckoView,new FrameLayout.LayoutParams(-1,-1));
             }else if(renderer.equals("raw")){
                 raw=new SurfaceView(this){
                     @Override public boolean onTouchEvent(MotionEvent event){touchedDuringMeasurement|=measuring;session.getPanZoomController().onTouchEvent(event);return true;}
@@ -205,6 +208,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             page.postOnAnimation(this::awaitViewSurface);return;
         }
         // Let GeckoView publish its own display normally; never acquire a second display here.
+        if(geckoView.getSession()==null)geckoView.setSession(session);
         voteTree(page);geckoView.requestFocus();session.setActive(true);session.setFocused(true);
         signal(3,"geckoview-surface-ready");startWorkload();
     }
@@ -247,7 +251,9 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         float fraction=Math.min(1f,phase/280f);float from=(index%2==0)?.8f:.2f,to=1f-from;
         MotionEvent event=MotionEvent.obtain(gestureDown,now,action,viewportWidth*.5f,viewportHeight*(from+(to-from)*fraction),0);
         // Synthetic input is confined to this generated, network-blocked document. Never sent to a real tab.
+        long dispatchStart=System.nanoTime();
         if(geckoView!=null)geckoView.dispatchTouchEvent(event);else session.getPanZoomController().onTouchEvent(event);
+        measurements.input(now,dispatchStart,System.nanoTime(),action);
         event.recycle();injectedInputEvents++;
     }
     private void attachPage(){
@@ -309,8 +315,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     }
     @Override public void requestNewSurface(){main.post(()->end("ENGINE_REQUESTED_NEW_SURFACE",null));}
     private void startWorkload(){
-        if(ending||started)return;started=true;signal(3,"loading-workload");
-        JSONObject config=TrialPlan.json("token",token,"label",spec.optString("variant"),"workload",spec.optString("workload"),"warmupMs",spec.optInt("warmupMs"),"measureMs",spec.optInt("measureMs"));
+        if(ending||started)return;started=true;measurements.attach(page);signal(3,"loading-workload");
+        JSONObject config=TrialPlan.json("token",token,"label",spec.optString("variant"),"workload",spec.optString("workload"),"warmupMs",spec.optInt("warmupMs"),"measureMs",spec.optInt("measureMs"),"intensity",spec.optInt("intensity",1));
         String content=html.replace("__CONFIG__",config.toString());
         session.loadUri("data:text/html;charset=utf-8;base64,"+Base64.encodeToString(content.getBytes(StandardCharsets.UTF_8),Base64.NO_WRAP));
     }
@@ -319,6 +325,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         try{
             JSONObject packet=new JSONObject(title.substring(7));if(!token.equals(packet.optString("token")))return;
             switch(packet.optString("phase")){
+                case "workload-failed":end("WORKLOAD_ERROR",packet);break;
                 case "waiting-for-paint":progress.setText(label()+"\nWaiting for initial content paint");signal(3,"waiting-for-paint");break;
                 case "readiness-failed":end("PAGE_FIRST_PAINT_TIMEOUT",packet);break;
                 case "warmup":progress.setText(label()+"\nWarm-up · verify that the page is moving");signal(3,"warm-up");
@@ -326,10 +333,10 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
                 case "measure":
                     measuring=true;measureBeginNs=SystemClock.elapsedRealtimeNanos();lastUiNs=0;startEnvironment=environment();recordRefresh();
                     if(nativeHandle!=0)NativeProbe.measuring(nativeHandle,true);
-                    Choreographer.getInstance().postFrameCallback(uiMeter);
+                    measurements.begin();visibleButton.setEnabled(false);
                     progress.setText(label()+"\nMeasuring · do not touch or move the window");signal(3,"measuring");break;
                 case "done":
-                    measuring=false;main.removeCallbacks(apzInput);measureEndNs=SystemClock.elapsedRealtimeNanos();pageReport=packet;endEnvironment=environment();
+                    measuring=false;measurements.stop();main.removeCallbacks(apzInput);measureEndNs=SystemClock.elapsedRealtimeNanos();pageReport=packet;endEnvironment=environment();
                     Choreographer.getInstance().removeFrameCallback(uiMeter);if(nativeHandle!=0)NativeProbe.measuring(nativeHandle,false);
                     progress.setText(label()+"\nSaving measured results…");main.postDelayed(()->end(visualConfirmed?"OK_VISIBLE":"OK_VISUAL_UNCONFIRMED",pageReport),400);break;
                 default:break;
@@ -348,12 +355,12 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
     }
     private void recordRefresh(){Display d=getDisplay();if(d!=null)refreshEvents.put(TrialPlan.json("elapsedNs",SystemClock.elapsedRealtimeNanos(),"reportedHz",d.getRefreshRate(),"mode",d.getMode().getModeId()));}
     private void end(String result,JSONObject pageData){
-        if(ending)return;ending=true;measuring=false;main.removeCallbacks(apzInput);
+        if(ending)return;ending=true;measuring=false;if(measurements!=null)measurements.stop();main.removeCallbacks(apzInput);
         Choreographer.getInstance().removeFrameCallback(uiMeter);
         if(displays!=null)displays.unregisterDisplayListener(displayListener);
         long handle=nativeHandle;nativeHandle=0;
         if(handle!=0)NativeProbe.measuring(handle,false);
-        JSONObject report=TrialPlan.json("schema",1,"probeVersion",BuildConfig.VERSION_NAME,"spec",spec,"status",result,"engine",BuildConfig.GECKO_VERSION,"engineRepository",BuildConfig.GECKO_MAVEN,
+        JSONObject report=TrialPlan.json("schema",2,"probeVersion",BuildConfig.VERSION_NAME,"spec",spec,"status",result,"engine",BuildConfig.GECKO_VERSION,"engineRepository",BuildConfig.GECKO_MAVEN,
             "source",BuildConfig.SOURCE_SHA,"engineArtifact",engineIdentity==null?JSONObject.NULL:engineIdentity,"engineProfile","new stock profile per trial; no Bubble extensions or production load",
             "viewportWidthPx",viewportWidth,"viewportHeightPx",viewportHeight,"requestedHz",vote,"firstContentfulPaint",firstPaint,"firstComposite",firstComposite,"lifecycleEvents",new JSONArray(lifecycleEvents),
             "visualConfirmed",visualConfirmed,"touchedDuringMeasurement",touchedDuringMeasurement,"injectedInputEvents",injectedInputEvents,"measureBeginAndroidNs",measureBeginNs,"measureEndAndroidNs",measureEndNs,
@@ -363,6 +370,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             "hwcComposition","NOT_MEASURED_requires_SurfaceFlinger_or_Perfetto_trace","touchToPhotonMs",JSONObject.NULL,
             "clockDomains","native frame timestamps and Choreographer: monotonic; Android elapsed timestamps: boottime; JS: performance time origin",
             "limitations","APZ input is synthetic, not hardware touch-to-photon. Scripted scrolling and repaint are separate workloads. rAF/UI callbacks are not physical-frame counts. TextureView is comparator only; front-buffer capability is not implementation.");
+        String partial=report.toString();
+        worker.execute(()->{try{ProbeActivity.write(new File(new File(new File(getFilesDir(),"benchmarks"),suite),token+".partial.json"),partial);}catch(Exception ignored){}});
         try{
             // Legal Gecko lifecycle thread. If Gecko blocks here the other process's watchdog records it.
             if(display!=null){if(published)display.surfaceDestroyed();published=false;session.releaseDisplay(display);display=null;}
@@ -378,6 +387,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
         worker.execute(()->{
             try{
                 JSONObject nativeReport=handle==0?null:new JSONObject(NativeProbe.finish(handle));
+                report.put("measurements",measurements==null?JSONObject.NULL:measurements.report());
+                if(measurements!=null)measurements.close();
                 report.put("native",nativeReport==null?JSONObject.NULL:nativeReport);
                 if(nativeReport!=null&&report.optString("status").startsWith("OK")){
                     if(nativeReport.optLong("submittedTotal")==0)report.put("status","NO_NATIVE_FRAMES");

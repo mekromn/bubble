@@ -13,8 +13,8 @@ android {
         applicationId = "com.mekromn.bubble.probe"
         minSdk = 36
         targetSdk = 36
-        versionCode = providers.environmentVariable("GITHUB_RUN_NUMBER").getOrElse("1").toInt()
-        versionName = "0.1.0-b${versionCode}"
+        versionCode = 1000 + providers.environmentVariable("GITHUB_RUN_NUMBER").getOrElse("1").toInt()
+        versionName = "0.2.0-b${versionCode}"
         ndk { abiFilters += abi }
         externalNativeBuild { cmake { arguments += "-DANDROID_PLATFORM=android-36" } }
         buildConfigField("String", "GECKO_VERSION", "\"$engineVersion\"")
@@ -38,6 +38,7 @@ android {
 dependencies {
     implementation("org.mozilla.geckoview:geckoview-$abi:$engineVersion")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 // Archive the exact engine bytes' identity alongside the APK; an engine change is a new comparison group.
 tasks.register("engineIdentity") {

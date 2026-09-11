@@ -66,13 +66,15 @@ public final class ProbeActivity extends Activity {
             "Keep the phone cool. Stop screen recording and other floating apps. Tap Visible during warm-up, or Black whenever a case fails. Results stay on this device.");
         ui.addView(explanation);
         Button permission=button("Allow floating-window permission",()->startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:"+getPackageName()))));ui.addView(permission);
+        ui.addView(button("Renderer Lab · choose workloads and repeated blocks",this::configureLab));
+        ui.addView(button("Open latest detailed report",()->startActivity(new Intent(this,ReportActivity.class))));
         quick=button("Quick A/B · 4 cases",()->startSuite(TrialPlan.quick(System.currentTimeMillis())));ui.addView(quick);
         matrix=button("Matrix · 17 cases",()->startSuite(TrialPlan.matrix(1,false,System.currentTimeMillis())));ui.addView(matrix);
         extended=button("Repeated matrix · 3 workloads × 3 rounds",()->startSuite(TrialPlan.matrix(3,true,System.currentTimeMillis())));ui.addView(extended);
         ui.addView(button("Stop suite",this::stopSuite));ui.addView(button("Export all saved reports to Downloads",this::export));
         status=new TextView(this);status.setTextColor(0xff78e1c4);status.setText("Ready · engine "+BuildConfig.GECKO_VERSION);ui.addView(status);
         results=new TextView(this);results.setTextColor(Color.WHITE);results.setTextSize(13);results.setTextIsSelectable(true);
-        ScrollView scroll=new ScrollView(this);scroll.addView(results);ui.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));setContentView(ui);
+        ui.addView(results);ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.addView(ui);setContentView(scroll);
         // An interrupted controller does not erase completed/partial runs. Never kill a persisted stale PID.
         files.execute(()->{
             File root=new File(getFilesDir(),"benchmarks");File[] dirs=root.listFiles();int count=0;
@@ -141,7 +143,7 @@ public final class ProbeActivity extends Activity {
             JSONObject report;
             try{
                 File file=new File(dir,token+".json");
-                if(failure!=null)report=TrialPlan.json("schema",1,"spec",spec,"status",failure,"controllerElapsedMs",elapsed,"lastObservedPhase",terminalPhase);
+                if(failure!=null){File partial=new File(dir,token+".partial.json");report=partial.isFile()?new JSONObject(new String(Files.readAllBytes(partial.toPath()),StandardCharsets.UTF_8)):TrialPlan.json("schema",2,"spec",spec);report.put("status",failure);report.put("controllerElapsedMs",elapsed);report.put("lastObservedPhase",terminalPhase);}
                 else report=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
                 report.put("controllerElapsedMs",elapsed);write(file,report.toString(2));
                 new File(dir,token+".pending.json").delete();
@@ -160,6 +162,17 @@ public final class ProbeActivity extends Activity {
             });
         });
     }
+    private void configureLab(){
+        if(active||saving||!queue.isEmpty())return;
+        LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);
+        java.util.List<android.widget.CheckBox> candidates=new java.util.ArrayList<>(),workloads=new java.util.ArrayList<>();
+        for(String name:TrialPlan.VARIANTS){android.widget.CheckBox b=new android.widget.CheckBox(this);b.setText(name);b.setChecked(name.equals("raw_max")||name.equals("relay_latest_no_bp"));form.addView(b);candidates.add(b);}
+        for(String name:TrialPlan.WORKLOADS){android.widget.CheckBox b=new android.widget.CheckBox(this);b.setText(name);b.setChecked(name.equals("apz"));form.addView(b);workloads.add(b);}
+        android.widget.Spinner blocks=choice(form,"Independent paired blocks",new String[]{"1","3","6","8","12"},3),duration=choice(form,"Measurement seconds per trial",new String[]{"10","20","30","60"},1),intensity=choice(form,"Workload intensity",new String[]{"1","2","3","4","6"},0);
+        ScrollView scroll=new ScrollView(this);scroll.addView(form);
+        new android.app.AlertDialog.Builder(this).setTitle("Controlled repeated comparisons").setView(scroll).setNegativeButton("Cancel",null).setPositiveButton("Review plan",(d,w)->{java.util.List<String> vs=new java.util.ArrayList<>(),ws=new java.util.ArrayList<>();for(android.widget.CheckBox b:candidates)if(b.isChecked())vs.add(b.getText().toString());for(android.widget.CheckBox b:workloads)if(b.isChecked())ws.add(b.getText().toString());if(vs.isEmpty()||ws.isEmpty()){status.setText("Select at least one renderer and workload");return;}int repeats=Integer.parseInt(blocks.getSelectedItem().toString()),seconds=Integer.parseInt(duration.getSelectedItem().toString()),level=Integer.parseInt(intensity.getSelectedItem().toString());int count=vs.size()*ws.size()*repeats*2;new android.app.AlertDialog.Builder(this).setTitle(count+" full/floating trials").setMessage("At least "+((count*(seconds+5)+59)/60)+" minutes of warm-up and measurement, plus startup/cooldown. Each block contains all selected variants. Compare one hypothesis first; do not treat frames as independent repeats.").setNegativeButton("Cancel",null).setPositiveButton("Run",(a,b)->startSuite(TrialPlan.design(vs,ws,repeats,seconds,level,System.currentTimeMillis(),"matched"))).show();}).show();
+    }
+    private android.widget.Spinner choice(LinearLayout form,String label,String[] values,int selected){TextView t=new TextView(this);t.setText(label);form.addView(t);android.widget.Spinner s=new android.widget.Spinner(this);s.setAdapter(new android.widget.ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,values));s.setSelection(selected);form.addView(s);return s;}
     private void stopSuite(){queue.clear();if(active)finishTrial("CANCELLED");status.setText("Stopped. Completed reports are preserved.");}
     static void write(File file,String value)throws Exception{
         if(!file.getParentFile().isDirectory()&&!file.getParentFile().mkdirs())throw new java.io.IOException("Cannot create report folder");
@@ -179,6 +192,7 @@ public final class ProbeActivity extends Activity {
                 uri=getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,cv);if(uri==null)throw new java.io.IOException("MediaStore refused export");
                 try(OutputStream stream=getContentResolver().openOutputStream(uri);ZipOutputStream zip=new ZipOutputStream(stream)){
                     File root=new File(getFilesDir(),"benchmarks");
+                    File[] suites=root.listFiles(File::isDirectory);if(suites!=null)for(File suite:suites){File rendered=File.createTempFile("probe-report-",".html",getCacheDir());try{ReportWriter.write(this,suite,rendered);zip.putNextEntry(new ZipEntry(suite.getName()+"/report.html"));Files.copy(rendered.toPath(),zip);zip.closeEntry();}finally{rendered.delete();}}
                     if(root.isDirectory())try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(root.toPath())){
                         for(java.nio.file.Path p:(Iterable<java.nio.file.Path>)paths.filter(Files::isRegularFile)::iterator){
                             if(!p.toString().endsWith(".json"))continue;

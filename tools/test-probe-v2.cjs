@@ -1,0 +1,20 @@
+'use strict';
+const assert=require('node:assert/strict');
+const A=require('../renderer-probe/src/main/assets/probe-analysis.js');
+assert.equal(A.distribution([null,NaN,Infinity]).n,0);
+assert.equal(A.intervals([],1000/120).hz,null);
+assert.equal(A.intervals([8.333,8.334,100],1000/120).stalls50ms,1);
+assert.equal(A.pairedBootstrap([1,2,3]).ci,null);
+assert.equal(A.pairedBootstrap(Array(8).fill(-2)).decision,'LOWER_FOR_THIS_METRIC');
+assert.equal(A.pairedBootstrap(Array(8).fill(0)).decision,'WITHIN_PRACTICAL_MARGIN');
+assert.equal(A.pairedBootstrap([-20,20,-20,20,-20,20,-20,20]).decision,'INCONCLUSIVE');
+assert.deepEqual(A.pairedBootstrap([1,2,3,4,5,6,7,8]),A.pairedBootstrap([1,2,3,4,5,6,7,8]));
+const p=A.pipeline({samples:[[1000000,2000000,0,3000000,4000000,-1,1],[2000000,3000000,0,4000000,6000000,5000000,1],[3000000,4000000,0,5000000,6000000,5000000,1]]},8.33);
+assert.equal(p.presentObservations,2);assert.equal(p.missingPresentObservations,1);assert.equal(p.uniquePresentEvents,1);assert.equal(p.presentCadence.hz,null);assert.equal(p.measuredSubmissions,3);
+function trial(block,host,extra={}){return {file:'suite/'+block+host,report:{source:'sha',spec:{block,variant:'raw_max',floating:host,workload:'stream',workloadRevision:'v2',measureMs:30000},status:'OK_VISIBLE',firstContentfulPaint:true,visualConfirmed:true,environmentStart:{model:'test',build:'test',reportedDisplayHz:120,thermalStatus:0,powerSave:false,charging:false,batteryTemperatureC:30},environmentEnd:{thermalStatus:0,powerSave:false,charging:false},page:{visibilityState:'visible',raf:{intervals:Array(100).fill(host?8:10)}},...extra}};}
+const rows=[];for(let i=0;i<8;i++)rows.push(trial(i,false),trial(i,true));let result=A.analyze(rows),c=result.comparisons.find(c=>c.metric==='rafP95Ms');assert.equal(c.statistics.nIndependentBlocks,8);assert.equal(c.statistics.decision,'LOWER_FOR_THIS_METRIC');assert.match(c.label,/floating minus fullscreen/);
+rows.push(trial(0,false));c=A.analyze(rows).comparisons.find(c=>c.metric==='rafP95Ms');assert.equal(c.statistics.nIndependentBlocks,7);assert(c.excluded.some(x=>x.reason==='MISSING_OR_DUPLICATE_PAIR'));
+rows[3].report.touchedDuringMeasurement=true;c=A.analyze(rows).comparisons.find(c=>c.metric==='rafP95Ms');assert.equal(c.statistics.nIndependentBlocks,6);
+rows[5].report.environmentStart.batteryTemperatureC=40;c=A.analyze(rows).comparisons.find(c=>c.metric==='rafP95Ms');assert.equal(c.statistics.nIndependentBlocks,5);assert.equal(c.statistics.ci,null);
+assert.equal(A.analyzeTrial(trial(0,false,{native:{samples:[[1,2,0,3,4,-1,1]]}})).metrics.acquireToPresentP95Ms,null);
+console.log('v2 statistical tests passed: missing data, buffer/frame identity, matched blocks, duplicates, touches, thermal matching, deterministic bootstrap.');

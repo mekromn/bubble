@@ -46,6 +46,8 @@ int64_t fenceTime(int fd);
 struct Sample {
     int64_t acquired=0, submitted=0, imageTimestamp=0, latch=0, completed=0, present=-1;
     uint64_t bufferId=0;
+    int64_t acquireCallNs=0, applyCallNs=0, releaseCallbackNs=0;
+    int outstandingDepth=0;
     int presentFd=-1;
     ~Sample() { if (presentFd>=0) close(presentFd); }
 };
@@ -81,10 +83,11 @@ std::shared_ptr<State> lookup(jlong h) {
     std::lock_guard<std::mutex> lock(registryMutex);
     auto it=registry.find(h); return it==registry.end()?nullptr:it->second;
 }
-struct Lease { std::shared_ptr<State> state; AImage* image; };
+struct Lease { std::shared_ptr<State> state; AImage* image; std::shared_ptr<Sample> sample; };
 struct Complete { std::shared_ptr<State> state; std::shared_ptr<Sample> sample; };
 void releaseFrame(void* context, int fence) {
     std::unique_ptr<Lease> lease(static_cast<Lease*>(context));
+    if(lease->sample){std::lock_guard<std::mutex> lock(lease->state->dataMutex);lease->sample->releaseCallbackNs=nowNs();}
     // Transfer ownership of the compositor's release fence back to ImageReader.
     AImage_deleteAsync(lease->image,fence);
     lease->state->released++;
@@ -127,11 +130,13 @@ void discard(AImage* image, int fence) {
 void consume(const std::shared_ptr<State>& s) {
     AImage* newest=nullptr;
     int newestFence=-1;
-    int64_t acquiredAt=0;
+    int64_t acquiredAt=0, acquireDuration=0;
     // Deliberately bounded. Never use acquireLatestImageAsync's open-ended drain loop here.
     for (int i=0;i<s->drainLimit && !s->stopping.load();++i) {
         AImage* image=nullptr; int fence=-1;
+        const int64_t acquireStart=nowNs();
         const media_status_t status=AImageReader_acquireNextImageAsync(s->reader,&image,&fence);
+        acquireDuration+=nowNs()-acquireStart;
         s->lastStatus=status;
         if (status==AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) { s->noBuffer++; discard(image,fence); break; }
         if (status==AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) { s->maxImages++; discard(image,fence); break; }
@@ -151,7 +156,7 @@ void consume(const std::shared_ptr<State>& s) {
     std::shared_ptr<Sample> sample;
     if (s->measuring.load()) {
         sample=std::make_shared<Sample>();
-        sample->acquired=acquiredAt;
+        sample->acquired=acquiredAt;sample->acquireCallNs=acquireDuration;
         AImage_getTimestamp(newest,&sample->imageTimestamp);
         AHardwareBuffer_getId(buffer,&sample->bufferId);
         std::lock_guard<std::mutex> lock(s->dataMutex);
@@ -160,8 +165,8 @@ void consume(const std::shared_ptr<State>& s) {
     }
     ASurfaceTransaction* tx=ASurfaceTransaction_create();
     if (!tx) { s->errors++; discard(newest,newestFence); return; }
-    s->outstanding++;
-    ASurfaceTransaction_setBufferWithRelease(tx,s->output,buffer,newestFence,new Lease{s,newest},releaseFrame);
+    s->outstanding++;if(sample)sample->outstandingDepth=s->outstanding.load();
+    ASurfaceTransaction_setBufferWithRelease(tx,s->output,buffer,newestFence,new Lease{s,newest,sample},releaseFrame);
     int32_t space=0;
     if (AImage_getDataSpace(newest,&space)==AMEDIA_OK && space!=0)
         ASurfaceTransaction_setBufferDataSpace(tx,s->output,static_cast<ADataSpace>(space));
@@ -171,7 +176,8 @@ void consume(const std::shared_ptr<State>& s) {
         s->completions++;
         ASurfaceTransaction_setOnComplete(tx,new Complete{s,sample},completeFrame);
     }
-    ASurfaceTransaction_apply(tx);
+    const int64_t applyStart=nowNs();ASurfaceTransaction_apply(tx);
+    if(sample){std::lock_guard<std::mutex> lock(s->dataMutex);sample->applyCallNs=nowNs()-applyStart;}
     ASurfaceTransaction_delete(tx);
     s->submitted++;
     // Drain already-queued frames even if listener notifications coalesced; releases wake us as well.
@@ -306,7 +312,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_mekromn_bubble_probe_NativeProbe_f
        <<",\"outstandingAtTeardown\":"<<s->outstanding<<",\"pendingCompletions\":"<<s->completions
        <<",\"teardown\":"<<quote(drained?"DRAINED":"RETAINED_UNTIL_TRIAL_PROCESS_EXIT")
        <<",\"bufferWidth\":"<<s->width<<",\"bufferHeight\":"<<s->height<<",\"bufferFormat\":"<<s->format<<",\"bufferUsage\":"<<s->usage
-       <<",\"sampleColumns\":[\"acquireNs\",\"submitNs\",\"imageTimestampNs\",\"latchNs\",\"completionCallbackNs\",\"presentFenceSignalNs\",\"hardwareBufferId\"],\"samples\":[";
+       <<",\"sampleColumns\":[\"acquireNs\",\"submitNs\",\"imageTimestampNs\",\"latchNs\",\"completionCallbackNs\",\"presentFenceSignalNs\",\"hardwareBufferId\",\"acquireCallNs\",\"applyCallNs\",\"releaseCallbackNs\",\"outstandingDepth\"],\"samples\":[";
     {
         std::lock_guard<std::mutex> lock(s->dataMutex);
         bool first=true;
@@ -314,7 +320,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_mekromn_bubble_probe_NativeProbe_f
             if (f->presentFd>=0) f->present=fenceTime(f->presentFd);
             if(f->presentFd>=0){close(f->presentFd);f->presentFd=-1;}
             if(!first)out<<',';first=false;
-            out<<'['<<f->acquired<<','<<f->submitted<<','<<f->imageTimestamp<<','<<f->latch<<','<<f->completed<<','<<f->present<<','<<f->bufferId<<']';
+            out<<'['<<f->acquired<<','<<f->submitted<<','<<f->imageTimestamp<<','<<f->latch<<','<<f->completed<<','<<f->present<<','<<f->bufferId<<','<<f->acquireCallNs<<','<<f->applyCallNs<<','<<f->releaseCallbackNs<<','<<f->outstandingDepth<<']';
         }
         out<<"],\"unresolvedFenceDrops\":"<<s->unresolvedFenceDrops<<",\"samplesTruncated\":"<<(s->samplesTruncated?"true":"false")<<'}';
     }
