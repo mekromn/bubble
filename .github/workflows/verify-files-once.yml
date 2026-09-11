@@ -5,15 +5,18 @@ name: Verify current Bubble changes
 # - Fullscreen remains the exact Build 115 GeckoView path.
 # - Floating keeps the exact Build 115 GeckoSession/runtime/APZ/input policy.
 # - Gecko renders into an AImageReader-owned ANativeWindow.
+# - Producer BufferQueue is forced to shared-buffer + auto-refresh front-buffer mode.
+# - Allocations require FRONT_BUFFER + COMPOSER_OVERLAY + GPU_FRAMEBUFFER + GPU_SAMPLED_IMAGE.
 # - The consumer acquires that exact frame as AHardwareBuffer with its acquire fence.
-# - The same AHardwareBuffer is submitted to ASurfaceControl via setBufferWithRelease.
-# - The SurfaceFlinger release fence is returned to AImageReader via AImage_deleteAsync.
-# - No SurfaceView/TextureView floating producer, CPU buffer lock, readback, memcpy or fidelity drop.
-# - Android 16/API 36 is deliberately required; this branch has no fallback so physical A/B is clean.
+# - The same AHardwareBuffer is submitted 1:1, opaque and unscaled to ASurfaceControl.
+# - SurfaceFlinger release fence is returned to AImageReader via AImage_deleteAsync.
+# - No SurfaceView/TextureView floating producer, CPU buffer lock/readback, memcpy, texture blit or fidelity drop.
+# - Android 16/API 36 is deliberately required; there is no fallback so physical A/B is unambiguous.
+# - HWC plane assignment is requested through COMPOSER_OVERLAY/FRONT_BUFFER eligibility; SurfaceFlinger/HWC remains final arbiter.
 # - Native diagnostics remain quiet; existing DiagnosticLog remains implemented and disabled.
 #
 # No notification/theme/Voice feature changes are part of this branch.
-# Verification trigger: compile the combined ANativeWindow + AHardwareBuffer path as one unit.
+# Verification trigger: compile all native zero-copy/front-buffer/HWC pieces as one unit.
 on:
   push:
     branches: [anw-ahb-build115]
