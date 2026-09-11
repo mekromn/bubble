@@ -49,6 +49,8 @@ for (const required of [
   'ANativeWindow_setAutoRefresh',
   'ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_AT_LEAST',
   'ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS',
+  'dlopen("libnativewindow.so"',
+  'dlsym(',
 ]) {
   assert.ok(native.includes(required), `Native zero-copy/front-buffer path must contain ${required}`);
 }
@@ -63,8 +65,13 @@ assert.ok(usageBlock[1].includes('AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER'),
   'Consumer allocation must remain GPU render-target capable');
 assert.ok(usageBlock[1].includes('AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE'),
   'Consumer allocation must remain SurfaceFlinger GPU-composition compatible when HWC falls back');
-assert.match(native, /ANativeWindow_setSharedBufferMode\(renderer->producerWindow, true\)[\s\S]*ANativeWindow_setAutoRefresh\(renderer->producerWindow, true\)/,
-  'Producer BufferQueue must use shared-buffer mode plus auto-refresh, not ordinary back-buffer queueing');
+
+assert.match(native, /frontBuffer\.setUsage\(renderer->producerWindow, kProducerUsage\)[\s\S]*frontBuffer\.setSharedBufferMode\(renderer->producerWindow, true\)[\s\S]*frontBuffer\.setAutoRefresh\(renderer->producerWindow, true\)/,
+  'Resolved LL-NDK controls must force usage + shared-buffer mode + auto-refresh together');
+assert.match(native, /FrontBufferApi& frontBuffer = frontBufferApi\(\);[\s\S]*if \(!frontBuffer\.ready\(\)\) return 0;/,
+  'Native pipeline must fail closed if any front-buffer LL-NDK symbol is unavailable');
+assert.equal(/extern "C" int ANativeWindow_set(?:Usage|SharedBufferMode|AutoRefresh)/.test(native), false,
+  'Front-buffer LL-NDK controls must not be direct unresolved app-stub references');
 assert.match(native, /description\.usage[\s\S]*kRequiredPresentedUsage/,
   'Physical test must refuse buffers that lost front-buffer/HWC usage flags');
 assert.match(native, /ASurfaceTransaction_setPosition\(transaction, renderer->outputControl, 0, 0\)[\s\S]*ASurfaceTransaction_setScale\(transaction, renderer->outputControl, 1\.0f, 1\.0f\)/,
@@ -127,4 +134,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Resident ChatGPT/Voice sessions must remain active and high priority');
 
-console.log('Floating combined path: shared ANativeWindow front buffer -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, no SurfaceView/TextureView/CPU readback.');
+console.log('Floating combined path: shared ANativeWindow front buffer -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, runtime-resolved LL-NDK controls, no SurfaceView/TextureView/CPU readback.');
