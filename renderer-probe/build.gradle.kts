@@ -63,3 +63,13 @@ tasks.register("engineIdentity") {
 }
 
 tasks.named("preBuild") { dependsOn("engineIdentity") }
+
+// Keep every lint finding visible in CI even when the abort gate stops publication.
+tasks.configureEach {
+    if (name == "lintReportDebug") {
+        doLast {
+            val report = layout.buildDirectory.file("intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt").get().asFile
+            if (report.isFile) logger.lifecycle(report.readText())
+        }
+    }
+}

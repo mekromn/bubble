@@ -98,6 +98,8 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             receiver=getIntent().getParcelableExtra("receiver",ResultReceiver.class);
             if(receiver==null||!token.matches("[0-9a-f-]{36}")||suite==null||!suite.matches("[0-9A-Za-z-]+")){finish();return;}
         }catch(Exception e){finish();return;}
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+            android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> end("CANCELLED", null));
         signal(1,"starting");
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         manager=getSystemService(WindowManager.class);displays=getSystemService(DisplayManager.class);
@@ -362,7 +364,6 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             main.post(()->{ finish(); signal(2,"done"); });
         });
     }
-    @Override public void onBackPressed(){end("CANCELLED",null);}
     @Override public void onUserLeaveHint(){super.onUserLeaveHint();end("CANCELLED",null);}
     @Override public void onConfigurationChanged(Configuration c){super.onConfigurationChanged(c);end("CONFIGURATION_CHANGED",null);}
 }
