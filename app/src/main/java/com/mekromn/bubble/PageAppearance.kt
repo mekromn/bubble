@@ -14,6 +14,7 @@ import org.mozilla.geckoview.WebExtension
 internal enum class PageAppearanceMode(val wire: String, val label: String) {
     DEFAULT("default", "Bubble default"),
     DARK("dark", "Force dark"),
+    AMOLED("amoled", "AMOLED black"),
     LIGHT("light", "Force light");
 
     companion object {
@@ -23,8 +24,8 @@ internal enum class PageAppearanceMode(val wire: String, val label: String) {
 
 /**
  * Per-logical-tab webpage appearance. Bubble keeps its existing dark preferred-color-scheme as
- * the default. Explicit force-dark/light is implemented by the built-in content script while the
- * durable choice is keyed only by Bubble's UUID tab id. No site/account/page text is stored here.
+ * the default. Explicit dark/AMOLED/light modes are implemented by the built-in content script while
+ * the durable choice is keyed only by Bubble's UUID tab id. No site/account/page text is stored here.
  */
 internal object PageAppearance {
     private const val PREFS = "bubble-page-appearance-v1"
@@ -77,7 +78,7 @@ internal object PageAppearance {
 
     fun controls(anchor: View, workspace: Workspace, tabId: String) {
         val tab = workspace.tabs.firstOrNull { it.id == tabId } ?: return
-        val panel = QuickPanel.open(anchor, workspace, "Page appearance · ${tab.displayName}", 300) ?: return
+        val panel = QuickPanel.open(anchor, workspace, "Page appearance · ${tab.displayName}", 380) ?: return
         fun d(n: Int) = Ui.dp(anchor.context, n.toFloat())
         val body = LinearLayout(anchor.context).apply { orientation = LinearLayout.VERTICAL; setPadding(d(8), d(4), d(8), d(8)) }
         panel.body.addView(body, LinearLayout.LayoutParams(-1, -1))
@@ -108,8 +109,8 @@ internal object PageAppearance {
         }
         PageAppearanceMode.entries.forEach { body.addView(row(it), LinearLayout.LayoutParams(-1, d(56))) }
         body.addView(Ui.text(anchor.context,
-            "Bubble default preserves the existing dark web preference. Force dark/light is local presentation only and never changes the website account setting.", 11f, Ui.MUTED).apply {
+            "Dark keeps charcoal surfaces. AMOLED black uses true #000000 page/background surfaces while preserving readable controls. These modes are local presentation only and never change the website account setting.", 11f, Ui.MUTED).apply {
             gravity = Gravity.CENTER_VERTICAL; setPadding(d(10), d(6), d(10), d(6))
-        }, LinearLayout.LayoutParams(-1, d(48)))
+        }, LinearLayout.LayoutParams(-1, d(64)))
     }
 }
