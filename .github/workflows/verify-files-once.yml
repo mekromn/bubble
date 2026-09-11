@@ -13,10 +13,11 @@ name: Verify current Bubble changes
 # - No SurfaceView/TextureView floating producer, CPU buffer lock/readback, memcpy, texture blit or fidelity drop.
 # - Android 16/API 36 is deliberately required; there is no fallback so physical A/B is unambiguous.
 # - HWC plane assignment is requested through COMPOSER_OVERLAY/FRONT_BUFFER eligibility; SurfaceFlinger/HWC remains final arbiter.
+# - Native build uses NDK r30 so API 36 native symbols are available.
 # - Native diagnostics remain quiet; existing DiagnosticLog remains implemented and disabled.
 #
 # No notification/theme/Voice feature changes are part of this branch.
-# Verification trigger: compile all native zero-copy/front-buffer/HWC pieces as one unit.
+# Verification trigger: corrected r30 toolchain + combined front-buffer/HWC pipeline.
 on:
   push:
     branches: [anw-ahb-build115]
