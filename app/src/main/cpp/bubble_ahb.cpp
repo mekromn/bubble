@@ -293,6 +293,7 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeSetFrameRate(
     Renderer* renderer = fromHandle(handle);
     if (renderer == nullptr || !renderer->alive.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> guard(renderer->mutex);
+    if (!renderer->alive.load(std::memory_order_relaxed)) return;
     renderer->frameRate = frameRate;
     applyFrameRateLocked(renderer);
 }
@@ -305,25 +306,29 @@ Java_com_mekromn_bubble_NativeAhbBridge_nativeDestroy(
     Renderer* renderer = fromHandle(handle);
     if (renderer == nullptr) return;
 
+    // Stop new callbacks first. Do not hold renderer->mutex while unregistering/deleting AImageReader:
+    // a callback may already have observed alive=true and be waiting for the same mutex.
     renderer->alive.store(false, std::memory_order_release);
-    std::lock_guard<std::mutex> guard(renderer->mutex);
-
-    if (renderer->producerWindow != nullptr) {
-        // Disable auto-refresh/shared mode before tearing down the queue so SurfaceFlinger/AImageReader
-        // stop revisiting the shared front buffer while destruction proceeds.
-        ANativeWindow_setAutoRefresh(renderer->producerWindow, false);
-        ANativeWindow_setSharedBufferMode(renderer->producerWindow, false);
+    AImageReader* readerSnapshot = renderer->reader;
+    if (readerSnapshot != nullptr) {
+        AImageReader_setImageListener(readerSnapshot, nullptr);
     }
 
-    if (renderer->reader != nullptr) {
-        AImageReader_setImageListener(renderer->reader, nullptr);
-        AImageReader_delete(renderer->reader);
-        renderer->reader = nullptr;
-        renderer->producerWindow = nullptr;
-    }
-    if (renderer->outputControl != nullptr) {
-        ASurfaceControl_release(renderer->outputControl);
-        renderer->outputControl = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(renderer->mutex);
+        if (renderer->producerWindow != nullptr) {
+            ANativeWindow_setAutoRefresh(renderer->producerWindow, false);
+            ANativeWindow_setSharedBufferMode(renderer->producerWindow, false);
+        }
+        if (renderer->reader != nullptr) {
+            AImageReader_delete(renderer->reader);
+            renderer->reader = nullptr;
+            renderer->producerWindow = nullptr;
+        }
+        if (renderer->outputControl != nullptr) {
+            ASurfaceControl_release(renderer->outputControl);
+            renderer->outputControl = nullptr;
+        }
     }
     delete renderer;
 }
