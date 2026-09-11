@@ -1,34 +1,21 @@
 name: Verify current Bubble changes
-# Emulator time is deliberately scoped to current work, not an ever-growing historical suite.
-# The signed ARM64 APK is published immediately after compile/signing; emulator/runtime verification
-# continues afterward and upgrades the same release from EARLY manual-test to verified when green.
+# Build-115-derived combined native buffer experiment.
 #
-# RAW GECKODISPLAY SURFACEVIEW FAST PATH — BUILD 105 STABILITY BASELINE:
-# - Floating uses GeckoSession.acquireDisplay() -> raw top-Z SurfaceView in its page-only overlay.
-# - No TextureView. Gecko accessibility is hosted on the attached page FrameLayout/ViewParent.
-# - Fullscreen remains normal GeckoView/SurfaceView. Resident ChatGPT and Google Voice tabs stay
-#   active/high priority. App Zygote remains off and Gecko runtime settings stay at Build-84 baseline.
-# - Blur remains one masked service-owned compositor window and only covers native chrome.
+# ONLY INTENDED RENDERING DELTA:
+# - Fullscreen remains the exact Build 115 GeckoView path.
+# - Floating keeps the exact Build 115 GeckoSession/runtime/APZ/input policy.
+# - Gecko renders into an AImageReader-owned ANativeWindow.
+# - The consumer acquires that exact frame as AHardwareBuffer with its acquire fence.
+# - The same AHardwareBuffer is submitted to ASurfaceControl via setBufferWithRelease.
+# - The SurfaceFlinger release fence is returned to AImageReader via AImage_deleteAsync.
+# - No SurfaceView/TextureView floating producer, CPU buffer lock, readback, memcpy or fidelity drop.
+# - Android 16/API 36 is deliberately required; this branch has no fallback so physical A/B is clean.
+# - Native diagnostics remain quiet; existing DiagnosticLog remains implemented and disabled.
 #
-# REFRESH-RATE A/B:
-# - Bubble now uses a pure refresh-rate policy: preferredDisplayModeId is explicitly cleared and
-#   preferredRefreshRate requests the highest supported same-resolution rate on every Bubble window.
-# - Android documentation says preferredRefreshRate is ignored when preferredDisplayModeId is set;
-#   the old code set both. This build removes that arbitration conflict without changing Gecko.
-# - Raw/fullscreen SurfaceView producers still receive Surface.setFrameRate() once per Surface life;
-#   Android 16 still uses FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
-# - Android 15+ per-View requests, touch boost, and disabled balanced frame-rate power saving remain.
-# - CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS is intentionally unchanged for this one-variable test.
-#
-# VOICE UI 2.7 remains included:
-# - Name-only conversation headers still receive the integrated copy-number icon beside Call.
-# - Copy resolves selected-thread/accessibility metadata at use time.
-# - Voice foreground return can conservatively reveal/select a newly-unread conversation.
-#
-# Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
+# No notification/theme/Voice feature changes are part of this branch.
 on:
   push:
-    branches: [rebuild-v2]
+    branches: [anw-ahb-build115]
     paths: ['.github/workflows/verify-files-once.yml']
   workflow_dispatch:
 permissions:
