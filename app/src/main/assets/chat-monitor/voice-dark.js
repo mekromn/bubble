@@ -1,7 +1,8 @@
 /* Bubble Google Voice dark-mode cleanup.
  * Exact voice.google.com top frame only. This pass fixes isolated bright Material controls/surfaces
  * that can remain after Voice otherwise renders in dark mode. It never recolors media, avatars,
- * message content, or already-dark surfaces.
+ * message content, or already-dark surfaces. AMOLED mode keeps primary surfaces true black while
+ * retaining slightly elevated controls for affordance.
  */
 (() => {
   'use strict';
@@ -54,7 +55,7 @@
     const root = document.documentElement;
     if (!root) return false;
     if (root.classList.contains('bubble-force-light')) return false;
-    if (root.classList.contains('bubble-force-dark')) return true;
+    if (root.classList.contains('bubble-force-dark') || root.classList.contains('bubble-force-amoled')) return true;
     const values = [];
     for (const node of [document.body, document.querySelector('main'), document.querySelector('[role="main"]')]) {
       const value = backgroundLuma(node);
@@ -77,11 +78,19 @@
         color: #e8eaed !important;
         box-shadow: none !important;
       }
+      html.bubble-force-amoled.${ROOT} .${CONTROL} {
+        background-color: #202124 !important;
+        border-color: #2b2d30 !important;
+      }
       html.${ROOT} .${SURFACE} {
         background-color: #202124 !important;
         border-color: #3c4043 !important;
         color: #e8eaed !important;
         box-shadow: none !important;
+      }
+      html.bubble-force-amoled.${ROOT} .${SURFACE} {
+        background-color: #000 !important;
+        border-color: #202124 !important;
       }
       html.${ROOT} .${SURFACE} :is(button,[role="button"],a,[role="menuitem"],[role="option"],span,div,p) {
         color: inherit !important;
@@ -92,6 +101,10 @@
         color: #e8eaed !important;
         caret-color: #e8eaed !important;
         box-shadow: none !important;
+      }
+      html.bubble-force-amoled.${ROOT} .${INPUT} {
+        background-color: #000 !important;
+        border-color: #2b2d30 !important;
       }
       html.${ROOT} .${INPUT}::placeholder { color: #9aa0a6 !important; opacity: 1 !important; }
     `;
