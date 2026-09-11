@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const live = fs.readFileSync('app/src/main/java/com/mekromn/bubble/LiveGeckoView.kt', 'utf8');
 const floating = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt', 'utf8');
 const page = fs.readFileSync('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt', 'utf8');
+const bridge = fs.readFileSync('app/src/main/java/com/mekromn/bubble/NativeAhbBridge.kt', 'utf8');
 const native = fs.readFileSync('app/src/main/cpp/bubble_ahb.cpp', 'utf8');
 const glass = fs.readFileSync('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt', 'utf8');
 const render = fs.readFileSync('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt', 'utf8');
@@ -31,6 +32,12 @@ assert.match(page, /accessibility\.setView\(parentView\)/,
   'Gecko accessibility must remain on the attached ViewParent host');
 assert.match(page, /Build\.VERSION\.SDK_INT < 36/,
   'Combined experiment must explicitly require Android 16 for release-fence APIs');
+assert.match(page, /postOnAnimation\(framePump\)/,
+  'Shared-buffer consumer must be pumped on display VSYNC, not only from frame-available callbacks');
+assert.match(page, /NativeAhbBridge\.nativePump\(handle\)/,
+  'VSYNC pump must enter the native AImageReader consumer');
+assert.match(bridge, /external fun nativePump\(handle: Long\): Int/,
+  'JNI bridge must expose the shared-buffer consumer pump');
 
 for (const required of [
   'AImageReader_newWithUsage',
@@ -51,6 +58,8 @@ for (const required of [
   'ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS',
   'dlopen("libnativewindow.so"',
   'dlsym(',
+  'Java_com_mekromn_bubble_NativeAhbBridge_nativePump',
+  'presentLatestImageLocked',
 ]) {
   assert.ok(native.includes(required), `Native zero-copy/front-buffer path must contain ${required}`);
 }
@@ -134,4 +143,4 @@ const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPrio
 assert.ok(activeHigh.length >= 2,
   'Resident ChatGPT/Voice sessions must remain active and high priority');
 
-console.log('Floating combined path: shared ANativeWindow front buffer -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, runtime-resolved LL-NDK controls, diagnostics on, no SurfaceView/TextureView/CPU readback.');
+console.log('Floating combined path: shared ANativeWindow front buffer -> VSYNC-pumped AImageReader -> same AHardwareBuffer -> HWC-eligible ASurfaceControl, fenced zero-copy, diagnostics on.');
