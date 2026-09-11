@@ -10,28 +10,29 @@ name: Verify current Bubble changes
 #   active/high priority. App Zygote remains off and Gecko runtime settings stay at Build-84 baseline.
 # - Blur remains one masked service-owned compositor window and only covers native chrome.
 #
-# REFRESH-RATE A/B:
+# REFRESH RATE:
 # - Bubble uses a pure refresh-rate policy: preferredDisplayModeId is cleared and preferredRefreshRate
 #   requests the highest supported same-resolution rate on every Bubble window.
-# - Raw/fullscreen SurfaceView producers still receive Surface.setFrameRate() once per Surface life;
-#   Android 16 still uses FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
+# - Raw/fullscreen SurfaceView producers receive Surface.setFrameRate() once per Surface life;
+#   Android 16 uses FRAME_RATE_COMPATIBILITY_AT_LEAST for UI/scroll/fling.
 #
 # PAGE APPEARANCE:
 # - Per-tab modes are Bubble default / Force dark / AMOLED black / Force light.
-# - AMOLED black shares dark-forcing behavior but uses true #000000 document and retinted surfaces.
-# - Appearance startup uses native port + one-shot messaging in parallel and re-verifies on pageshow,
-#   focus, and visibility restore so pressing Refresh cannot strand a tab on the site's default theme.
-# - The content script reasserts the saved root class if a site overwrites it after load.
+# - AMOLED uses true #000000 primary/retinted surfaces.
+# - Native port + one-shot appearance handshakes run in parallel and re-verify on pageshow/focus/
+#   visibility restore so Refresh cannot strand a tab on the website's default theme.
 #
-# GOOGLE VOICE EXTENSION 2.9:
-# - A visible active-conversation header number gets the copy icon inline immediately after it.
-# - Copy-number resolution is confined to the active header and call-control metadata; message
-#   history and other conversation rows are forbidden number sources.
-# - The number is re-resolved on every tap; disagreement between visible number and metadata fails
-#   closed instead of copying a possibly wrong number.
-# - voice-dark.js repairs isolated bright Material controls/popup/input surfaces without recoloring
-#   avatars/media/message content; AMOLED keeps primary Voice surfaces true black.
-# - Voice foreground return retains the conservative unread-conversation fallback.
+# GOOGLE VOICE EXTENSION 3.0 + RICH NOTIFICATIONS:
+# - Active-header copy icon resolves only the current header/call metadata and re-resolves on tap.
+# - voice-dark.js fixes isolated bright controls/popups/inputs; AMOLED keeps primary Voice surfaces black.
+# - Android Voice alerts use Person/MessagingStyle, contact initial/avatar, phone number and full message.
+# - Gecko WebNotification.imageUrl upgrades the contact avatar when available without a second alert.
+# - Missing phone numbers can be enriched locally from explicit metadata on the matching Voice row.
+# - A notification tap first activates the exact resident Voice tab, then fires WebNotification.click().
+# - GeckoRuntime ServiceWorkerDelegate routes clients.openWindow(messageUrl) into that exact tab.
+# - voice-route.js is the final local fallback, scoring rows by phone/contact/message and selecting the
+#   specific conversation if Google's own notificationclick/openWindow path does not navigate it.
+# - Arbitrary message-body phone numbers are never treated as sender identity.
 #
 # Persistent crash diagnostics remain implemented but DiagnosticLog.ENABLED=false.
 on:
