@@ -6,7 +6,7 @@ android {
     namespace = "com.mekromn.bubble"
     compileSdk = 37
     compileSdkMinor = 1
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "30.0.16248370"
     defaultConfig {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
