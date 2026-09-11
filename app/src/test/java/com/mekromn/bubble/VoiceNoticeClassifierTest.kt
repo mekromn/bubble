@@ -23,21 +23,27 @@ class VoiceNoticeClassifierTest {
         assertEquals(5, VoiceNoticeKind.entries.map { it.channel }.toSet().size)
     }
 
-    @Test fun contactInfoPromotesSenderAndKeepsNumberAsSecondaryContext() {
-        val info = VoiceContactPolicy.extract("New message from Alice Example", "Call back at 619-555-0123", "sms")
+    @Test fun contactInfoNeverTreatsArbitraryMessageBodyNumberAsSender() {
+        val info = VoiceContactPolicy.extract("New message from Alice Example", "Call Bob back at 619-555-0123", "sms")
         assertEquals("Alice Example", info.displayName)
-        assertEquals("619-555-0123", info.phone)
+        assertNull(info.phone)
         assertEquals("Alice Example", VoiceContactPolicy.title(VoiceNoticeKind.MESSAGE, "New message from Alice Example", info))
-        assertEquals("Google Voice · 619-555-0123", VoiceContactPolicy.subText(VoiceNoticeKind.MESSAGE, info))
-        assertEquals("tel:6195550123", VoiceContactPolicy.telUri(requireNotNull(info.phone)))
+        assertEquals("Google Voice · Messages", VoiceContactPolicy.subText(VoiceNoticeKind.MESSAGE, info))
     }
 
-    @Test fun phoneOnlySenderStillProducesUsefulContactNotification() {
+    @Test fun explicitSenderNumberStillProducesUsefulContactNotification() {
         val info = VoiceContactPolicy.extract("Text from +1 858-555-0199", "Ping", "sms")
         assertNull(info.displayName)
         assertEquals("+1 858-555-0199", info.phone)
         assertEquals("+1 858-555-0199", VoiceContactPolicy.title(VoiceNoticeKind.MESSAGE, "New message", info))
+        assertEquals("Google Voice · +1 858-555-0199", VoiceContactPolicy.subText(VoiceNoticeKind.MESSAGE, info))
         assertEquals("tel:+18585550199", VoiceContactPolicy.telUri(requireNotNull(info.phone)))
+    }
+
+    @Test fun explicitMessageSenderFragmentMaySupplyNumberButMessageBodyMayNot() {
+        val info = VoiceContactPolicy.extract("New message", "Text from +1 619-555-0188: call 858-555-0199", "sms")
+        assertEquals("+1 619-555-0188", info.phone)
+        assertEquals("tel:+16195550188", VoiceContactPolicy.telUri(requireNotNull(info.phone)))
     }
 
     @Test fun genericVoiceTitlesAreNotMisidentifiedAsContacts() {
