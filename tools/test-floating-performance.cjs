@@ -16,54 +16,64 @@ assert.equal(/setViewBackend/.test(live), false,
   'LiveGeckoView must remain a thin lifecycle wrapper');
 assert.match(floating, /FloatingGeckoWindow\(context\)/,
   'FloatingWindow must own the dedicated raw Gecko page sibling');
-assert.match(page, /class RawGeckoSurfaceView[\s\S]*SurfaceView/,
-  'Floating page must be a plain Android SurfaceView');
+assert.match(page, /class DirectGeckoSurfaceHost[\s\S]*: View\(context\), GeckoDisplay\.NewSurfaceProvider/,
+  'Floating render host must be a plain input View with Gecko surface-recovery support');
+assert.equal(/class DirectGeckoSurfaceHost[\s\S]{0,120}SurfaceView/.test(page), false,
+  'Direct floating renderer must not use SurfaceView as its page producer');
+assert.equal(/import android\.view\.SurfaceView/.test(page), false,
+  'Direct floating renderer must not even import SurfaceView');
+assert.match(page, /SurfaceControl\.Builder\(\)[\s\S]*\.setBufferSize\(width, height\)[\s\S]*\.build\(\)/,
+  'Floating page must own a real app-created SurfaceControl buffer layer');
+assert.match(page, /val androidSurface = Surface\(control\)/,
+  'Gecko producer Surface must be constructed directly from the app-owned SurfaceControl');
+assert.match(page, /rootControl\.buildReparentTransaction\(control\)/,
+  'Direct layer must attach through the public AttachedSurfaceControl root API');
+assert.match(page, /\.setVisibility\(control, true\)/,
+  'Direct compositor layer must be explicitly visible');
 assert.match(page, /class RawSessionBridge[\s\S]*LiveGeckoView/,
   'Workspace compatibility adapter must remain explicit');
 assert.equal(/addView\(view\s*,/.test(page), false,
   'RawSessionBridge must never enter the Window/View lifecycle');
 assert.match(page, /fun hide\(\)[\s\S]*view\.releaseSession\(\)/,
-  'Hiding the raw window must release GeckoDisplay ownership before removing the Surface');
+  'Hiding the direct window must release GeckoDisplay ownership before removing its producer');
 assert.match(page, /acquireDisplay\(\)/,
   'Floating raw path must acquire GeckoDisplay directly from GeckoSession');
 assert.match(page, /GeckoDisplay\.SurfaceInfo\.Builder\(androidSurface\)/,
-  'Floating raw path must publish the actual Android Surface to Gecko');
-assert.match(page, /\.surfaceControl\(surfaceControl\)/,
-  'API 29+ SurfaceView path must publish its SurfaceControl to Gecko');
+  'Floating raw path must publish the direct Android Surface to Gecko');
+assert.match(page, /\.surfaceControl\(control\)/,
+  'Direct path must publish the exact app-owned SurfaceControl to Gecko');
 assert.match(page, /\.newSurfaceProvider\(this\)/,
   'Raw display must provide Gecko a surface-recovery callback');
-assert.match(page, /gecko\.surfaceChanged\(builder\.build\(\)\)/,
-  'Raw display must call GeckoDisplay.surfaceChanged with SurfaceInfo');
+assert.match(page, /gecko\.surfaceChanged\(info\)/,
+  'Direct display must call GeckoDisplay.surfaceChanged with SurfaceInfo');
 assert.match(page, /surfaceDestroyed\(\)/,
-  'Raw display must tell Gecko when the Android Surface is destroyed');
+  'Direct display must tell Gecko when the producer Surface is destroyed');
 assert.match(page, /releaseDisplay\(oldDisplay\)/,
-  'Raw display must release GeckoDisplay when Workspace releases the session');
-assert.match(page, /Could not publish raw Gecko Surface/,
-  'SurfaceHolder publication failures must be caught and diagnosed instead of crashing the process');
+  'Direct display must release GeckoDisplay when Workspace releases the session');
+assert.match(page, /Could not publish direct Gecko Surface/,
+  'Direct publication failures must be caught and diagnosed instead of crashing the process');
 assert.match(page, /panZoomController\.onTouchEvent\(event\)/,
-  'Touch input must go directly to Gecko PanZoomController');
+  'Touch input must still go directly to Gecko PanZoomController');
 assert.match(page, /textInput\.setView\(this\)/,
-  'Raw SurfaceView must become Gecko SessionTextInput view');
+  'Plain input host must remain Gecko SessionTextInput view');
 assert.match(page, /textInput\?\.onCreateInputConnection|textInput\.onCreateInputConnection/,
   'IME connection must be forwarded to Gecko SessionTextInput');
 assert.equal(/accessibility\.setView\(this\)/.test(page), false,
-  'Raw SurfaceView must never be the Gecko accessibility event host because SurfaceView is not ViewParent');
+  'Plain input host must not replace the attached ViewParent as Gecko accessibility host');
 assert.match(page, /check\(host is ViewParent\)[\s\S]*accessibilityHost = host[\s\S]*accessibility\.setView\(host\)/,
   'Raw Gecko accessibility must use its page ViewGroup/ViewParent host');
 assert.match(page, /PixelFormat\.OPAQUE/,
-  'Raw Gecko page window must be opaque');
-assert.match(page, /setZOrderOnTop\(true\)/,
-  'Dedicated page-only SurfaceView must compose above its own opaque overlay Window');
+  'Direct Gecko page Window must stay opaque');
 assert.match(page, /manager\.addView\(root, layout\)/,
-  'Raw SurfaceView must be attached in its own WindowManager root');
+  'Direct page/input root must stay in its dedicated WindowManager window for this first A/B');
 assert.match(page, /manager\.updateViewLayout\(root, layout\)/,
-  'Raw page sibling must follow floating geometry directly');
-assert.match(floating, /pageBox\(rectangle\)/,
-  'FloatingWindow must derive the page rectangle from its authoritative geometry');
-assert.match(floating, /geckoWindow\?\.sync\(pageBox\(fitted\)\)/,
-  'Move/resize must synchronously move the raw page sibling');
+  'Direct page sibling must follow floating geometry');
+assert.match(page, /SurfaceControl\.Transaction\(\)[\s\S]*\.setBufferSize\(control, w, h\)/,
+  'Resize must update the producer buffer geometry directly at SurfaceControl level');
+assert.match(page, /SurfaceControl\.Transaction\(\)\.reparent\(control, null\)\.apply\(\)/,
+  'Producer teardown must explicitly detach the SurfaceControl from the compositor hierarchy');
 assert.equal(/\.setCompositionOrder\s*\(/.test(page + live), false,
-  'Raw display must not depend on the failed same-window Android-16 composition-order experiment');
+  'Direct display must not depend on failed same-window composition-order experiments');
 
 assert.match(glass, /private var backdrop: Dialog\? = null/,
   'Hybrid glass must use one service-owned backdrop window');
@@ -83,7 +93,7 @@ assert.match(glass, /RenderPolicy\.vote\(context, window\.decorView, attributes\
 assert.match(floating, /FLAG_HARDWARE_ACCELERATED/,
   'Native floating chrome must remain hardware accelerated');
 assert.match(page, /FLAG_HARDWARE_ACCELERATED/,
-  'Raw Gecko page sibling must remain hardware accelerated');
+  'Direct Gecko page sibling must remain hardware accelerated');
 assert.equal(/preferredDisplayModeId = mode\.modeId/.test(render), false,
   'Refresh-only Bubble policy must not pin a display mode id');
 assert.match(render, /preferredDisplayModeId = 0/,
@@ -96,18 +106,16 @@ assert.match(render, /setFrameRateBoostOnTouchEnabled\(true\)/,
   'Android 15+ Bubble windows must keep touch frame-rate boost enabled');
 assert.match(render, /setFrameRatePowerSavingsBalanced\(false\)/,
   'Android 15+ Bubble windows must favor refresh smoothness over balanced power saving');
-assert.match(render, /Surface\.FRAME_RATE_COMPATIBILITY_AT_LEAST/,
-  'Android 16 UI surfaces must request an at-least high refresh contract');
-assert.match(render, /surface\.setFrameRate\(/,
-  'Real SurfaceView producers must receive Surface.setFrameRate, not only a window hint');
-assert.match(render, /if \(!created\.voted\) applySurfaceRate/,
-  'Surface frame-rate contracts must not be spammed during resize callbacks');
+assert.match(page, /Surface\.FRAME_RATE_COMPATIBILITY_AT_LEAST/,
+  'Android 16 direct webpage Surface must preserve the at-least high-refresh contract');
+assert.match(page, /surface\.setFrameRate\(/,
+  'Direct webpage producer must receive Surface.setFrameRate, not only a Window/View hint');
 assert.match(meter, /RenderPolicy\.vote\(a, a\.window\.decorView, attributes\)/,
-  'Fullscreen must share the exact same max-refresh policy as floating mode');
+  'Fullscreen must retain the exact Build-115 max-refresh policy');
 assert.match(diagnostics, /const val ENABLED = false/,
   'Performance builds must keep persistent crash diagnostics parked unless explicitly re-enabled');
 const activeHigh = workspace.match(/session\.setActive\(true\); session\.setPriorityHint\(GeckoSession\.PRIORITY_HIGH\)/g) || [];
 assert.ok(activeHigh.length >= 2,
   'Preserve current resident-tab priority policy: Voice and ordinary resident tabs stay active/high-priority');
 
-console.log('Floating raw speed path: no TextureView + ViewParent a11y + pure refresh-rate votes + producer Surface max-refresh + live glass + diagnostics parked.');
+console.log('Floating direct-compositor A/B: Gecko -> Surface(SurfaceControl), no SurfaceView/TextureView page producer, same Build-115 Gecko/runtime/input/refresh policy.');
