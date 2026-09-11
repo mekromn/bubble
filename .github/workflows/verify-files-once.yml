@@ -15,11 +15,12 @@ name: Verify current Bubble changes
 # - HWC plane assignment is requested through COMPOSER_OVERLAY/FRONT_BUFFER eligibility; SurfaceFlinger/HWC remains final arbiter.
 # - Native build uses NDK r30 so API 36 native symbols are available.
 # - LL-NDK shared-buffer/auto-refresh controls are runtime-resolved from device libnativewindow and fail closed if unavailable.
-# - Native callback teardown is race-safe and r30 C++ SurfaceControl signatures are used.
-# - Persistent DiagnosticLog is ENABLED for this forensic build, including Downloads mirror and ApplicationExitInfo traces.
+# - AttachedSurfaceControl parenting is deferred/retried on VSYNC because buildReparentTransaction() may legally return null during first attach.
+# - The output SurfaceControl is created at the exact page buffer size before native AHardwareBuffer submission.
+# - Persistent DiagnosticLog remains ENABLED for this forensic build, including compositor-stage breadcrumbs.
 #
 # No notification/theme/Voice feature changes are part of this branch.
-# Verification trigger: compile renderer with forensic crash logging enabled.
+# Verification trigger: compile deferred SurfaceControl parenting fix.
 on:
   push:
     branches: [anw-ahb-build115]
