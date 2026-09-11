@@ -10,7 +10,8 @@ name: Verify current Bubble changes
 # - A plain View remains only for touch, keyboard/IME and Gecko accessibility hosting.
 # - The direct Surface keeps the same maximum refresh-rate vote used by Build 115.
 # - No TextureView, bitmap copy/readback, App Zygote, Gecko pref, notification, theme or Voice change.
-# - Source guards now explicitly require the direct SurfaceControl producer rather than SurfaceView.
+# - Source guards explicitly require the direct SurfaceControl producer rather than SurfaceView.
+# - Kotlin state naming avoids Android View.requestedFrameRate API collisions.
 #
 # This workflow intentionally runs only on the isolated zero-copy branch so rebuild-v2 stays untouched.
 on:
