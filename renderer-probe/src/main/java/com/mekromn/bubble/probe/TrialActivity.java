@@ -227,12 +227,12 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             int[] xy=new int[2];slot.getLocationOnScreen(xy);
             WindowManager.LayoutParams p=new WindowManager.LayoutParams(viewportWidth,viewportHeight,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN|WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,PixelFormat.OPAQUE);
-            p.gravity=Gravity.TOP|Gravity.LEFT;p.x=xy[0];p.y=xy[1];p.preferredRefreshRate=vote;p.title="BubbleProbe_"+token+"_"+spec.optString("variant");manager.addView(page,p);
+            p.gravity=Gravity.TOP|Gravity.LEFT;p.x=xy[0];p.y=xy[1];p.preferredRefreshRate=vote;p.setTitle("BubbleProbe_"+token+"_"+spec.optString("variant"));manager.addView(page,p);
             if(spec.optBoolean("extraWindow")){
                 TextView t=new TextView(this);t.setText("Separate chrome window · no page blur");t.setTextColor(Color.WHITE);t.setBackgroundColor(0xff182329);chrome=t;
                 WindowManager.LayoutParams c=new WindowManager.LayoutParams(viewportWidth,(int)(40*getResources().getDisplayMetrics().density),WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,PixelFormat.OPAQUE);
-                c.gravity=Gravity.TOP|Gravity.LEFT;c.x=xy[0];c.y=xy[1]+viewportHeight+8;c.preferredRefreshRate=vote;c.title="BubbleProbeChrome_"+token;manager.addView(chrome,c);
+                c.gravity=Gravity.TOP|Gravity.LEFT;c.x=xy[0];c.y=xy[1]+viewportHeight+8;c.preferredRefreshRate=vote;c.setTitle("BubbleProbeChrome_"+token);manager.addView(chrome,c);
             }
         }else slot.addView(page,new FrameLayout.LayoutParams(-1,-1));
     }
@@ -359,7 +359,7 @@ public final class TrialActivity extends Activity implements GeckoDisplay.NewSur
             }catch(Exception e){
                 try{report.put("status","REPORT_OR_NATIVE_FINISH_ERROR");report.put("error",e.toString());ProbeActivity.write(new File(new File(new File(getFilesDir(),"benchmarks"),suite),token+".json"),report.toString());}catch(Exception ignored){}
             }
-            signal(2,"done");main.post(this::finish);
+            main.post(()->{ finish(); signal(2,"done"); });
         });
     }
     @Override public void onBackPressed(){end("CANCELLED",null);}
