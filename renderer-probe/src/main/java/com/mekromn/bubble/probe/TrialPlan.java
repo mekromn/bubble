@@ -1,52 +1,15 @@
 package com.mekromn.bubble.probe;
-
 import org.json.JSONObject;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Random;
-import java.util.UUID;
-
+import java.util.*;
 final class TrialPlan {
-    static JSONObject json(Object... values) {
-        JSONObject object=new JSONObject();
-        try { for(int i=0;i<values.length;i+=2)object.put((String)values[i],values[i+1]); }
-        catch (Exception e) { throw new IllegalArgumentException(e); }
-        return object;
-    }
-    static JSONObject spec(String variant, boolean floating, String workload, int round, long seed) {
-        boolean relay=variant.startsWith("relay_");
-        return json("token",UUID.randomUUID().toString(),"variant",variant,"floating",floating,
-            "workload",workload,"round",round,"seed",seed,"warmupMs",2500,"measureMs",10000,
-            "renderer",relay?"relay":variant.equals("texture_max")?"texture":variant.equals("geckoview_max")?"geckoview":"raw",
-            "voteMax",!variant.equals("raw_auto"),"extraWindow",variant.equals("raw_extra_window"),
-            "maxImages",variant.equals("relay_small_pool")?4:6,
-            "drainLimit",variant.equals("relay_fifo_bp")?1:variant.equals("relay_small_pool")?2:4,
-            "backpressure",variant.equals("relay_fifo_bp")||variant.equals("relay_latest_bp"));
-    }
-    static List<JSONObject> quick(long seed) {
-        List<JSONObject> out=new ArrayList<>();
-        out.add(spec("geckoview_max",false,"apz",0,seed));
-        out.add(spec("raw_max",false,"apz",0,seed));
-        out.add(spec("raw_max",true,"apz",0,seed));
-        out.add(spec("relay_latest_no_bp",true,"apz",0,seed));
-        return out;
-    }
-    static List<JSONObject> matrix(int rounds, boolean bothWorkloads, long seed) {
-        String[] variants={"raw_auto","raw_max","texture_max","raw_extra_window","relay_fifo_bp",
-            "relay_latest_bp","relay_latest_no_bp","relay_small_pool"};
-        List<JSONObject> out=new ArrayList<>();
-        Random random=new Random(seed);
-        for(int round=0;round<rounds;round++) for(String workload:bothWorkloads?new String[]{"apz","scroll","repaint"}:new String[]{"apz"}) {
-            out.add(spec("geckoview_max",false,workload,round,seed));
-            List<String> shuffled=new ArrayList<>(List.of(variants)); Collections.shuffle(shuffled,random);
-            for(String variant:shuffled) {
-                // Pair neighbours, flip AB/BA ordering across rounds, retain seed and order in reports.
-                boolean firstFloating=((round+java.util.Arrays.asList(variants).indexOf(variant))%2)==1;
-                out.add(spec(variant,firstFloating,workload,round,seed));
-                out.add(spec(variant,!firstFloating,workload,round,seed));
-            }
-        }
-        return out;
-    }
+ static final List<String> VARIANTS=List.of("raw_max","relay_latest_no_bp","relay_fifo_bp","relay_latest_bp","relay_small_pool","raw_auto","raw_extra_window","texture_max","geckoview_max");
+ static final List<String> WORKLOADS=List.of("apz","stream","repaint","css","webgl","scroll");
+ static JSONObject json(Object... values){JSONObject o=new JSONObject();try{for(int i=0;i<values.length;i+=2)o.put((String)values[i],values[i+1]);}catch(Exception e){throw new IllegalArgumentException(e);}return o;}
+ static JSONObject spec(String variant,boolean floating,String workload,int block,long seed){if(!VARIANTS.contains(variant)||!WORKLOADS.contains(workload))throw new IllegalArgumentException("Unknown case");return json("token",UUID.randomUUID().toString(),"variant",variant,"floating",floating,"workload",workload,"round",block,"block",block,"seed",seed,"workloadRevision","v2","intensity",1,"geometry","matched","instrumentation","v2-standard","warmupMs",5000,"measureMs",20000,"renderer",variant.startsWith("relay_")?"relay":variant.equals("texture_max")?"texture":variant.startsWith("geckoview_")?"geckoview":"raw","voteMax",!variant.equals("raw_auto"),"extraWindow",variant.equals("raw_extra_window"),"maxImages",variant.equals("relay_small_pool")?4:6,"drainLimit",variant.equals("relay_fifo_bp")?1:variant.equals("relay_small_pool")?2:4,"backpressure",variant.equals("relay_fifo_bp")||variant.equals("relay_latest_bp"));}
+ static List<JSONObject> quick(long seed){List<JSONObject> out=new ArrayList<>();out.add(spec("geckoview_max",false,"apz",0,seed));out.add(spec("raw_max",false,"apz",0,seed));out.add(spec("raw_max",true,"apz",0,seed));out.add(spec("relay_latest_no_bp",true,"apz",0,seed));for(JSONObject s:out)try{s.put("measureMs",10000);}catch(Exception e){throw new IllegalArgumentException(e);}return out;}
+ static List<JSONObject> design(List<String> variants,List<String> workloads,int blocks,int seconds,int intensity,long seed,String geometry){
+  if(variants.isEmpty()||workloads.isEmpty()||new HashSet<>(variants).size()!=variants.size()||new HashSet<>(workloads).size()!=workloads.size()||!geometry.equals("matched")||blocks<1||blocks>12||seconds<5||seconds>90||intensity<1||intensity>6)throw new IllegalArgumentException("Invalid plan");
+  Random rng=new Random(seed);List<JSONObject> out=new ArrayList<>();for(int block=0;block<blocks;block++){List<String> ws=new ArrayList<>(workloads);Collections.shuffle(ws,rng);for(String work:ws){List<String> vs=new ArrayList<>(variants);Collections.shuffle(vs,rng);for(String variant:vs){boolean first=((block+variants.indexOf(variant))&1)==1;for(boolean floating:new boolean[]{first,!first}){JSONObject s=spec(variant,floating,work,block,seed);try{s.put("measureMs",seconds*1000);s.put("intensity",intensity);s.put("plannedOrdinal",out.size());s.put("totalBlocks",blocks);}catch(Exception e){throw new IllegalArgumentException(e);}out.add(s);}}}}return out;
+ }
+ static List<JSONObject> matrix(int rounds,boolean all,long seed){return design(VARIANTS,all?WORKLOADS:List.of("apz"),rounds,20,1,seed,"matched");}
 }
