@@ -1,0 +1,69 @@
+name: Renderer probe Gate 1 corrections
+on:
+  push:
+    branches: [benchmark-probe-build115]
+    paths: ['.github/workflows/probe-gate1.yml']
+permissions:
+  contents: write
+concurrency:
+  group: renderer-probe-gate1
+  cancel-in-progress: false
+jobs:
+  apply-test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Apply exact-anchor corrections and verify host regressions
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/benchmark-probe-build115
+          python3 tools/apply-probe-gate1.py
+          python3 tools/test-probe-comparison.py
+          python3 tools/test-probe-gate1.py
+          node tools/test-renderer-probe.cjs
+          node tools/test-probe-v2.cjs
+          node tools/test-probe-gate1.cjs
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add renderer-probe tools/compare-renderer-probe.py
+          git commit -m 'fix(probe): apply expert Gate 1 no-touch, schema and pool-control corrections'
+          git push origin HEAD:benchmark-probe-build115
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+          cache-read-only: false
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: ARM64 compilation, unit tests and lint
+        run: |
+          set -euo pipefail
+          GITHUB_SHA="$SOURCE_COMMIT" gradle --no-daemon -p renderer-probe testDebugUnitTest assembleDebug lintDebug engineIdentity 2>&1 | tee gate1-build.txt
+          mkdir -p evidence
+          cp renderer-probe/build/outputs/apk/debug/*.apk evidence/Bubble-Renderer-Lab-Gate1-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs evidence/*.apk > evidence/signature.txt
+          sha256sum evidence/*.apk > evidence/SHA256SUMS
+          printf '%s\n' "$SOURCE_COMMIT" > evidence/SOURCE.txt
+          printf '%s\n' 'Compiled candidate only. This workflow does not execute the APK on Android or validate G01 visibility on Pixel. C1-C16 and engine hooks remain incomplete.' > evidence/VALIDATION.txt
+      - name: Archive exact source and available validation output
+        if: always()
+        run: |
+          mkdir -p evidence
+          git archive HEAD > evidence/source.tar
+          cp gate1-build.txt evidence/ 2>/dev/null || true
+          cp -r renderer-probe/build/reports evidence/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renderer-probe-gate1-source-and-validation
+          path: evidence/
+          retention-days: 14
