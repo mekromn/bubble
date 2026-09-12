@@ -84,7 +84,12 @@ internal class FloatingGeckoWindow(private val context: Context) {
     ) : LiveGeckoView(context) {
         private var bound: GeckoSession? = null
         override fun getSession(): GeckoSession? = bound
-        override fun hasWindowFocus(): Boolean = raw.hasWindowFocus()
+        // GeckoView's constructor installs a stateful background, which may
+        // query this virtual method before subclass fields are initialized.
+        // Before initialization there is no focus host; afterward use its
+        // actual shared-window focus, not the detached adapter's state.
+        private val focusHost: View? = raw
+        override fun hasWindowFocus(): Boolean = focusHost?.hasWindowFocus() ?: false
         override fun setSession(session: GeckoSession) {
             if (bound === session) {
                 raw.publishSurfaceIfReady()
