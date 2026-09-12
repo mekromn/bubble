@@ -1,0 +1,61 @@
+name: Apply Bubble 139 constructor-safe focus
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast139]
+    paths: ['.github/workflows/bubble-focus139.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Commit the checked constructor-safety delta and run full verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt')
+          old='        override fun hasWindowFocus(): Boolean = raw.hasWindowFocus()'
+          new='''        // GeckoView's constructor installs a stateful background, which may
+                  // query this virtual method before subclass fields are initialized.
+                  // Before initialization there is no focus host; afterward use its
+                  // actual shared-window focus, not the detached adapter's state.
+                  private val focusHost: View? = raw
+                  override fun hasWindowFocus(): Boolean = focusHost?.hasWindowFocus() ?: false'''
+          text=p.read_text()
+          if old in text:
+              assert text.count(old)==1
+              p.write_text(text.replace(old,new))
+          else:
+              assert new in text
+          p=Path('tools/test-embedded-page.cjs')
+          old=r'assert.match(page,/override fun hasWindowFocus\(\): Boolean = raw.hasWindowFocus\(\)/);'
+          new=r'assert.match(page,/private val focusHost: View\? = raw/);'+'\n'+r'assert.match(page,/override fun hasWindowFocus\(\): Boolean = focusHost\?\.hasWindowFocus\(\) \?: false/);'
+          text=p.read_text()
+          if old in text:
+              assert text.count(old)==1
+              p.write_text(text.replace(old,new))
+          else:
+              assert new in text
+          PY
+          node tools/test-foreground.cjs
+          node tools/test-embedded-page.cjs
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt tools/test-embedded-page.cjs
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(window): allow constructor-time focus query before raw host assignment'
+            git push origin HEAD:relay-latest-bp-fast139
+          fi
+          gh workflow run 356739449 --ref relay-latest-bp-fast139
+          git rev-parse HEAD
