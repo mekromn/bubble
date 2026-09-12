@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <vector>
 using ADataSpace = int;
@@ -32,6 +33,10 @@ inline std::mutex presentedMutex;
 inline std::deque<Pending> presented;
 inline std::atomic<int> transactionCreates{0},transactionDeletes{0}, acquireCalls{0}, spaceWrites{0}, opacityWrites{0}, readerDeletes{0};
 inline std::vector<int> returnedImages,returnedFences;
+// Deterministic test-only injection AFTER the API has observed MAX, with its
+// mutex released, before returning that stale status to the real consumer.
+inline std::function<void()> afterMaxAcquire;
+inline int failHardwareBufferId = -1;
 inline int __android_log_print(int,const char*,const char*,...) { return 0; }
 inline int AImageReader_newWithUsage(int,int,int,uint64_t,int maximum,AImageReader** out) {
     *out=new AImageReader; (*out)->maximum=maximum; return 0;
@@ -42,8 +47,12 @@ inline int AImageReader_setImageListener(AImageReader* r,AImageReader_ImageListe
     std::lock_guard<std::mutex> lock(r->mutex);r->listener=l?*l:AImageReader_ImageListener{};return 0;
 }
 inline int AImageReader_acquireNextImageAsync(AImageReader* r,AImage** image,int* fence) {
-    acquireCalls++;std::lock_guard<std::mutex> lock(r->mutex);
-    if(r->acquired==r->maximum)return AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED;
+    acquireCalls++;std::unique_lock<std::mutex> lock(r->mutex);
+    if(r->acquired==r->maximum) {
+        lock.unlock();
+        if(afterMaxAcquire) { auto hook=std::move(afterMaxAcquire);afterMaxAcquire={};hook(); }
+        return AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED;
+    }
     if(r->queue.empty())return AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE;
     *image=r->queue.front();r->queue.pop_front();r->acquired++;*fence=(*image)->acquireFence;return 0;
 }
@@ -52,7 +61,10 @@ inline void AImage_deleteAsync(AImage* image,int fence) {
     assert(image->owner->acquired>0);image->owner->acquired--;
     returnedImages.push_back(image->buffer.id);returnedFences.push_back(fence);delete image;
 }
-inline int AImage_getHardwareBuffer(AImage* image,AHardwareBuffer** b) { *b=&image->buffer;return 0; }
+inline int AImage_getHardwareBuffer(AImage* image,AHardwareBuffer** b) {
+    if(image->buffer.id==failHardwareBufferId){*b=nullptr;return -1;}
+    *b=&image->buffer;return 0;
+}
 inline int AImage_getDataSpace(AImage* image,int32_t* s) { *s=image->space;return 0; }
 inline ASurfaceControl* ASurfaceControl_fromJava(JNIEnv*,jobject) { return new ASurfaceControl; }
 inline void ASurfaceControl_release(ASurfaceControl* s) { delete s; }

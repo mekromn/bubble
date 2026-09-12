@@ -112,8 +112,8 @@ class RelayLatestBpRuntimeTest {
                 val color=if(id=="A")"rgb(220,30,180)" else "rgb(20,200,210)"
                 val html="""<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>RELAY-$id</title>
                 <style>html,body{margin:0;height:100%;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%}button,input{position:absolute;left:10%;width:80%;height:10%;z-index:2}button{top:40%}input{top:55%}</style>
-                <canvas id="c"></canvas><button onclick="document.title='CLICKED-$id'">Relay button $id</button><input oninput="document.title='TYPED-'+this.value" aria-label="Relay composer">
-                <script>const c=document.querySelector('canvas'),g=c.getContext('2d');function paint(){c.width=innerWidth;c.height=innerHeight;g.fillStyle='$color';g.fillRect(0,0,c.width,c.height);g.fillStyle='yellow';g.fillRect(8,8,32,32)}addEventListener('resize',paint);paint();</script>""".toByteArray()
+                <canvas id="c"></canvas><button onclick="document.title='CLICKED-$id'; flipped=!flipped;paint()">Relay button $id</button><input oninput="document.title='TYPED-'+this.value" aria-label="Relay composer">
+                <script>const c=document.querySelector('canvas'),g=c.getContext('2d');let flipped=false;function paint(){c.width=innerWidth;c.height=innerHeight;g.fillStyle=flipped?'rgb(20,200,210)':'$color';g.fillRect(0,0,c.width,c.height);g.fillStyle='yellow';g.fillRect(8,8,32,32)}addEventListener('resize',paint);paint();</script>""".toByteArray()
                 s.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray());s.getOutputStream().write(html)
             }}catch(_:Exception){if(server.isClosed)break}
         }.apply{isDaemon=true;start()}
@@ -146,6 +146,18 @@ class RelayLatestBpRuntimeTest {
                 assertTrue("Floating hardware window",checkMain { inputHost()?.isHardwareAccelerated == true })
                 assertEquals(6L,NativeAhbBridge.nativeDebugStats()[7]);assertEquals(4L,NativeAhbBridge.nativeDebugStats()[8]);assertEquals(1L,NativeAhbBridge.nativeDebugStats()[9])
                 pageTap(.45f);await("click"){checkMain{Workspace.peek()?.selected?.title=="CLICKED-A"}}
+                await("idle-resume-first-cyan"){pageHasColor(false)}
+                // Returned buffers while idle must not be required to keep the
+                // next frame flowing. Each click visibly changes page pixels.
+                // These pauses exercise idle/restart; no latency claim is made.
+                repeat(7){ i ->
+                    Thread.sleep(250)
+                    pageTap(.45f)
+                    await("idle-resume-$i"){pageHasColor(i % 2 == 0)}
+                }
+                save("idle-resume-final-red")
+                File(context.getExternalFilesDir(null),"evidence/idle-resume.txt").writeText(
+                    "PASS: eight actual page-click/color changes, seven following idle pauses. Correctness only; not timed touch latency.\n")
                 pageTap(.60f);shell("input text relay")
                 await("typing"){checkMain{Workspace.peek()?.selected?.title=="TYPED-relay"}}
                 shell("input keyevent KEYCODE_BACK")

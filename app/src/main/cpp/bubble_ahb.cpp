@@ -1,5 +1,6 @@
 #include <jni.h>
 #include "relay_wake.h"
+#include "relay_capacity.h"
 #include <array>
 #include <android/data_space.h>
 #include <android/hardware_buffer.h>
@@ -52,6 +53,7 @@ struct State {
     ANativeWindow* producer = nullptr; // Borrowed from reader.
     ASurfaceControl* output = nullptr; // Independent reference from fromJava().
     bubble::RelayWake event;
+    bubble::RelayCapacity capacity;
     ASurfaceTransaction* frameTransaction = nullptr; // One consumer owns and reuses this object.
     std::array<Lease, kMaxImages> leaseSlots;
     int32_t appliedDataSpace = ADATASPACE_UNKNOWN;
@@ -130,7 +132,9 @@ void releaseFrame(void* context, int releaseFenceFd) {
     lease->occupied.store(false, std::memory_order_release);
     AImage_deleteAsync(image, releaseFenceFd); // Transfers the release FD; never reuse pixels early.
     totalReleased++; totalOutstanding--; s->leases--;
-    s->wake(); // Required for progress after MAX_IMAGES; coalesced with frame notifications.
+    // A returned buffer is not a new image. Wake only a capacity waiter, after
+    // the reader has received the image/fence. Retirement retains its own path.
+    if (s->capacity.returned() && !s->stopping.load()) s->wake();
     maybeCleanup(s);
 }
 Lease* reserveLease(const std::shared_ptr<State>& s, AImage* image) {
@@ -174,13 +178,22 @@ void voteRate(const std::shared_ptr<State>& s) {
     ASurfaceTransaction_apply(tx); ASurfaceTransaction_delete(tx); s->appliedRate = rate;
 }
 void consume(const std::shared_ptr<State>& s) {
+    s->capacity.beginPass();
     AImage* latest = nullptr; int latestFence = -1;
     bool reachedDrainLimit = true;
     for (int i = 0; i < kDrainLimit && !s->stopping.load(); ++i) {
         AImage* image = nullptr; int fence = -1;
+        const uint64_t before = s->capacity.beforeAcquire();
         const media_status_t status = AImageReader_acquireNextImageAsync(s->reader, &image, &fence);
         // Classify status FIRST. A null image must not conceal MAX_IMAGES/errors.
-        if (status == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE || status == AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) {
+        if (status == AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) {
+            reachedDrainLimit = false; discard(image, fence);
+            // Covers a callback returning capacity after acquire observed MAX
+            // but before the waiter could be registered. No polling or sleep.
+            if (s->capacity.waitAfterMax(before)) s->wake();
+            break;
+        }
+        if (status == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) {
             reachedDrainLimit = false; discard(image, fence); break;
         }
         if (status != AMEDIA_OK || !image) { reachedDrainLimit = false; error("acquire", status); discard(image, fence); break; }
@@ -191,10 +204,20 @@ void consume(const std::shared_ptr<State>& s) {
     if (s->stopping.load()) { discard(latest, latestFence); return; }
     AHardwareBuffer* buffer = nullptr;
     const media_status_t status = AImage_getHardwareBuffer(latest, &buffer);
-    if (status != AMEDIA_OK || !buffer) { error("hardware buffer", status); discard(latest, latestFence); return; }
+    if (status != AMEDIA_OK || !buffer) {
+        error("hardware buffer", status); discard(latest, latestFence);
+        // MAX may have armed a waiter after acquiring this image. Returning it
+        // here creates capacity without a SurfaceControl callback of its own.
+        if (s->capacity.returned()) s->wake();
+        return;
+    }
     ASurfaceTransaction* tx = s->frameTransaction;
     Lease* lease = reserveLease(s, latest);
-    if (!lease) { error("lease slot invariant", -1); discard(latest, latestFence); return; }
+    if (!lease) {
+        error("lease slot invariant", -1); discard(latest, latestFence);
+        if (s->capacity.returned()) s->wake();
+        return;
+    }
     s->leases++; totalOutstanding++;
     ASurfaceTransaction_setBufferWithRelease(tx, s->output, buffer, latestFence, lease, releaseFrame);
     int32_t space = ADATASPACE_UNKNOWN;

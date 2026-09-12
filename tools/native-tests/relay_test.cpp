@@ -39,7 +39,7 @@ int main() {
     clear(s);consume(s);assert(!readable(s)); // Empty pass must not self-schedule.
     // One-image normal case is known empty after its second acquire: no redundant self-wake.
     enqueue(s,5,42);clear(s);int a=acquireCalls.load();consume(s);
-    assert(acquireCalls==a+2);assert(!readable(s));assert(spaceWrites==1);releaseOne();clear(s);
+    assert(acquireCalls==a+2);assert(!readable(s));assert(spaceWrites==1);releaseOne();assert(!readable(s));clear(s);
     // Colorspace must be reset when next frame returns to UNKNOWN.
     enqueue(s,6,0);consume(s);assert(spaceWrites==2);releaseOne();clear(s);
     // Six outstanding images use exactly six stable callback slots; no seventh acquisition.
@@ -83,6 +83,72 @@ int main() {
     for(auto& l:s->leaseSlots)assert(!l.occupied.load()&&!l.state&&l.image==nullptr);
     std::cout << "PASS: 10,000 additional images with overlapping consume/release callback and slot reuse.\n";
     s.reset();
+    // A returned last frame is NOT a pending new frame. Exercise long idle
+    // presentation/release sequences without adding production timing counters.
+    s=makeState();
+    const int beforeSerial=acquireCalls.load();
+    for(int i=0;i<10000;i++) {
+        enqueue(s,50000+i);consume(s);
+        assert(!readable(s));releaseOne();assert(!readable(s));
+    }
+    assert(acquireCalls==beforeSerial+20000); // success + EMPTY, no release-only acquire
+    assert(s->leases==0);s.reset();
+    // MAX was observed, then a callback returned capacity before the consumer
+    // can register a waiter. The epoch must turn the stale MAX into a retry.
+    s=makeState();
+    for(int i=0;i<6;i++){enqueue(s,60000+i);consume(s);clear(s);}
+    enqueue(s,60006);
+    afterMaxAcquire=[] { releaseOne(16000); };
+    consume(s);assert(!afterMaxAcquire);assert(readable(s));
+    clear(s);consume(s);assert(s->reader->queue.empty());assert(s->leases==6);
+    // An extra producer notification at saturation may arm a waiter, but must
+    // not turn into a self-scheduling busy loop while nothing is released.
+    clear(s);imageAvailable(s.get(),s->reader);assert(readable(s));
+    clear(s);consume(s);assert(!readable(s));
+    while(!presented.empty()) { releaseOne(); }
+    clear(s);assert(s->leases==0);s.reset();
+    // If MAX is seen after acquiring the last available slot and that image
+    // fails validation, its local return (not a SurfaceControl callback) is
+    // enough to make pending reader work runnable. Preserve its acquire fence.
+    s=makeState();
+    for(int i=0;i<5;i++){enqueue(s,70000+i);consume(s);clear(s);}
+    const auto errorsBefore=totalErrors.load();
+    enqueue(s,70005);enqueue(s,70006);failHardwareBufferId=70005;
+    consume(s);failHardwareBufferId=-1;
+    assert(totalErrors==errorsBefore+1); // deliberate test-only API failure
+    assert(returnedImages.back()==70005&&returnedFences.back()==71005);
+    assert(readable(s));clear(s);consume(s);
+    assert(s->reader->queue.empty());assert(s->leases==6);
+    // Six release callbacks can overlap each other, not only acquisition.
+    std::vector<std::thread> callbacks;
+    for(int i=0;i<6;i++)callbacks.emplace_back([] { releaseOne(); });
+    for(auto& t:callbacks) { t.join(); }
+    clear(s);
+    assert(s->leases==0);assert(totalOutstanding==0);assert(totalSubmitted==totalReleased);
+    assert(totalErrors==errorsBefore+1);s.reset();
+    // Gate-level exhaustive order cases plus a concurrent arm/return race.
+    bubble::RelayCapacity capacity;
+    capacity.beginPass();auto epoch=capacity.beforeAcquire();
+    assert(!capacity.waitAfterMax(epoch));assert(capacity.returned());assert(!capacity.returned());
+    capacity.beginPass();epoch=capacity.beforeAcquire();
+    assert(!capacity.returned());assert(capacity.waitAfterMax(epoch));
+    capacity.beginPass();epoch=capacity.beforeAcquire();
+    assert(!capacity.waitAfterMax(epoch));capacity.beginPass();assert(!capacity.returned());
+    std::atomic<int> start{0},done{0};std::atomic<bool> callbackWake{false};
+    std::thread racer([&] {
+        for(int i=1;i<=20000;i++) {
+            while(start.load()!=i)std::this_thread::yield();
+            callbackWake.store(capacity.returned());done.store(i);
+        }
+    });
+    for(int i=1;i<=20000;i++) {
+        capacity.beginPass();epoch=capacity.beforeAcquire();start.store(i);
+        const bool retry=capacity.waitAfterMax(epoch);
+        while(done.load()!=i)std::this_thread::yield();
+        assert(retry||callbackWake.load()); // one side must schedule progress
+    }
+    racer.join();
+    std::cout << "PASS: 10,000 idle releases without consumer wakes; stale-MAX race; saturation without spin; local rejection recovery; six concurrent callbacks; 20,000 capacity arm/return races.\n";
     // Stress notify/beginPass interleaving with an external work sequence.
     bubble::RelayWake event;assert(event.open());std::atomic<int> offered{0};
     std::thread producer([&]{for(int i=1;i<=20000;i++){offered.store(i);assert(event.notify());if((i%7)==0)std::this_thread::yield();}});
