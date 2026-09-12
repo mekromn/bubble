@@ -1,0 +1,104 @@
+name: Bubble 137 runtime verification
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast137]
+    paths: ['.github/workflows/bubble-runtime137.yml']
+permissions:
+  contents: write
+concurrency:
+  group: bubble-runtime137
+  cancel-in-progress: true
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Fix nullable test result and pin unchanged browser implementation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRuntimeTest.kt')
+          old='{ values -> actual.set(values.associate { it.pref to it.value }) }'
+          new='{ values -> if (values == null) failure.set(IllegalStateException("Null preference result")) else actual.set(values.associate { it.pref to it.value }) }'
+          text=p.read_text()
+          if old in text:
+              assert text.count(old)==1
+              p.write_text(text.replace(old,new))
+          else:
+              assert new in text
+          PY
+          git add app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRuntimeTest.kt
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'test(renderer): handle null Gecko preference readback explicitly'
+            git push origin HEAD:relay-latest-bp-fast137
+          fi
+          # Only the test and workflow change. The delivered ARM64 source is unchanged.
+          git diff --exit-code daf2ee7aaa49554e1f00c4f0376cddc1fa41d737 HEAD -- app/src/main app/src/performance app/build.gradle.kts app/proguard-performance.pro app/signing build.gradle.kts settings.gradle.kts gradle.properties
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+          cache-read-only: false
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Build same optimized browser for x86_64 and corrected test
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest 2>&1 | tee runtime-build.txt
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Page pixels, actual preferences, input and native lifetimes
+        id: device
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 300s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > runtime-result.txt 2>&1 || true
+            adb logcat -d > runtime-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat runtime-result.txt
+            grep -q 'OK (1 test)' runtime-result.txt
+      - name: Preserve exact result and source boundary
+        if: always() && !cancelled()
+        env:
+          OUTCOME: ${{ steps.device.outcome }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p evidence
+          printf 'Android runtime result: %s\nTest source: %s\nBrowser production source remains daf2ee7aaa49554e1f00c4f0376cddc1fa41d737.\nSoftware-emulated x86_64 correctness test; not Pixel GPU/performance proof.\n' "$OUTCOME" "$SOURCE_COMMIT" > evidence/STATUS-RUNTIME137.txt
+          cp runtime-*.txt evidence/ 2>/dev/null || true
+          cp -r runtime-evidence app/build/reports evidence/ 2>/dev/null || true
+          tar -czf runtime137-recheck.tar.gz evidence
+          gh release upload bubble-fast-137-34711470118-1 runtime137-recheck.tar.gz evidence/STATUS-RUNTIME137.txt --clobber
+      - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
+        with:
+          name: bubble-fast137-runtime-recheck
+          path: evidence/
+          retention-days: 7
