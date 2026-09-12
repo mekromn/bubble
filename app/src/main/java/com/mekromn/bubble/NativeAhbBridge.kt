@@ -3,28 +3,16 @@ package com.mekromn.bubble
 import android.view.Surface
 import android.view.SurfaceControl
 
-/** JNI bridge for the Android-16-only ANativeWindow + AHardwareBuffer renderer experiment. */
+/** Android 16 relay_latest_bp: 6 acquired images, bounded drain 4, one native worker. */
 internal object NativeAhbBridge {
-    init {
-        System.loadLibrary("bubble-ahb")
-    }
-
-    external fun nativeCreate(
-        width: Int,
-        height: Int,
-        outputControl: SurfaceControl,
-        frameRate: Float
-    ): Long
-
+    init { System.loadLibrary("bubble-ahb") }
+    /** Creation can allocate buffers/connect Binder. Call only on the creation executor. */
+    external fun nativeCreate(width: Int, height: Int, outputControl: SurfaceControl, frameRate: Float): Long
     external fun nativeGetProducerSurface(handle: Long): Surface?
-
-    /**
-     * Poll the shared AImageReader consumer even when auto-refresh produced no ordinary frame callback.
-     * Positive = cumulative AHardwareBuffer submissions; 0 = no buffer; negative = forensic error code.
-     */
-    external fun nativePump(handle: Long): Int
-
+    /** Sets an atomic request; the consumer applies it off-main. */
     external fun nativeSetFrameRate(handle: Long, frameRate: Float)
-
+    /** Invalidates the handle and wakes async cleanup. Does not join/wait/acquire on the UI thread. */
     external fun nativeDestroy(handle: Long)
+    /** On-demand integration diagnostics only; never polled by the production rendering loop. */
+    external fun nativeDebugStats(): LongArray
 }
