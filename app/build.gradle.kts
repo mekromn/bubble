@@ -50,6 +50,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-performance.pro")
+            testProguardFiles("proguard-instrumentation.pro")
             matchingFallbacks += "release"
             externalNativeBuild.cmake.arguments += "-DBUBBLE_OPTIMIZED=ON"
         }

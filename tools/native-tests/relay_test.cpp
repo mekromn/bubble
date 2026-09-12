@@ -53,6 +53,31 @@ int main() {
     for(int i=0;i<6;i++){enqueue(s,20000+i);consume(s);clear(s);}
     std::thread callbackThread([]{for(int i=0;i<6;i++)releaseOne();});callbackThread.join();
     assert(s->leases==0);for(auto& l:s->leaseSlots)assert(!l.occupied.load()&&!l.state&&l.image==nullptr);
+    // Overlap acquisition/submission and callbacks, exercising slot reuse while
+    // earlier callbacks are still returning capacity. This is not Android timing.
+    for(int i=0;i<10000;i++) enqueue(s,30000+i);
+    std::atomic<bool> producerDone{false};
+    std::thread simultaneousReleases([&]{
+        for(;;) {
+            Pending pending{}; bool has=false;
+            { std::lock_guard<std::mutex> lock(presentedMutex);
+              if(!presented.empty()){pending=presented.front();presented.pop_front();has=true;}
+              else if(producerDone.load()) break;
+            }
+            if(has) pending.callback(pending.context,9999);
+            else std::this_thread::yield();
+        }
+    });
+    s->wake();
+    for(;;){
+        pollfd fd{s->event.fd(),POLLIN,0};assert(poll(&fd,1,5000)==1);
+        assert(s->event.beginPass());consume(s);
+        { std::lock_guard<std::mutex> lock(s->reader->mutex);if(s->reader->queue.empty())break; }
+    }
+    producerDone.store(true);simultaneousReleases.join();
+    assert(s->leases==0);assert(totalOutstanding==0);assert(totalSubmitted==totalReleased);assert(totalErrors==0);
+    for(auto& l:s->leaseSlots)assert(!l.occupied.load()&&!l.state&&l.image==nullptr);
+    std::cout << "PASS: 10,000 additional images with overlapping consume/release callback and slot reuse.\n";
     s.reset();
     // Stress notify/beginPass interleaving with an external work sequence.
     bubble::RelayWake event;assert(event.open());std::atomic<int> offered{0};
