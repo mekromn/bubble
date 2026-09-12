@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 BASE="${BASELINE_REF:-837d575fc615d9d44ff572d98323dfebb61528de}"
 EXPECTED=62520f9a51a7e6b2fd62bb1e0340c726df85f8d8
 [[ "$(git rev-parse "$BASE:app/src/main/cpp/bubble_ahb.cpp")" == "$EXPECTED" ]]
-JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")}" 
+JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")}"
 TEMP="$(mktemp -d)"
 trap 'rm -rf "$TEMP"' EXIT
 mkdir -p "$TEMP/baseline"

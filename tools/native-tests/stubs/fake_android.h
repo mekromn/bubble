@@ -37,6 +37,7 @@ inline std::vector<int> returnedImages,returnedFences;
 // mutex released, before returning that stale status to the real consumer.
 inline std::function<void()> afterMaxAcquire;
 inline int failHardwareBufferId = -1;
+inline int failAcquireCountdown = -1;
 inline int __android_log_print(int,const char*,const char*,...) { return 0; }
 inline int AImageReader_newWithUsage(int,int,int,uint64_t,int maximum,AImageReader** out) {
     *out=new AImageReader; (*out)->maximum=maximum; return 0;
@@ -52,6 +53,9 @@ inline int AImageReader_acquireNextImageAsync(AImageReader* r,AImage** image,int
         lock.unlock();
         if(afterMaxAcquire) { auto hook=std::move(afterMaxAcquire);afterMaxAcquire={};hook(); }
         return AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED;
+    }
+    if(failAcquireCountdown>=0 && failAcquireCountdown--==0) {
+        failAcquireCountdown=-1;return -1;
     }
     if(r->queue.empty())return AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE;
     *image=r->queue.front();r->queue.pop_front();r->acquired++;*fence=(*image)->acquireFence;return 0;

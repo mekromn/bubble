@@ -190,13 +190,20 @@ void consume(const std::shared_ptr<State>& s) {
             reachedDrainLimit = false; discard(image, fence);
             // Covers a callback returning capacity after acquire observed MAX
             // but before the waiter could be registered. No polling or sleep.
-            if (s->capacity.waitAfterMax(before)) s->wake();
+            if (s->capacity.waitAfterBlockedAcquire(before)) s->wake();
             break;
         }
         if (status == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) {
             reachedDrainLimit = false; discard(image, fence); break;
         }
-        if (status != AMEDIA_OK || !image) { reachedDrainLimit = false; error("acquire", status); discard(image, fence); break; }
+        if (status != AMEDIA_OK || !image) {
+            reachedDrainLimit = false; error("acquire", status); discard(image, fence);
+            // Retain the old release-driven recovery for a transient acquire
+            // failure. With no outstanding image, only a new frame can retry;
+            // do not invent an unbounded error polling loop.
+            if (s->capacity.waitAfterBlockedAcquire(before)) s->wake();
+            break;
+        }
         if (latest) discard(latest, latestFence);
         latest = image; latestFence = fence;
     }
@@ -208,14 +215,20 @@ void consume(const std::shared_ptr<State>& s) {
         error("hardware buffer", status); discard(latest, latestFence);
         // MAX may have armed a waiter after acquiring this image. Returning it
         // here creates capacity without a SurfaceControl callback of its own.
-        if (s->capacity.returned()) s->wake();
+        const bool capacityRetry = s->capacity.returned();
+        // A full pass can also leave queued images after this local rejection.
+        // Do not strand that backlog waiting for a callback that cannot exist.
+        if (capacityRetry || reachedDrainLimit) s->wake();
         return;
     }
     ASurfaceTransaction* tx = s->frameTransaction;
     Lease* lease = reserveLease(s, latest);
     if (!lease) {
         error("lease slot invariant", -1); discard(latest, latestFence);
-        if (s->capacity.returned()) s->wake();
+        const bool capacityRetry = s->capacity.returned();
+        // A full pass can also leave queued images after this local rejection.
+        // Do not strand that backlog waiting for a callback that cannot exist.
+        if (capacityRetry || reachedDrainLimit) s->wake();
         return;
     }
     s->leases++; totalOutstanding++;

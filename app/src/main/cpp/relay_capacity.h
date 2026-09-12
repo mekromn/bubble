@@ -22,9 +22,9 @@ class RelayCapacity {
     void beginPass() { state_.fetch_and(~kWaiting); }
     uint64_t beforeAcquire() const { return state_.load() & ~kWaiting; }
 
-    // Called only after MAX_IMAGES, using the snapshot taken BEFORE that acquire.
+    // Called after MAX_IMAGES or an acquire error, with the PRE-acquire snapshot.
     // true = a release has already intervened; schedule a bounded retry ourselves.
-    bool waitAfterMax(uint64_t before) {
+    bool waitAfterBlockedAcquire(uint64_t before) {
         return !state_.compare_exchange_strong(before, before | kWaiting);
     }
 

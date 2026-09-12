@@ -126,14 +126,33 @@ int main() {
     clear(s);
     assert(s->leases==0);assert(totalOutstanding==0);assert(totalSubmitted==totalReleased);
     assert(totalErrors==errorsBefore+1);s.reset();
+    // A full bounded pass may reject its final image with zero in-flight leases.
+    // A queued fifth image then needs a backlog wake, not a release callback.
+    s=makeState();
+    for(int i=0;i<5;i++)enqueue(s,80000+i);
+    failHardwareBufferId=80003;consume(s);failHardwareBufferId=-1;
+    assert(s->leases==0&&s->reader->queue.size()==1);assert(readable(s));
+    clear(s);consume(s);assert(s->reader->queue.empty()&&s->leases==1);
+    releaseOne();assert(!readable(s));assert(totalErrors==errorsBefore+2);
+    assert(totalOutstanding==0&&totalSubmitted==totalReleased);s.reset();
+    std::cout << "PASS: rejected full-drain image cannot strand the next queued image without a callback.\n";
+    // Preserve release-driven recovery when a transient acquire error follows
+    // one successful acquire while another image is already queued.
+    s=makeState();enqueue(s,90000);enqueue(s,90001);failAcquireCountdown=1;
+    consume(s);assert(s->leases==1&&s->reader->queue.size()==1);
+    assert(!readable(s));releaseOne();assert(readable(s));
+    clear(s);consume(s);assert(s->leases==1&&s->reader->queue.empty());
+    releaseOne();assert(!readable(s));assert(totalErrors==errorsBefore+3);
+    assert(totalOutstanding==0&&totalSubmitted==totalReleased);s.reset();
+    std::cout << "PASS: transient acquire failure retains release-driven recovery without error polling.\n";
     // Gate-level exhaustive order cases plus a concurrent arm/return race.
     bubble::RelayCapacity capacity;
     capacity.beginPass();auto epoch=capacity.beforeAcquire();
-    assert(!capacity.waitAfterMax(epoch));assert(capacity.returned());assert(!capacity.returned());
+    assert(!capacity.waitAfterBlockedAcquire(epoch));assert(capacity.returned());assert(!capacity.returned());
     capacity.beginPass();epoch=capacity.beforeAcquire();
-    assert(!capacity.returned());assert(capacity.waitAfterMax(epoch));
+    assert(!capacity.returned());assert(capacity.waitAfterBlockedAcquire(epoch));
     capacity.beginPass();epoch=capacity.beforeAcquire();
-    assert(!capacity.waitAfterMax(epoch));capacity.beginPass();assert(!capacity.returned());
+    assert(!capacity.waitAfterBlockedAcquire(epoch));capacity.beginPass();assert(!capacity.returned());
     std::atomic<int> start{0},done{0};std::atomic<bool> callbackWake{false};
     std::thread racer([&] {
         for(int i=1;i<=20000;i++) {
@@ -143,7 +162,7 @@ int main() {
     });
     for(int i=1;i<=20000;i++) {
         capacity.beginPass();epoch=capacity.beforeAcquire();start.store(i);
-        const bool retry=capacity.waitAfterMax(epoch);
+        const bool retry=capacity.waitAfterBlockedAcquire(epoch);
         while(done.load()!=i)std::this_thread::yield();
         assert(retry||callbackWake.load()); // one side must schedule progress
     }

@@ -10,7 +10,7 @@ Only the native relay's capacity-notification protocol and app version change in
 
 Before: each `releaseFrame` callback woke the consumer, even if the last acquisition pass established that the reader queue was empty. A return is not a new incoming image. Such a wake could cause a poll/read and another unsuccessful acquisition.
 
-After: a normal return does not wake the consumer unless it had observed MAX_IMAGES and registered a capacity waiter. The new-image callback, bounded backlog continuation, refresh-rate changes and shutdown retain their existing notifications. This is event-driven, not a periodic polling or additional VSYNC gate. Frames remain admitted and selected under the same policy; backpressure is not disabled to reduce latency.
+After: a normal return does not wake the consumer unless it had observed MAX_IMAGES or an acquisition error and registered a retry waiter. The new-image callback, bounded backlog continuation, refresh-rate changes and shutdown retain their existing notifications. This is event-driven, not a periodic polling or additional VSYNC gate. Frames remain admitted and selected under the same policy; backpressure is not disabled to reduce latency.
 
 ## Race safety
 
@@ -35,7 +35,7 @@ The same unmodified operation-count harness is compiled against real Build-137 a
 
 These are deterministic operation counts, NOT Android CPU utilization, refresh rate, end-to-end latency or touch-to-photon measurements. When acquisition capacity is exhausted, some release-driven wakes remain necessary by design. No fixed device speedup is inferred.
 
-The sanitizer suite runs actual production code against stubs and includes a callback between MAX being observed and its status being handled, six overlapping callbacks, saturated notifications without spinning, local-rejection capacity recovery, 20,000 gate arm/return races, 20,000 eventfd races, 10,000 overlapping acquired images and 10,000 idle releases. One validation failure is deliberately injected and must produce exactly one error; ordinary sequences require zero errors. Fences, data-space transitions and transaction/lease reuse remain checked.
+The sanitizer suite runs actual production code against stubs and includes a callback between MAX being observed and its status being handled, six overlapping callbacks, saturated notifications without spinning, local-rejection capacity recovery, 20,000 gate arm/return races, 20,000 eventfd races, 10,000 overlapping acquired images and 10,000 idle releases. Three API failures are deliberately injected (capacity-bound rejection, full-drain rejection, and a transient acquisition error); each must produce exactly one error. Release-driven recovery after an acquisition error is preserved without adding error polling. Ordinary sequences require zero errors. A rejected final image from a full bounded pass still schedules the next pass so a remaining backlog cannot depend on a nonexistent release callback. Fences, data-space transitions and transaction/lease reuse remain checked.
 
 The Android test uses the actual optimized x86_64 browser, not Renderer Lab. It retains the 137 screen-pixel, typing, cold-tab, tab-swap, resize, fullscreen-return, cleanup and 13-preference readback assertions, and adds eight visible page-click/color changes, seven after idle pauses. This tests resumption, not touch latency. The emulator's reduced resolution is CI-only; no APK resolution change is made. Consult final run evidence for actual pass/fail.
 
