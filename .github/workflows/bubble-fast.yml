@@ -1,13 +1,13 @@
-name: Bubble optimized relay build
+name: Bubble hardware relay build
 on:
   workflow_dispatch:
   push:
-    branches: [relay-latest-bp-fast136]
+    branches: [relay-latest-bp-fast137]
     paths: ['app/**', 'tools/**', '.github/workflows/bubble-fast.yml', 'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties']
 permissions:
   contents: write
 concurrency:
-  group: bubble-fast136
+  group: bubble-fast137
   cancel-in-progress: true
 jobs:
   browser:
@@ -20,18 +20,18 @@ jobs:
       - name: Materialize reviewed source changes once
         run: |
           set -euo pipefail
-          if [ -f tools/build136.patch.xz ]; then
-            echo '586bb92c48104b325ccd6e46213eb50b0dec3d8712e93456bc35c236e22385cf  tools/build136.patch.xz' | sha256sum -c -
-            xz -dc tools/build136.patch.xz > /tmp/build136.patch
-            echo '67a6fb202dacb67d891b3d5a2730f64ac0140083347e2fd0baa762b4811ba926  /tmp/build136.patch' | sha256sum -c -
-            git apply --check /tmp/build136.patch
-            git apply /tmp/build136.patch
-            git rm tools/build136.patch.xz
-            git add app tools
+          if [ -f tools/build137.patch.xz ]; then
+            echo 'baa7812dc6c776c51b60832a0f72ef75f6c028830b42a95c7f9f4837068dcf25  tools/build137.patch.xz' | sha256sum -c -
+            xz -dc tools/build137.patch.xz > /tmp/build137.patch
+            echo '792df3a0eacde25d9e65a276af8509cf1a3599e94ad4ee8d11219a635787cf47  /tmp/build137.patch' | sha256sum -c -
+            git apply --check /tmp/build137.patch
+            git apply /tmp/build137.patch
+            git rm tools/build137.patch.xz
+            git add app tools docs
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m 'perf(renderer): optimize build, reuse transaction and leases, coalesce wakes, remove eager diagnostic work'
-            git push origin HEAD:relay-latest-bp-fast136
+            git commit -m 'perf(renderer): compile out native logs and apply reviewed hardware preferences before Gecko startup'
+            git push origin HEAD:relay-latest-bp-fast137
           fi
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v5
@@ -43,6 +43,7 @@ jobs:
           set -euo pipefail
           node tools/test-foreground.cjs
           node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
           bash tools/test-relay-native.sh | tee native-unit-tests.txt
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -60,7 +61,7 @@ jobs:
           echo '4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks' | sha256sum -c -
           gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance 2>&1 | tee fast-build.txt
           mkdir -p dist
-          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-136-relay-latest-bp-FAST-ARM64.apk
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-137-relay-latest-bp-HARDWARE-ARM64.apk
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk > dist/signature.txt
           grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
           "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/*.apk > dist/AndroidManifest.xml
@@ -69,9 +70,10 @@ jobs:
           from pathlib import Path
           root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
           assert root.attrib['package']=='com.mekromn.bubble.debug'
-          assert root.attrib[ns+'versionCode']=='136'
+          assert root.attrib[ns+'versionCode']=='137'
           app=root.find('application');assert app.attrib.get(ns+'debuggable','false')=='false'
           assert app.find('profileable').attrib[ns+'shell']=='true'
+          assert app.attrib.get(ns+'hardwareAccelerated')=='true'
           flags=[]
           for path in Path('app/.cxx').rglob('compile_commands.json'):
               for entry in json.loads(path.read_text()):
@@ -81,32 +83,35 @@ jobs:
           assert flags,'Native optimized compile flags missing'
           Path('dist/NATIVE_FLAGS.txt').write_text('\n'.join(flags))
           PY
+          python3 tools/audit-hardware-apk.py dist/Bubble-137-relay-latest-bp-HARDWARE-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          cp docs/BUILD137_HARDWARE_AND_BYPASSES.md dist/
           cp native-unit-tests.txt dist/
           cp -r app/build/outputs/mapping/performance dist/r8-mapping
           sha256sum dist/*.apk > dist/SHA256SUMS
           git rev-parse HEAD > dist/SOURCE.txt
-          git archive HEAD | gzip > dist/source.tar.gz
+          git archive HEAD -- . ':!app/signing' | gzip > dist/source.tar.gz
       - name: Publish optimized candidate with explicit validation boundary
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          TAG="bubble-fast-136-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          TAG="bubble-fast-137-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           cat > dist/NOTES.md <<EOF
-          Bubble 136 — optimized relay_latest_bp
+          Bubble 137 — hardware policy and silent relay
           Actual browser; non-debuggable, profileable, R8 optimized; our native bridge uses -O3 and ThinLTO.
           Same com.mekromn.bubble.debug package and existing certificate. Update without uninstalling.
           Selected policy unchanged: PRIVATE, maxImages 6, sequential drain limit 4, one consumer, output backpressure on.
-          Removes per-submission transaction/Lease object allocation, redundant empty-pass wakeups, eager disabled diagnostic arguments and duplicate screen-origin notifications.
-          Gecko engine, scrolling algorithms, fidelity, chrome and unrelated features unchanged. No Chromium scrolling port in this APK.
+          Removes native-relay log calls/argument work and direct liblog dependency. Applies 13 reviewed startup GPU/MediaCodec preferences from a private config; device/format fallbacks remain.
+          Retains Build136 transaction/lease reuse, bounded acquisition, fidelity and optimized code generation.
+          Gecko engine binaries, scrolling algorithms, fidelity and built-in page scripts are byte-pinned to working Build136. Hardware preferences change; not every engine or Android log source is removed. No Chromium scrolling port in this APK.
           Source/native tests, ARM64 compilation, lint, certificate/manifest/optimization checks passed. Android runtime verification is a separate gate below; Pixel speed and touch latency are not yet measured.
           Source: ${SOURCE_COMMIT}
           EOF
-          gh release create "$TAG" dist/*.apk dist/SHA256SUMS dist/SOURCE.txt dist/signature.txt dist/NATIVE_FLAGS.txt --target "$SOURCE_COMMIT" --title 'Bubble 136 — optimized relay_latest_bp' --notes-file dist/NOTES.md --prerelease
+          gh release create "$TAG" dist/*.apk dist/SHA256SUMS dist/SOURCE.txt dist/signature.txt dist/NATIVE_FLAGS.txt dist/HARDWARE_AUDIT.json --target "$SOURCE_COMMIT" --title 'Bubble 137 — hardware policy and silent relay' --notes-file dist/NOTES.md --prerelease
       - uses: actions/upload-artifact@v4
         with:
-          name: bubble-fast136-arm64
+          name: bubble-fast137-arm64
           path: dist/
           retention-days: 7
       - name: Compile the same optimized build type and its instrumentation for emulator
@@ -145,7 +150,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           mkdir -p evidence
-          echo "Optimized Android 16 emulator integration: $RUNTIME. Emulator geometry is reduced for software-renderer correctness testing, NOT Pixel performance evidence. No Chromium engine port shipped." > evidence/STATUS.txt
+          echo "Optimized Android 16 emulator integration: $RUNTIME. Emulator geometry is reduced for software-renderer correctness testing, NOT Pixel performance evidence. Hardware-pref readback is separate from physical-GPU verification; no Chromium engine port shipped." > evidence/STATUS.txt
           cp fast-*.txt native-unit-tests.txt evidence/ 2>/dev/null || true
           cp -r runtime-evidence app/build/reports evidence/ 2>/dev/null || true
           tar -czf fast-verification.tar.gz evidence
@@ -153,6 +158,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && !cancelled()
         with:
-          name: bubble-fast136-verification
+          name: bubble-fast137-verification
           path: evidence/
           retention-days: 7
