@@ -14,7 +14,7 @@ assert.match(native,/ASurfaceTransaction_setEnableBackPressure\(tx, s->output, k
 assert.match(native,/AImageReader_newWithUsage\(width, height, AIMAGE_FORMAT_PRIVATE,[\s\S]*kConsumerUsage, kMaxImages/);
 assert.match(native,/i < kDrainLimit/);
 for(const fn of ['AImageReader_acquireNextImageAsync','AImage_getHardwareBuffer','ANativeWindow_toSurface','ASurfaceControl_fromJava','ASurfaceTransaction_setBufferWithRelease'])assert(native.includes(fn));
-assert.match(native,/AImage_deleteAsync\(lease->image, releaseFenceFd\)/);
+assert.match(native,/AImage_deleteAsync\(image, releaseFenceFd\)/);
 assert.match(native,/if \(latest\) discard\(latest, latestFence\)/);
 assert.match(native,/std::thread\(run, s\)\.detach\(\)/);
 assert.match(native,/changed.wait\(lock/); // No periodic idle polling for deferred destruction.

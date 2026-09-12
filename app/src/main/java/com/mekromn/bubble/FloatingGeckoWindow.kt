@@ -73,17 +73,17 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
         return try {
             val rate = RenderPolicy.vote(context, host, layout)
-            DiagnosticLog.event("NATIVE_BUFFER", "overlay add begin size=${safe.width}x${safe.height} rate=$rate")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("NATIVE_BUFFER", "overlay add begin size=${safe.width}x${safe.height} rate=$rate")
             manager.addView(root, layout)
             params = layout
             lastBox = safe
             attached = true
             host.preparePipeline(rate)
             host.updateScreenOrigin()
-            DiagnosticLog.event("NATIVE_BUFFER", "overlay attached; compositor parenting deferred")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("NATIVE_BUFFER", "overlay attached; compositor parenting deferred")
             true
         } catch (error: RuntimeException) {
-            DiagnosticLog.error("NATIVE_BUFFER", "overlay attach failed", error)
+            if (DiagnosticLog.ENABLED) DiagnosticLog.error("NATIVE_BUFFER", "overlay attach failed", error)
             Log.e(TAG, "Could not attach native-buffer Gecko window", error)
             runCatching { if (root.isAttachedToWindow) manager.removeViewImmediate(root) }
             host.releasePipeline()
@@ -109,7 +109,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             lastBox = safe
             host.updateScreenOrigin()
         } catch (error: RuntimeException) {
-            DiagnosticLog.error("NATIVE_BUFFER", "overlay move failed", error)
+            if (DiagnosticLog.ENABLED) DiagnosticLog.error("NATIVE_BUFFER", "overlay move failed", error)
             hide()
         }
     }
@@ -165,6 +165,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var pipelineRetryCount = 0
         private var pipelineFailureNotified = false
         private val screenOrigin = IntArray(2)
+        private var originDisplay: GeckoDisplay? = null
+        private var originX = Int.MIN_VALUE
+        private var originY = Int.MIN_VALUE
         @Volatile private var generation = 0L
         private var creating = false
         private val main = Handler(Looper.getMainLooper())
@@ -270,7 +273,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             removeCallbacks(pipelineRetry); pipelineRetryPosted = false
             creationTimeout?.let(main::removeCallbacks); creationTimeout = null
             if (surfacePublished) runCatching { display?.surfaceDestroyed() }
-            surfacePublished = false; publishFailurePosted = false
+            surfacePublished = false; publishFailurePosted = false; originDisplay = null
             producerSurface?.release(); producerSurface = null
             if (nativeHandle != 0L) NativeAhbBridge.nativeDestroy(nativeHandle)
             nativeHandle = 0L
@@ -295,7 +298,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 schedulePipelineStart()
                 publishSurfaceIfReady()
                 updateScreenOrigin()
-                DiagnosticLog.event("NATIVE_BUFFER", "GeckoDisplay bound; waiting for producer if needed")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("NATIVE_BUFFER", "GeckoDisplay bound; waiting for producer if needed")
                 display != null
             } catch (error: RuntimeException) {
                 cleanupAfterBindFailure(next, error)
@@ -312,6 +315,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             surfacePublished = false
             publishFailurePosted = false
             display = null
+            originDisplay = null
             session = null
             accessibilityHost = null
             runCatching { if (expected.textInput.view === this) expected.textInput.setView(null) }
@@ -323,7 +327,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
 
         private fun cleanupAfterBindFailure(target: GeckoSession, error: RuntimeException) {
-            DiagnosticLog.error("NATIVE_BUFFER", "GeckoDisplay bind failed", error)
+            if (DiagnosticLog.ENABLED) DiagnosticLog.error("NATIVE_BUFFER", "GeckoDisplay bind failed", error)
             releasePipeline()
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
@@ -331,6 +335,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             surfacePublished = false
             publishFailurePosted = false
             display = null
+            originDisplay = null
             session = null
             accessibilityHost = null
             runCatching { if (target.textInput.view === this) target.textInput.setView(null) }
@@ -379,16 +384,16 @@ internal class FloatingGeckoWindow(private val context: Context) {
                     .newSurfaceProvider(this)
                     .size(w, h)
                     .build()
-                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged begin size=${w}x$h")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged begin size=${w}x$h")
                 gecko.surfaceChanged(info)
                 surfacePublished = true
                 publishFailurePosted = false
                 updateScreenOrigin()
-                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success; relay_latest_bp native consumer active")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success; relay_latest_bp native consumer active")
             } catch (error: RuntimeException) {
                 if (!publishFailurePosted) {
                     publishFailurePosted = true
-                    DiagnosticLog.error("NATIVE_BUFFER", "producer Surface publish failed", error)
+                    if (DiagnosticLog.ENABLED) DiagnosticLog.error("NATIVE_BUFFER", "producer Surface publish failed", error)
                     post {
                         if (session === current) {
                             unbind(current)
@@ -403,7 +408,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
             val gecko = display ?: return
             if (!isAttachedToWindow) return
             getLocationOnScreen(screenOrigin)
-            runCatching { gecko.screenOriginChanged(screenOrigin[0], screenOrigin[1]) }
+            val x = screenOrigin[0]; val y = screenOrigin[1]
+            if (originDisplay === gecko && x == originX && y == originY) return
+            runCatching { gecko.screenOriginChanged(x, y) }.onSuccess {
+                originDisplay = gecko; originX = x; originY = y
+            }
         }
 
         override fun requestNewSurface() {

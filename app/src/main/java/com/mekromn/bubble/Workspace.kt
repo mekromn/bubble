@@ -86,44 +86,44 @@ internal class Workspace private constructor(private val app: Context, initialUr
 
     fun attachSurface(view: GeckoView, session: GeckoSession) {
         val old = surface.get()
-        DiagnosticLog.event(
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event(
             "WS_SURFACE",
             "attach begin view=${ref(view)} class=${view.javaClass.simpleName} viewAttached=${view.isAttachedToWindow} " +
                 "target=${DiagnosticLog.sessionLabel(session)} oldView=${ref(old)} old=${DiagnosticLog.sessionLabel(old?.session)} " +
                 "viewCurrent=${DiagnosticLog.sessionLabel(view.session)} ${DiagnosticLog.selectedState()}"
         )
         if (old === view && view.session === session) {
-            DiagnosticLog.event("WS_SURFACE", "attach no-op same view/session view=${ref(view)} session=${ref(session)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "attach no-op same view/session view=${ref(view)} session=${ref(session)}")
             return
         }
         old?.let { previous ->
             if (previous.session != null) {
-                DiagnosticLog.event("WS_SURFACE", "releasing previous owner view=${ref(previous)} ${DiagnosticLog.sessionLabel(previous.session)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "releasing previous owner view=${ref(previous)} ${DiagnosticLog.sessionLabel(previous.session)}")
                 previous.releaseSession()
-                DiagnosticLog.event("WS_SURFACE", "released previous owner view=${ref(previous)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "released previous owner view=${ref(previous)}")
             }
         }
         if (view.session != null) {
-            DiagnosticLog.event("WS_SURFACE", "clearing target view's prior session view=${ref(view)} ${DiagnosticLog.sessionLabel(view.session)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "clearing target view's prior session view=${ref(view)} ${DiagnosticLog.sessionLabel(view.session)}")
             view.releaseSession()
         }
-        DiagnosticLog.event("WS_SURFACE", "setSession begin view=${ref(view)} target=${DiagnosticLog.sessionLabel(session)}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "setSession begin view=${ref(view)} target=${DiagnosticLog.sessionLabel(session)}")
         view.setSession(session)
         surface = WeakReference(view)
-        DiagnosticLog.event("WS_SURFACE", "setSession complete view=${ref(view)} current=${DiagnosticLog.sessionLabel(view.session)}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "setSession complete view=${ref(view)} current=${DiagnosticLog.sessionLabel(view.session)}")
         applyPolicy()
-        DiagnosticLog.event("WS_SURFACE", "attach complete view=${ref(view)} ${DiagnosticLog.selectedState()}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "attach complete view=${ref(view)} ${DiagnosticLog.selectedState()}")
     }
 
     fun detachSurface(view: GeckoView) {
-        DiagnosticLog.event(
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event(
             "WS_SURFACE",
             "detach begin view=${ref(view)} ownerMatch=${surface.get() === view} attached=${view.isAttachedToWindow} current=${DiagnosticLog.sessionLabel(view.session)}"
         )
         if (view.session != null) view.releaseSession()
         if (surface.get() === view) surface.clear()
         applyPolicy()
-        DiagnosticLog.event("WS_SURFACE", "detach complete view=${ref(view)} owner=${ref(surface.get())}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("WS_SURFACE", "detach complete view=${ref(view)} owner=${ref(surface.get())}")
     }
     private fun detachTab(session: GeckoSession?) { surface.get()?.takeIf { it.session === session }?.let(::detachSurface) }
     var host = WeakReference<BrowserActivity>(null)
@@ -140,7 +140,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     private var saveScheduled = false
     private val saveTask = Runnable { saveScheduled = false; checkpoint() }
     init {
-        DiagnosticLog.event("WORKSPACE", "construct begin initialUrlPresent=${initialUrl != null}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("WORKSPACE", "construct begin initialUrlPresent=${initialUrl != null}")
         UploadStaging.initialize(app)
         BrowserDownloads.initialize(app)
         store.load { saved, error ->
@@ -156,7 +156,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
             else if (initialUrl != null) tabs += ChatTab(url = initialUrl, profileId = selected?.profileId ?: ProfilePolicy.DEFAULT_ID).also { selectedId = it.id }
             if (selected == null) selectedId = tabs.first().id
             selected?.let { resumeState(it) }
-            DiagnosticLog.event("WORKSPACE", "store loaded tabs=${tabs.size} selected=${selectedId.take(8)} error=${error != null}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("WORKSPACE", "store loaded tabs=${tabs.size} selected=${selectedId.take(8)} error=${error != null}")
             ready = true; ensureSession(selected!!); ChatTabMaintenance.attach(this); changed(true)
             tabs.filter { it.id != selectedId }.forEachIndexed { index, tab -> main.postDelayed({
                 if (tab !in tabs) return@postDelayed
@@ -206,20 +206,20 @@ internal class Workspace private constructor(private val app: Context, initialUr
         checkMain(); val tab = tabs.firstOrNull { it.id == id } ?: return
         val previous = selected
         val existing = tab.session
-        DiagnosticLog.event(
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event(
             "TAB_SELECT",
             "begin from=${previous?.id?.take(8) ?: "none"} to=${tab.id.take(8)} targetHadSession=${existing != null} " +
                 "target=${tabState(tab)} floating=$floatingVisible visible=$visible owner=${ref(surface.get())}"
         )
-        DiagnosticLog.snapshotMemory("before-select-${tab.id.take(8)}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.snapshotMemory("before-select-${tab.id.take(8)}")
         resumeState(tab); selectedId = id; tab.unread = false; Replies.clear(app, id)
         val ensured = ensureSession(tab)
-        DiagnosticLog.event(
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event(
             "TAB_SELECT",
             "after ensure to=${tab.id.take(8)} sameExisting=${existing != null && existing === ensured} ensured=${DiagnosticLog.sessionLabel(ensured)} target=${tabState(tab)}"
         )
         applyPolicy(); changed(true)
-        DiagnosticLog.event("TAB_SELECT", "complete to=${tab.id.take(8)} ${DiagnosticLog.selectedState()}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("TAB_SELECT", "complete to=${tab.id.take(8)} ${DiagnosticLog.selectedState()}")
     }
     fun cycle(backwards: Boolean = false) {
         val index = QuickTabPolicy.nextIndex(tabs.indexOfFirst { it.id == selectedId }, tabs.size, backwards)
@@ -270,7 +270,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     fun close(id: String) {
         checkMain(); val tab = tabs.firstOrNull { it.id == id } ?: return
-        DiagnosticLog.event("TAB_CLOSE", "begin ${tabState(tab)} selected=${tab.id == selectedId}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("TAB_CLOSE", "begin ${tabState(tab)} selected=${tab.id == selectedId}")
         closedTabs.removeAll { it.id == id }; closedTabs.add(0, tab.snapshot().copy(unread = false))
         while (closedTabs.size > 20) closedTabs.removeAt(closedTabs.lastIndex)
         cancelAutoSuspend(id); ChatVaultControls.unbind(id); tab.session?.let(FloatingFileActivity::cancelForSession)
@@ -279,7 +279,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
         if (tabs.isEmpty()) tabs += ChatTab(profileId = tab.profileId)
         if (selected == null) selectedId = tabs.first().id
         selected?.let(::resumeState); ensureSession(selected!!); applyPolicy(); changed(true)
-        DiagnosticLog.event("TAB_CLOSE", "complete closed=${id.take(8)} newSelected=${selectedId.take(8)} tabs=${tabs.size}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("TAB_CLOSE", "complete closed=${id.take(8)} newSelected=${selectedId.take(8)} tabs=${tabs.size}")
     }
     fun reopen(id: String? = null): ChatTab? {
         checkMain(); val saved = (if (id == null) closedTabs.firstOrNull() else closedTabs.firstOrNull { it.id == id }) ?: return null
@@ -365,10 +365,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun engine(): GeckoRuntime {
         runtime?.let { return it }
-        DiagnosticLog.event("GECKO_RUNTIME", "create begin")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("GECKO_RUNTIME", "create begin")
         val created = GeckoRuntime.create(app, GeckoTurboPolicy.settings())
         runtime = created; created.settings.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
-        DiagnosticLog.event("GECKO_RUNTIME", "create success runtime=${ref(created)}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("GECKO_RUNTIME", "create success runtime=${ref(created)}")
         VoiceNotifications.install(app, created, this)
         main.postDelayed(monitorTimeout, 10_000)
         created.webExtensionController.ensureBuiltIn("resource://android/assets/chat-monitor/", "chat-monitor@bubble.local").accept({ addon -> finishMonitor(addon) }, { finishMonitor(null) })
@@ -382,72 +382,72 @@ internal class Workspace private constructor(private val app: Context, initialUr
         val starts = pendingStarts.values.toList(); pendingStarts.clear(); starts.forEach { it() }; changed()
     }
     private fun loadWhenReady(tab: ChatTab, session: GeckoSession, saved: String?) {
-        DiagnosticLog.event(
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event(
             "SESSION_LOAD",
             "queue tab=${tab.id.take(8)} session=${ref(session)} saved=${saved != null} monitorSettled=$monitorSettled ${tabState(tab)}"
         )
         val start = start@{
             if (tab !in tabs || tab.session !== session || !session.isOpen) {
-                DiagnosticLog.event(
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event(
                     "SESSION_LOAD",
                     "start skipped tab=${tab.id.take(8)} inTabs=${tab in tabs} sameSession=${tab.session === session} open=${session.isOpen}"
                 )
                 return@start
             }
-            DiagnosticLog.event("SESSION_LOAD", "start begin tab=${tab.id.take(8)} session=${ref(session)} saved=${saved != null}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOAD", "start begin tab=${tab.id.take(8)} session=${ref(session)} saved=${saved != null}")
             try {
                 if (FreshResumePolicy.requiresFreshNavigation(tab.url)) {
                     tab.savedState = null
-                    DiagnosticLog.event("SESSION_LOAD", "fresh navigation tab=${tab.id.take(8)} session=${ref(session)} bypassCache=true")
+                    if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOAD", "fresh navigation tab=${tab.id.take(8)} session=${ref(session)} bypassCache=true")
                     session.load(GeckoSession.Loader().uri(tab.url).flags(GeckoSession.LOAD_FLAGS_BYPASS_CACHE))
                 } else {
                     val restored = saved?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
                     val resumed = restored != null && runCatching { session.restoreState(restored) }.isSuccess
-                    DiagnosticLog.event("SESSION_LOAD", "restore attempt tab=${tab.id.take(8)} hadSaved=${saved != null} parsed=${restored != null} resumed=$resumed")
+                    if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOAD", "restore attempt tab=${tab.id.take(8)} hadSaved=${saved != null} parsed=${restored != null} resumed=$resumed")
                     if (!resumed) { if (saved != null) tab.savedState = null; session.loadUri(tab.url) }
                 }
-                DiagnosticLog.event("SESSION_LOAD", "start submitted tab=${tab.id.take(8)} session=${ref(session)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOAD", "start submitted tab=${tab.id.take(8)} session=${ref(session)}")
             } catch (error: RuntimeException) {
-                DiagnosticLog.error("SESSION_LOAD", "start failed tab=${tab.id.take(8)} session=${ref(session)}", error)
+                if (DiagnosticLog.ENABLED) DiagnosticLog.error("SESSION_LOAD", "start failed tab=${tab.id.take(8)} session=${ref(session)}", error)
                 tab.loading = false; tab.error = "This tab could not be restored (${error.javaClass.simpleName}). Its address is retained; tap Retry."; applyPolicy(); changed()
             }
         }
         pendingStarts.remove(tab.id)
         if (!monitorSettled) {
             tab.loading = true; pendingStarts[tab.id] = start
-            DiagnosticLog.event("SESSION_LOAD", "deferred tab=${tab.id.take(8)} session=${ref(session)} pending=${pendingStarts.size}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOAD", "deferred tab=${tab.id.take(8)} session=${ref(session)} pending=${pendingStarts.size}")
         } else start()
     }
     fun ensureSession(tab: ChatTab): GeckoSession? {
         checkMain()
-        DiagnosticLog.event("SESSION", "ensure begin ${tabState(tab)} selected=${tab.id == selectedId} floating=$floatingVisible")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "ensure begin ${tabState(tab)} selected=${tab.id == selectedId} floating=$floatingVisible")
         if (tab.manualSuspended && !Policy.isVoice(tab.url)) {
-            DiagnosticLog.event("SESSION", "ensure blocked manualSuspend tab=${tab.id.take(8)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "ensure blocked manualSuspend tab=${tab.id.take(8)}")
             return null
         }
         tab.session?.let {
-            DiagnosticLog.event("SESSION", "ensure reuse tab=${tab.id.take(8)} ${DiagnosticLog.sessionLabel(it)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "ensure reuse tab=${tab.id.take(8)} ${DiagnosticLog.sessionLabel(it)}")
             return it
         }
         if (tab.error != null) {
-            DiagnosticLog.event("SESSION", "ensure blocked error tab=${tab.id.take(8)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "ensure blocked error tab=${tab.id.take(8)}")
             return null
         }
         if (Policy.isVoice(tab.url)) { tab.manualSuspended = false; tab.error = null }
         tab.suspended = false
         return try {
-            DiagnosticLog.event("SESSION", "newSession begin tab=${tab.id.take(8)} profile=${tab.profileId}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "newSession begin tab=${tab.id.take(8)} profile=${tab.profileId}")
             val session = newSession(tab)
-            DiagnosticLog.event("SESSION", "newSession success tab=${tab.id.take(8)} session=${ref(session)} isOpen=${session.isOpen}")
-            DiagnosticLog.event("SESSION", "session.open begin tab=${tab.id.take(8)} session=${ref(session)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "newSession success tab=${tab.id.take(8)} session=${ref(session)} isOpen=${session.isOpen}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "session.open begin tab=${tab.id.take(8)} session=${ref(session)}")
             session.open(engine())
-            DiagnosticLog.event("SESSION", "session.open success tab=${tab.id.take(8)} session=${ref(session)} isOpen=${session.isOpen}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "session.open success tab=${tab.id.take(8)} session=${ref(session)} isOpen=${session.isOpen}")
             loadWhenReady(tab, session, tab.savedState)
             applyPolicy()
-            DiagnosticLog.event("SESSION", "ensure complete ${tabState(tab)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "ensure complete ${tabState(tab)}")
             session
         } catch (error: RuntimeException) {
-            DiagnosticLog.error("SESSION", "ensure failed tab=${tab.id.take(8)} ${tabState(tab)}", error)
+            if (DiagnosticLog.ENABLED) DiagnosticLog.error("SESSION", "ensure failed tab=${tab.id.take(8)} ${tabState(tab)}", error)
             tab.error = "Browser startup failed (${error.javaClass.simpleName}). Tap Retry."; pendingStarts.remove(tab.id)
             tab.session?.let { runCatching { it.close() } }; tab.session = null; changed(); null
         }
@@ -458,12 +458,12 @@ internal class Workspace private constructor(private val app: Context, initialUr
             .userAgentMode(if (tab.desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
             .viewportMode(if (tab.desktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE).build())
         tab.session = session
-        DiagnosticLog.event("SESSION", "allocated tab=${tab.id.take(8)} session=${ref(session)} desktop=${tab.desktop} profile=${tab.profileId}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION", "allocated tab=${tab.id.take(8)} session=${ref(session)} desktop=${tab.desktop} profile=${tab.profileId}")
         VoiceNotifications.installSessionPermissions(app, tab, session)
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(s: GeckoSession, url: String) {
                 if (tab.session !== s) return
-                DiagnosticLog.event("PAGE", "start tab=${tab.id.take(8)} session=${ref(s)} floating=$floatingVisible selected=${tab.id == selectedId}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("PAGE", "start tab=${tab.id.take(8)} session=${ref(s)} floating=$floatingVisible selected=${tab.id == selectedId}")
                 cancelAutoSuspend(tab.id); FloatingFileActivity.cancelForSession(s)
                 val oldRun = tab.run
                 if (oldRun.isNotBlank()) ChatTabMaintenance.generationEnded(tab.id, oldRun)
@@ -474,7 +474,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
             override fun onProgressChange(s: GeckoSession, progress: Int) { if (tab.session === s) { tab.progress = progress.coerceIn(0, 100); changed() } }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 if (tab.session !== s) return
-                DiagnosticLog.event("PAGE", "stop tab=${tab.id.take(8)} session=${ref(s)} success=$success progress=${tab.progress} painted=${tab.painted}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("PAGE", "stop tab=${tab.id.take(8)} session=${ref(s)} success=$success progress=${tab.progress} painted=${tab.painted}")
                 tab.loading = false
                 if (success && Policy.isVoice(tab.url)) VoiceNotifications.clearStatus(app, tab.id)
                 if (!success && !tab.cancelledLoad && tab.error == null) tab.error = "The page did not finish loading. Check the connection or retry."
@@ -492,18 +492,18 @@ internal class Workspace private constructor(private val app: Context, initialUr
             override fun onFirstContentfulPaint(s: GeckoSession) {
                 if (tab.session === s) {
                     tab.painted = true
-                    DiagnosticLog.event("PAGE", "firstPaint tab=${tab.id.take(8)} session=${ref(s)} floating=$floatingVisible selected=${tab.id == selectedId}")
+                    if (DiagnosticLog.ENABLED) DiagnosticLog.event("PAGE", "firstPaint tab=${tab.id.take(8)} session=${ref(s)} floating=$floatingVisible selected=${tab.id == selectedId}")
                     changed()
                 }
             }
             override fun onCrash(s: GeckoSession) {
-                DiagnosticLog.event("GECKO_CONTENT", "onCrash tab=${tab.id.take(8)} session=${ref(s)} ${tabState(tab)}")
-                DiagnosticLog.snapshotMemory("content-crash-${tab.id.take(8)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("GECKO_CONTENT", "onCrash tab=${tab.id.take(8)} session=${ref(s)} ${tabState(tab)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.snapshotMemory("content-crash-${tab.id.take(8)}")
                 lost(tab, s)
             }
             override fun onKill(s: GeckoSession) {
-                DiagnosticLog.event("GECKO_CONTENT", "onKill tab=${tab.id.take(8)} session=${ref(s)} ${tabState(tab)}")
-                DiagnosticLog.snapshotMemory("content-kill-${tab.id.take(8)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("GECKO_CONTENT", "onKill tab=${tab.id.take(8)} session=${ref(s)} ${tabState(tab)}")
+                if (DiagnosticLog.ENABLED) DiagnosticLog.snapshotMemory("content-kill-${tab.id.take(8)}")
                 lost(tab, s)
             }
             override fun onCloseRequest(s: GeckoSession) { main.post { if (tab.session === s) close(tab.id) } }
@@ -546,10 +546,10 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun lost(tab: ChatTab, session: GeckoSession) {
         if (tab.session !== session || tab !in tabs) return
-        DiagnosticLog.event("SESSION_LOST", "schedule recovery tab=${tab.id.take(8)} session=${ref(session)} ${tabState(tab)}")
+        if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOST", "schedule recovery tab=${tab.id.take(8)} session=${ref(session)} ${tabState(tab)}")
         main.post {
             if (tab.session !== session || tab !in tabs) return@post
-            DiagnosticLog.event("SESSION_LOST", "recovery begin tab=${tab.id.take(8)} session=${ref(session)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOST", "recovery begin tab=${tab.id.take(8)} session=${ref(session)}")
             cancelAutoSuspend(tab.id); ChatVaultControls.unbind(tab.id); FloatingFileActivity.cancelForSession(session)
             detachTab(session); pendingStarts.remove(tab.id)
             tab.session = null; tab.loading = false; tab.painted = false; tab.generating = false; runCatching { session.close() }
@@ -564,7 +564,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
                 if (Policy.isVoice(tab.url)) VoiceNotifications.tabOffline(app, tab.id)
             }
             applyPolicy(); changed()
-            DiagnosticLog.event("SESSION_LOST", "recovery scheduled/complete tab=${tab.id.take(8)} ${tabState(tab)}")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("SESSION_LOST", "recovery scheduled/complete tab=${tab.id.take(8)} ${tabState(tab)}")
         }
     }
     private fun installMonitor(tab: ChatTab, session: GeckoSession, addon: WebExtension) {

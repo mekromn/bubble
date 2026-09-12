@@ -18,3 +18,10 @@ target_link_libraries(
     ${nativewindow-lib}
     ${log-lib}
 )
+
+# Optimize only our bridge. No fast-math, resolution, pixel format or Gecko-pref changes.
+option(BUBBLE_OPTIMIZED "Optimize the selected relay without debug code generation" OFF)
+if(BUBBLE_OPTIMIZED)
+    target_compile_options(bubble-ahb PRIVATE -O3 -flto=thin -fno-omit-frame-pointer)
+    target_link_options(bubble-ahb PRIVATE -flto=thin -Wl,--gc-sections -Wl,-O2)
+endif()

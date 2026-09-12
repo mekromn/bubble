@@ -1,4 +1,6 @@
 #include <jni.h>
+#include "relay_wake.h"
+#include <array>
 #include <android/data_space.h>
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -32,6 +34,13 @@ constexpr uint64_t kConsumerUsage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
                                     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
 constexpr const char* kTag = "BubbleRelayBP";
 struct State;
+struct Lease {
+    // Callback context storage is bounded, but image ownership still lasts until
+    // the compositor release callback. Never reused as pixel-buffer ownership.
+    std::atomic<bool> occupied{false};
+    std::shared_ptr<State> state;
+    AImage* image = nullptr;
+};
 void maybeCleanup(const std::shared_ptr<State>& state);
 std::mutex registryMutex;
 std::unordered_map<jlong, std::shared_ptr<State>> active, retiring;
@@ -43,22 +52,22 @@ struct State {
     AImageReader* reader = nullptr;
     ANativeWindow* producer = nullptr; // Borrowed from reader.
     ASurfaceControl* output = nullptr; // Independent reference from fromJava().
-    int wakeFd = -1;
+    bubble::RelayWake event;
+    ASurfaceTransaction* frameTransaction = nullptr; // One consumer owns and reuses this object.
+    std::array<Lease, kMaxImages> leaseSlots;
+    int32_t appliedDataSpace = ADATASPACE_UNKNOWN;
     std::atomic<bool> stopping{false}, workerFinished{false}, cleanupQueued{false};
     std::atomic<int> leases{0};
     std::atomic<float> requestedRate{0};
     float appliedRate = -1;
     uint64_t submitted = 0;
-    void wake() const {
-        uint64_t one = 1;
-        if (wakeFd >= 0) (void)write(wakeFd, &one, sizeof(one)); // Nonblocking; coalescing is intentional.
-    }
+    void wake() { (void)event.notify(); }
     ~State() {
         // Normal cleanup is on the cleanup thread; construction failures are
         // already off-main. A State cannot die while a release callback owns it.
         if (reader) AImageReader_delete(reader);
         if (output) ASurfaceControl_release(output);
-        if (wakeFd >= 0) close(wakeFd);
+        if (frameTransaction) ASurfaceTransaction_delete(frameTransaction);
     }
 };
 std::shared_ptr<State> lookup(jlong id) {
@@ -110,14 +119,29 @@ void maybeCleanup(const std::shared_ptr<State>& s) {
     if (s->workerFinished.load() && s->leases.load() == 0 && !s->cleanupQueued.exchange(true))
         cleanupQueue().push(s);
 }
-struct Lease { std::shared_ptr<State> state; AImage* image; };
 void releaseFrame(void* context, int releaseFenceFd) {
-    std::unique_ptr<Lease> lease(static_cast<Lease*>(context));
-    auto s = lease->state;
-    AImage_deleteAsync(lease->image, releaseFenceFd); // Transfers the release FD; never reuse early.
+    auto* lease = static_cast<Lease*>(context);
+    auto s = std::move(lease->state);
+    AImage* image = lease->image;
+    lease->image = nullptr;
+    // Publish the empty bookkeeping slot before returning image capacity. From
+    // here onward this callback accesses only locals, never that slot again.
+    lease->occupied.store(false, std::memory_order_release);
+    AImage_deleteAsync(image, releaseFenceFd); // Transfers the release FD; never reuse pixels early.
     totalReleased++; totalOutstanding--; s->leases--;
-    s->wake();
+    s->wake(); // Required for progress after MAX_IMAGES; coalesced with frame notifications.
     maybeCleanup(s);
+}
+Lease* reserveLease(const std::shared_ptr<State>& s, AImage* image) {
+    for (auto& slot : s->leaseSlots) {
+        bool available = false;
+        if (slot.occupied.compare_exchange_strong(available, true, std::memory_order_acquire)) {
+            slot.state = s; slot.image = image; return &slot;
+        }
+    }
+    // At most kMaxImages are acquired. A release frees its bookkeeping slot
+    // before returning an image, so an acquired image must always have a slot.
+    return nullptr;
 }
 void imageAvailable(void* context, AImageReader*) {
     auto* s = static_cast<State*>(context);
@@ -145,14 +169,15 @@ void voteRate(const std::shared_ptr<State>& s) {
 }
 void consume(const std::shared_ptr<State>& s) {
     AImage* latest = nullptr; int latestFence = -1;
+    bool reachedDrainLimit = true;
     for (int i = 0; i < kDrainLimit && !s->stopping.load(); ++i) {
         AImage* image = nullptr; int fence = -1;
         const media_status_t status = AImageReader_acquireNextImageAsync(s->reader, &image, &fence);
         // Classify status FIRST. A null image must not conceal MAX_IMAGES/errors.
         if (status == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE || status == AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) {
-            discard(image, fence); break;
+            reachedDrainLimit = false; discard(image, fence); break;
         }
-        if (status != AMEDIA_OK || !image) { error("acquire", status); discard(image, fence); break; }
+        if (status != AMEDIA_OK || !image) { reachedDrainLimit = false; error("acquire", status); discard(image, fence); break; }
         if (latest) discard(latest, latestFence);
         latest = image; latestFence = fence;
     }
@@ -161,31 +186,38 @@ void consume(const std::shared_ptr<State>& s) {
     AHardwareBuffer* buffer = nullptr;
     const media_status_t status = AImage_getHardwareBuffer(latest, &buffer);
     if (status != AMEDIA_OK || !buffer) { error("hardware buffer", status); discard(latest, latestFence); return; }
-    ASurfaceTransaction* tx = ASurfaceTransaction_create();
-    if (!tx) { error("buffer transaction", -1); discard(latest, latestFence); return; }
+    ASurfaceTransaction* tx = s->frameTransaction;
+    Lease* lease = reserveLease(s, latest);
+    if (!lease) { error("lease slot invariant", -1); discard(latest, latestFence); return; }
     s->leases++; totalOutstanding++;
-    ASurfaceTransaction_setBufferWithRelease(tx, s->output, buffer, latestFence,
-                                             new Lease{s, latest}, releaseFrame);
-    int32_t space = 0;
-    if (AImage_getDataSpace(latest, &space) == AMEDIA_OK && space != 0)
+    ASurfaceTransaction_setBufferWithRelease(tx, s->output, buffer, latestFence, lease, releaseFrame);
+    int32_t space = ADATASPACE_UNKNOWN;
+    if (AImage_getDataSpace(latest, &space) != AMEDIA_OK) space = ADATASPACE_UNKNOWN;
+    // Includes a transition back to UNKNOWN; don't retain the previous frame's colorspace.
+    if (space != s->appliedDataSpace) {
         ASurfaceTransaction_setBufferDataSpace(tx, s->output, static_cast<ADataSpace>(space));
-    ASurfaceTransaction_setBufferTransparency(tx, s->output, ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
-    ASurfaceTransaction_apply(tx); ASurfaceTransaction_delete(tx);
+        s->appliedDataSpace = space;
+    }
+    // AOSP Transaction::apply() clears submitted state/callback registrations.
+    // The callback owns its Lease independently; reuse is only on this worker.
+    ASurfaceTransaction_apply(tx);
     totalSubmitted++;
     if (++s->submitted == 1) __android_log_print(ANDROID_LOG_INFO, kTag,
         "generation=%lld first submitted; latest/bp images=6 drain=4 worker=1", static_cast<long long>(s->id));
-    s->wake(); // Handle coalesced reader callbacks without spinning when the queue is empty.
+    // Only a full bounded pass can leave an unobserved backlog after coalesced
+    // notifications. EMPTY waits for new images; MAX_IMAGES waits for release.
+    if (reachedDrainLimit) s->wake();
 }
 void run(const std::shared_ptr<State>& s) {
     pthread_setname_np(pthread_self(), "BubbleRelayRx"); workers++;
     while (!s->stopping.load()) {
-        pollfd fd{s->wakeFd, POLLIN, 0};
+        pollfd fd{s->event.fd(), POLLIN, 0};
         const int ready = poll(&fd, 1, -1);
         if (ready < 0 && errno == EINTR) continue;
         if (ready <= 0 || (fd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
             error("consumer eventfd", errno); break;
         }
-        uint64_t count = 0; (void)read(s->wakeFd, &count, sizeof(count));
+        if (!s->event.beginPass()) { error("consumer wake read", errno); break; }
         if (s->stopping.load()) break;
         voteRate(s); consume(s);
     }
@@ -196,6 +228,7 @@ void run(const std::shared_ptr<State>& s) {
         ASurfaceTransaction_reparent(tx, s->output, nullptr);
         ASurfaceTransaction_apply(tx); ASurfaceTransaction_delete(tx);
     }
+    ASurfaceTransaction_delete(s->frameTransaction); s->frameTransaction = nullptr;
     ASurfaceControl_release(s->output); s->output = nullptr;
     {
         std::lock_guard<std::mutex> lock(registryMutex);
@@ -224,14 +257,15 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_mekromn_bubble_NativeAhbBridge_nativ
     if (status != AMEDIA_OK || !s->reader || AImageReader_getWindow(s->reader, &s->producer) != AMEDIA_OK) {
         error("create reader", status); return 0;
     }
-    s->wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (s->wakeFd < 0) { error("create eventfd", errno); return 0; }
-    ASurfaceTransaction* tx = ASurfaceTransaction_create();
+    if (!s->event.open()) { error("create eventfd", errno); return 0; }
+    s->frameTransaction = ASurfaceTransaction_create();
+    ASurfaceTransaction* tx = s->frameTransaction;
     if (!tx) return 0;
     ASurfaceTransaction_setEnableBackPressure(tx, s->output, kOutputBackpressure);
     ASurfaceTransaction_setPosition(tx, s->output, 0, 0);
     ASurfaceTransaction_setScale(tx, s->output, 1.0f, 1.0f);
-    ASurfaceTransaction_apply(tx); ASurfaceTransaction_delete(tx);
+    ASurfaceTransaction_setBufferTransparency(tx, s->output, ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
+    ASurfaceTransaction_apply(tx);
     s->requestedRate = rate;
     AImageReader_ImageListener listener{s.get(), imageAvailable};
     if (AImageReader_setImageListener(s->reader, &listener) != AMEDIA_OK) return 0;

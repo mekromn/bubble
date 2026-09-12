@@ -11,8 +11,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 135
-        versionName = "0.7.7-relay-bp"
+        versionCode = 136
+        versionName = "0.7.8-relay-bp-fast"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += geckoAbi }
         externalNativeBuild {
@@ -41,7 +41,20 @@ android {
     buildTypes {
         debug { applicationIdSuffix = ".debug"; signingConfig = signingConfigs.getByName("debug") }
         release { isMinifyEnabled = false }
+        create("performance") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".debug" // Upgrade existing installs; this is NOT a debuggable build.
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            isJniDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-performance.pro")
+            matchingFallbacks += "release"
+            externalNativeBuild.cmake.arguments += "-DBUBBLE_OPTIMIZED=ON"
+        }
     }
+    testBuildType = "performance"
     lint { abortOnError = true; disable += "OldTargetApi" }
 }
 dependencies {
