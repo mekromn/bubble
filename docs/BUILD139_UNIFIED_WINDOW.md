@@ -8,49 +8,53 @@ Same `com.mekromn.bubble.debug` update identity, existing signing certificate, n
 
 ## Removed intermediary
 
-138: interactive chrome window + separate page-only overlay ViewRoot/window + the masked noninteractive glass backdrop.
-139: interactive chrome AND native page input share one ViewRoot/window. The existing AHardwareBuffer output layer is a child of that window. The masked noninteractive glass backdrop remains because the requested blur belongs to chrome, not webpage pixels.
+138: interactive chrome window + separate page-only overlay ViewRoot/window + masked noninteractive glass backdrop.
+139: chrome AND native page input share one ViewRoot/window. A platform SurfaceView underlay anchors the existing AHardwareBuffer output control inside that window. The noninteractive glass backdrop remains: the requested blur belongs to chrome, not webpage pixels.
 
-`FloatingGeckoWindow.show` now inserts its real FrameLayout/input View into the existing page slot. It no longer constructs WindowManager.LayoutParams or calls addView/updateViewLayout/removeViewImmediate. `FloatingWindow.place` performs one interactive-window layout operation: there is no second page-window movement/resize command. This is structural work elimination, NOT a measured FPS or latency claim.
+`FloatingGeckoWindow.show` inserts its actual FrameLayout/input host into the existing page slot. It no longer constructs WindowManager.LayoutParams or calls WindowManager addView/updateViewLayout/removeViewImmediate. `FloatingWindow.place` updates only one interactive window; there is no second page-window move/resize command. This is a structural reduction, NOT a measured FPS or latency claim. The SurfaceView anchor still has platform surface bookkeeping; it is not advertised as zero-overhead or as removal of every layer.
 
-The GeckoView-shaped RawSessionBridge remains detached. Its native input view reports the real shared window focus. The real FrameLayout parent remains the accessibility ViewParent. Resident GeckoSessions, text-input/key/drag delegates, APZ input forwarding and the one-display-owner lifetime remain.
+The GeckoView-shaped RawSessionBridge remains detached and delegates actual shared-window focus. Its constructor-time delegate is nullable because the GeckoView superclass can query focus before Kotlin fields are initialized; see BUILD139_ATTACH_FAILURE.md. The real FrameLayout parent remains the accessibility ViewParent. Retained sessions, text-input/key/drag delegates, APZ input forwarding and one-display-owner lifetime remain.
+
+## Why the initial negative-Z attempt was rejected
+
+Corrected-constructor source `a593528cc8510f151ccb4ea27acbae634ab043e1`, run `34719095496`, reached shared-root/token checks, real floating pixels and transform/alpha checks. It then FAILED `native-control-over-page`: the green native control was hidden beneath the page. Verification artifact `10305863689`, ZIP SHA-256 `ff832627c658e03dffc38f06a2ae98b1ce6ea18b49d2a6905e16514d44643086`, preserves the screenshot and failure. That APK was not released.
+
+AOSP's current ViewRootImpl buildReparentTransaction parents children under a bounds container. A negative child layer number is not a promise that its entire ancestor subtree sits below the window's buffer. A source regex checking `setLayer(-1)` therefore did not establish the required visual order; the actual pixel/control test caught this distinction.
+
+Source `8c3baa44c3eea2662dd81c87152e8b9f457a7f58` changes the host to SurfaceView with `setZOrderOnTop(false)` and uses its documented child-parent SurfaceControl. Android owns the underlay's relative Z and render-timeline geometry. Our output control is above the anchor's unused buffer layer but the whole anchor hierarchy is beneath chrome. Native controls drawn later in the same view hierarchy remain eligible to cover it.
+
+IMPORTANT: this is NOT a switch from the chosen relay to Gecko's ordinary SurfaceView producer. `holder.surface` is never passed to Gecko and receives no page frames, canvas drawings or GPU copies. Gecko still receives the PRIVATE ImageReader producer through the unchanged native bridge; only that relay's child control receives the fenced output buffers. The anchor is not mutated through SurfaceControl transactions: its control is used only as a parent, in accordance with the public API.
 
 ## Page/chrome composition and movement
 
-The output layer uses negative Z relative to the translucent chrome root. A DrawableWrapper excludes the page rectangle from BACKGROUND drawing with clipOutRect; native controls above the page remain visible/clickable. No bitmap, texture-cache layer, saveLayer or copy of webpage pixels is added.
+A DrawableWrapper excludes the page rectangle from background drawing with clipOutRect. SurfaceView provides the actual native-underlay hole and relative ordering. No app bitmap, TextureView, saveLayer or copy of webpage pixels is added. SurfaceView's own platform surface/clear bookkeeping remains.
 
-An OnPreDraw listener sends only changed UI placement, visibility/alpha and crop metadata with AttachedSurfaceControl.applyTransactionOnDraw. It uses the actual input View's surface-coordinate offset, including surface insets, and its ancestor scale/translation/alpha. The window parent's motion carries the layer without a second WindowManager call. Screen origin is refreshed for Gecko after actual layout/movement.
+SurfaceView now supplies the position, scale, crop ancestry and render-timeline placement. The old manual absolute surface-offset/matrix calculation was removed to avoid double-transforming its children. An OnPreDraw listener sends only changed ancestor opacity, reveal coverage and exact child crop using applyTransactionOnDraw. Screen origin is refreshed for Gecko after actual movement/layout.
 
-The native acquisition/submission loop is independent of the chrome draw: no per-page-frame Java/JNI pump, timeout polling, or extra frame-timeline gate is added. Existing short card/property animations have UI update callbacks so the separate layer and glass cutout receive the same transforms. Circular reveals keep the new page covered until their mask finishes; this prevents a rectangular child surface escaping the circular native-chrome reveal. Existing fullscreen snapshot/morph code is untouched.
+The native acquisition/submission loop remains independent of chrome drawing: no per-page-frame Java/JNI pump, polling timer or extra frame gate is added. Short existing UI animations still invalidate changed metadata. Circular reveals keep the native page covered until the native-chrome mask finishes. Existing fullscreen snapshot/morph code is untouched.
 
-Resizes still recreate a generation at exact new dimensions rather than stretching an undersized page buffer. Pending creation cannot publish to a different tab/host. Position is first synchronized after nativeCreate's setup transaction, avoiding a race with its initial zero-origin write. Geometry synchronization failures have bounded attachment/UI retries, not an idle loop.
+The anchor's SurfaceHolder callbacks bound creation/destruction. Its empty redraw handshake is completed without claiming that the native first frame has arrived; that frame remains independently fenced. Resizes recreate the producer at exact new dimensions, never stretch an undersized page buffer. Generation checks prevent stale asynchronous creation from publishing into another tab/host. Setup/UI retries remain bounded.
 
-A setup-only black SurfaceControl background prevents an unfilled native page region becoming a permanent transparent hole. The first fenced buffer transaction removes it atomically. It is not a black bitmap or recurring paint pass. Host tests verify the clear operation occurs once per generation, not on each submission.
+A setup-only black SurfaceControl background is removed atomically with the first fenced buffer. It is neither a black bitmap nor a recurring paint pass. Host tests verify the transition happens once per generation.
 
 ## Frozen native transport
 
-PRIVATE ImageReader, six concurrently acquired images, four sequential acquisitions per drain pass, one native consumer, output backpressure ON. Native acquire/release fences, demand-driven capacity handshake, transaction/lease reuse, asynchronous generation retirement and failure recovery remain. Background initialization/first-buffer transition is the only additional native state; no pixel processing is introduced.
+PRIVATE ImageReader, six concurrently acquired images, four sequential acquisitions per drain pass, one native consumer, output backpressure ON. Native acquire/release fences, demand-driven capacity handshake, transaction/lease reuse, asynchronous generation retirement and failure recovery remain. The underlay correction changes no native C++ code, engine binary, page script, hardware setting, signing configuration, version or runtime assertion.
 
-## Required verification (consult final run for outcome)
+## Verification gate and limitations
 
-Run source guards, actual native C++ under ASan/UBSan, ARM64 performance unit tests/build/lint/signing/manifest/ELF audits, then the same optimized x86_64 Android16 browser integration. Publication is gated on that runtime result.
+Source guards, real native C++ ASan/UBSan tests, ARM64 performance unit tests/build/lint/signing/manifest/ELF audits, then the same optimized x86_64 Android16 integration are required. Publication remains gated on the runtime result. Underlay-correction verification run: `34719970404`, exact app source `8c3baa44c3eea2662dd81c87152e8b9f457a7f58`. Consult the final verification record for its outcome; this architecture document alone does not assert a pass.
 
-In addition to all 138 assertions (pixels, eight idle-resume changes, full text input, cold tab, six swaps, resize, fullscreen return, cleanup, 13 preferences), 139 checks:
-- Input and chrome share the same root AND window token; the standalone page WindowState is absent.
-- Native control placed over webpage pixels is visible and receives a real click.
-- Page transforms/alpha follow the card, then return to exact settled size.
-- Actual header drag preserves pixels and input; actual resize handle changes dimensions.
-- IME becomes visible, full text arrives, Back hides it without collapsing the browser.
-- Real touch scrolling changes a scrollable document, not a JavaScript scroll timer.
-- Chooser removes the page; returning reattaches the resident tab.
+Runtime retains all 138 assertions and the new 139 checks: shared root AND token; absent standalone page WindowState; visible and clickable native control over page; transforms/alpha and exact settled size; actual header drag/resize; IME visible, complete typed text and Back hiding only IME; real touch scrolling; chooser/reattach; cold tab and repeated tab swaps; fullscreen return; all leases/generations reclaimed; all 13 engine preferences read back.
 
-These are correctness/structural tests, not physical Pixel speed, touch-to-photon timing, hardware-plane eligibility, or all-website certification. Reduced software-emulator geometry affects only CI. The engine binaries, hardware config and all 12 built-in page scripts are held unchanged.
+These establish emulator correctness/structure, not physical Pixel speed, touch-to-photon latency, hardware-plane eligibility or all-website certification. Reduced software-emulator geometry is CI-only. No runtime assertion was weakened to admit an invisible control or a nonworking keyboard.
 
-## Primary API references
+## Primary API/source references
 
+- https://developer.android.com/reference/android/view/SurfaceView#getSurfaceControl()
+- https://developer.android.com/reference/android/view/SurfaceView#setZOrderOnTop(boolean)
 - https://developer.android.com/reference/android/view/AttachedSurfaceControl#applyTransactionOnDraw(android.view.SurfaceControl.Transaction)
-- https://developer.android.com/reference/android/view/SurfaceControl.Transaction#setLayer(android.view.SurfaceControl,int)
-- https://developer.android.com/reference/android/view/View#getLocationInSurface(int[])
+- https://android.googlesource.com/platform/frameworks/base/+/1424d3ce2511632725092920194e0c7075ffc168/core/java/android/view/ViewRootImpl.java
 - https://developer.android.com/ndk/reference/group/native-activity#asurfacetransaction_setcolor
 
-Engine-owned AHardwareBuffer render targets and exact Chromium/APZ source-port work remain separate. This build does not represent the old PDFs' unsafe immediate front-buffer reuse or unverified latency promises as implemented behavior.
+Engine-owned AHardwareBuffer targets and exact Chromium/APZ source-port work remain separate. Unsafe immediate front-buffer reuse or unverified latency claims from earlier research are not represented as implemented behavior.
