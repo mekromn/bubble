@@ -7,7 +7,13 @@ const mask=read('app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt'
 const geometry=read('app/src/main/java/com/mekromn/bubble/EmbeddedSurfacePlacement.kt');
 assert(!/WindowManager|TYPE_APPLICATION_OVERLAY|updateViewLayout|removeViewImmediate/.test(page));
 assert.match(page,/parent.addView\(root, 0,/);
-assert.match(page,/setLayer\(control, -1\)/);
+assert.match(page,/: SurfaceView\(context\),/);
+assert.match(page,/setZOrderOnTop\(false\)/);
+assert.match(page,/transaction.reparent\(control, anchor\).setLayer\(control, 1\)/);
+assert.match(page,/override fun surfaceCreated/);assert.match(page,/override fun surfaceDestroyed/);
+assert.match(page,/!anchorReady/);
+assert(!/GeckoDisplay.SurfaceInfo.Builder\(holder.surface\)|lockHardwareCanvas|lockCanvas/.test(page));
+assert(!/tx.setPosition|tx.setScale|parentControl.buildReparentTransaction/.test(page));
 assert.match(page,/applyTransactionOnDraw\(tx\)/);
 assert.match(page,/if \(creating \|\| nativeHandle == 0L/);
 assert.match(page,/value == lastPlacement/);
@@ -20,10 +26,10 @@ assert.match(chrome,/setUpdateListener \{ geckoWindow\?\.geometryChanged\(\) \}/
 assert.match(chrome,/coverForReveal\(true\)/);assert.match(chrome,/coverForReveal\(false\)/);
 assert.match(mask,/canvas.clipOutRect\(cutout\)/);
 assert(!/canvas.saveLayer|Bitmap\.createBitmap|LAYER_TYPE_HARDWARE|PorterDuff/.test(mask+page));
-assert.match(geometry,/getLocationInSurface/);assert.match(geometry,/transformMatrixToGlobal/);
+assert(!/getLocationInSurface|transformMatrixToGlobal/.test(geometry));
 assert.match(geometry,/opacity \*= current.alpha/);
 const native=read('app/src/main/cpp/bubble_ahb.cpp');
 assert.match(native,/if \(!s->hasSubmittedBuffer\) \{[\s\S]*ASurfaceTransaction_setColor[\s\S]*s->hasSubmittedBuffer = true/);
 const runtime=read('app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRuntimeTest.kt');
 for(const requirement of ['same-window','dragged-page','resized-cyan','scrolled-B','ime-visible','native-control-over-page','geometry-alpha-hidden'])assert(runtime.includes(requirement));
-console.log('Embedded page source guards: no independent page window, same relay, draw-synchronized geometry, native controls above page, scoped UI animation callbacks.');
+console.log('Embedded page source guards: no independent page window, same relay, platform-anchored geometry, draw-synchronized visibility, native controls above page, scoped UI animation callbacks.');

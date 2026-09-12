@@ -3,6 +3,7 @@ package com.mekromn.bubble
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
@@ -14,6 +15,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceControl
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewParent
 import android.view.ViewGroup
@@ -107,7 +110,11 @@ internal class FloatingGeckoWindow(private val context: Context) {
     }
 
     @SuppressLint("NewApi")
-    private class NativeBufferHost(context: Context) : View(context), GeckoDisplay.NewSurfaceProvider {
+    private class NativeBufferHost(context: Context) : SurfaceView(context),
+        GeckoDisplay.NewSurfaceProvider, SurfaceHolder.Callback2 {
+        // In-window surface ANCHOR only: Android owns the relative underlay
+        // Z and RenderThread geometry. Only our child receives relay buffers.
+        private var anchorReady = false
         private var session: GeckoSession? = null
         private var display: GeckoDisplay? = null
         private var accessibilityHost: View? = null
@@ -152,9 +159,8 @@ internal class FloatingGeckoWindow(private val context: Context) {
             if (value == lastPlacement) return
             val tx = SurfaceControl.Transaction()
             try {
-                tx.setPosition(control, value.x, value.y)
-                    .setScale(control, value.scaleX, value.scaleY)
-                    .setCrop(control, Rect(0, 0, pipelineWidth, pipelineHeight))
+                // Geometry is inherited from SurfaceView: do not transform twice.
+                tx.setCrop(control, Rect(0, 0, pipelineWidth, pipelineHeight))
                     .setAlpha(control, value.alpha)
                     .setVisibility(control, value.visible)
                 // Geometry and the transparent chrome cutout land together.
@@ -180,7 +186,37 @@ internal class FloatingGeckoWindow(private val context: Context) {
             }
         }
 
-        init { setBackgroundColor(Color.TRANSPARENT); isFocusable = true; isFocusableInTouchMode = true }
+        init {
+            setBackgroundColor(Color.TRANSPARENT)
+            isFocusable = true; isFocusableInTouchMode = true
+            setZOrderOnTop(false)
+            holder.setFormat(PixelFormat.TRANSLUCENT)
+            holder.addCallback(this)
+        }
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            anchorReady = true
+            schedulePipelineStart()
+        }
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+            anchorReady = true
+            if ((nativeHandle != 0L || creating) && (w != pipelineWidth || h != pipelineHeight)) {
+                releasePipeline()
+            }
+            schedulePipelineStart(); updateScreenOrigin()
+        }
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            anchorReady = false
+            releasePipeline()
+        }
+        override fun surfaceRedrawNeeded(holder: SurfaceHolder) {
+            rootView.invalidate()
+        }
+        override fun surfaceRedrawNeededAsync(holder: SurfaceHolder, drawingFinished: Runnable) {
+            // Nothing is queued to holder.surface. Complete the empty anchor
+            // handshake; the native child's first fenced frame is independent.
+            rootView.invalidate()
+            drawingFinished.run()
+        }
 
         override fun onAttachedToWindow() {
             super.onAttachedToWindow()
@@ -203,7 +239,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
             else schedulePipelineStart()
         }
         private fun schedulePipelineStart() {
-            if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36 || session == null ||
+            if (!isAttachedToWindow || !anchorReady || Build.VERSION.SDK_INT < 36 || session == null ||
                 creating || nativeHandle != 0L || pipelineRetryPosted || pipelineFailureNotified) return
             if (++pipelineRetryCount > MAX_PIPELINE_RETRIES) {
                 failPipeline("Android did not expose a ready output layer"); return
@@ -211,18 +247,20 @@ internal class FloatingGeckoWindow(private val context: Context) {
             pipelineRetryPosted = true; postOnAnimation(pipelineRetry)
         }
         private fun startPipeline(w: Int, h: Int) {
-            val parentControl = rootSurfaceControl ?: run { schedulePipelineStart(); return }
+            // A bounds-container child's negative Z is not necessarily below
+            // the window buffer. SurfaceView supplies the public underlay parent.
+            val anchor = surfaceControl
+            if (!anchorReady || anchor?.isValid != true) { schedulePipelineStart(); return }
             val control = try {
                 SurfaceControl.Builder().setName("Bubble relay_latest_bp generation ${generation + 1}")
                     .setBufferSize(w, h).build()
             } catch (e: RuntimeException) { failPipeline(e.javaClass.simpleName); return }
-            val transaction = try { parentControl.buildReparentTransaction(control) }
-                catch (e: RuntimeException) { control.release(); failPipeline(e.javaClass.simpleName); return }
-            if (transaction == null) { control.release(); schedulePipelineStart(); return }
+            val transaction = SurfaceControl.Transaction()
             try {
-                // Below translucent chrome, above the separate blur backdrop. Native
-                // controls/edge strip stay in front without another Surface/ViewRoot.
-                transaction.setLayer(control, -1).setVisibility(control, true).setOpaque(control, true)
+                // Above the anchor's UNUSED buffer layer, with the entire
+                // anchor hierarchy below chrome. Do not mutate the anchor itself.
+                transaction.reparent(control, anchor).setLayer(control, 1)
+                    .setVisibility(control, true).setOpaque(control, true)
                     .setAlpha(control, 0f)
                     .setCrop(control, android.graphics.Rect(0, 0, w, h)).apply()
             } catch (e: RuntimeException) {
