@@ -4,6 +4,11 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Matrix
+import android.view.ViewParent
+import android.view.WindowInsets
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.graphics.Rect
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -68,7 +73,7 @@ class RelayLatestBpRuntimeTest {
               else Color.red(c)<100&&Color.green(c)>130&&Color.blue(c)>130
         }finally{b.recycle()}
     }
-    private fun tapDescription(description: String) {
+    private fun descriptionBounds(description: String): Rect {
         var found: Rect?=null
         fun walk(node:AccessibilityNodeInfo?) {
             if(node==null||found!=null)return
@@ -76,7 +81,71 @@ class RelayLatestBpRuntimeTest {
             for(i in 0 until node.childCount)walk(node.getChild(i))
         }
         await(description){found=null;auto.windows.forEach{walk(it.root)};found!=null}
-        val r=requireNotNull(found);tap(r.exactCenterX(),r.exactCenterY())
+        return requireNotNull(found)
+    }
+    private fun tapDescription(description: String) {
+        val r=descriptionBounds(description);tap(r.exactCenterX(),r.exactCenterY())
+    }
+    private fun drag(x: Float,y: Float,dx: Float,dy: Float) {
+        val downTime=SystemClock.uptimeMillis()
+        fun send(action:Int,px:Float,py:Float) {
+            val event=MotionEvent.obtain(downTime,SystemClock.uptimeMillis(),action,px,py,0)
+            event.source=android.view.InputDevice.SOURCE_TOUCHSCREEN
+            try { assertTrue(auto.injectInputEvent(event,true)) } finally {event.recycle()}
+        }
+        send(MotionEvent.ACTION_DOWN,x,y)
+        repeat(12) { i -> Thread.sleep(16);val t=(i+1)/12f;send(MotionEvent.ACTION_MOVE,x+dx*t,y+dy*t) }
+        send(MotionEvent.ACTION_UP,x+dx,y+dy)
+    }
+    private fun assertSharedHost(label:String) {
+        main {
+            val input=requireNotNull(inputHost())
+            val chrome=requireNotNull(BubbleService.active?.window?.transitionView)
+            assertSame("$label same-window root",chrome.rootView,input.rootView)
+            assertEquals("$label same-window token",chrome.windowToken,input.windowToken)
+            assertTrue("Accessibility parent is a ViewParent",input.parent is ViewParent)
+            assertSame(input.parent,Workspace.peek()!!.selected!!.session!!.accessibility.view)
+        }
+        val windows=shell("dumpsys window windows")
+        assertFalse("No standalone page WindowState",windows.contains("Bubble ANativeWindow AHardwareBuffer page"))
+        File(context.getExternalFilesDir(null),"evidence").apply { mkdirs() }.resolve("same-window-$label.txt").writeText(
+            "PASS: input host and chrome share ViewRoot and window token; real accessibility parent. No standalone page window.\n"+windows)
+    }
+    private fun sampledArgb(fx:Float,fy:Float): Int {
+        val point=floatArrayOf(0f,0f)
+        main { val v=requireNotNull(inputHost());point[0]=v.width*fx;point[1]=v.height*fy
+            val matrix=Matrix();v.transformMatrixToGlobal(matrix);matrix.mapPoints(point) }
+        val b=requireNotNull(auto.takeScreenshot())
+        return try { b.getPixel(point[0].toInt().coerceIn(0,b.width-1),point[1].toInt().coerceIn(0,b.height-1)) }
+        finally {b.recycle()}
+    }
+    private fun geometryAndNativeControlChecks() {
+        // Only the UI/native layer hierarchy is transformed; the engine still
+        // renders at the exact unscaled View dimensions. Check actual pixels.
+        main { BubbleService.active!!.window!!.transitionView.apply {
+            scaleX=.92f;scaleY=.92f;translationX=5f;translationY=7f;invalidate()
+        } }
+        await("geometry-scaled-page") { val c=sampledArgb(.1f,.8f);Color.red(c)>150&&Color.blue(c)>100&&Color.green(c)<100 }
+        save("geometry-scaled")
+        main { BubbleService.active!!.window!!.transitionView.apply { alpha=0f;invalidate() } }
+        await("geometry-alpha-hidden") { val c=sampledArgb(.1f,.8f);!(Color.red(c)>150&&Color.blue(c)>100&&Color.green(c)<100) }
+        main { BubbleService.active!!.window!!.transitionView.apply {
+            alpha=1f;scaleX=1f;scaleY=1f;translationX=0f;translationY=0f;invalidate()
+        } }
+        await("geometry-restored") { pageHasColor(true) }
+        // A native control covering the page must be visible AND clickable.
+        // This catches a superficially working positive-Z page that hides chrome.
+        var overlay: View?=null;var pressed=false
+        main {
+            val input=requireNotNull(inputHost());val parent=input.parent as FrameLayout
+            overlay=View(context).apply { setBackgroundColor(Color.GREEN);isClickable=true;setOnClickListener{pressed=true} }
+            parent.addView(overlay,FrameLayout.LayoutParams(input.width/2,input.height/6).apply{
+                leftMargin=input.width/4;topMargin=input.height*3/4 })
+        }
+        await("native-control-over-page") { val c=sampledArgb(.5f,.80f);Color.green(c)>200&&Color.red(c)<70&&Color.blue(c)<70 }
+        pageTap(.80f);await("native-control-click") { checkMain { pressed } };save("native-control-over-page")
+        main { overlay?.let { (it.parent as ViewGroup).removeView(it) } }
+        await("native-control-removed") { pageHasColor(true) }
     }
     @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
     private fun verifyHardwarePreferences(config: File) {
@@ -110,10 +179,12 @@ class RelayLatestBpRuntimeTest {
                 while(!reader.readLine().isNullOrEmpty()){}
                 val id=if(request.contains("/two"))"B" else "A"
                 val color=if(id=="A")"rgb(220,30,180)" else "rgb(20,200,210)"
+                val scrollStyle=if(id=="B")"html,body{overflow:auto;height:auto}body{min-height:300vh}" else ""
+                val scrollScript=if(id=="B")"addEventListener('scroll',()=>{document.title='SCROLLED-B-'+Math.round(scrollY)})" else ""
                 val html="""<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>RELAY-$id</title>
-                <style>html,body{margin:0;height:100%;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%}button,input{position:absolute;left:10%;width:80%;height:10%;z-index:2}button{top:40%}input{top:55%}</style>
+                <style>html,body{margin:0;height:100%;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%}button,input{position:absolute;left:10%;width:80%;height:10%;z-index:2}button{top:40%}input{top:55%}$scrollStyle</style>
                 <canvas id="c"></canvas><button onclick="document.title='CLICKED-$id'; flipped=!flipped;paint()">Relay button $id</button><input onfocus="document.title='FOCUSED-$id'" oninput="document.title='TYPED-'+this.value" aria-label="Relay composer">
-                <script>const c=document.querySelector('canvas'),g=c.getContext('2d');let flipped=false;function paint(){c.width=innerWidth;c.height=innerHeight;g.fillStyle=flipped?'rgb(20,200,210)':'$color';g.fillRect(0,0,c.width,c.height);g.fillStyle='yellow';g.fillRect(8,8,32,32)}addEventListener('resize',paint);paint();</script>""".toByteArray()
+                <script>const c=document.querySelector('canvas'),g=c.getContext('2d');let flipped=false;function paint(){c.width=innerWidth;c.height=innerHeight;g.fillStyle=flipped?'rgb(20,200,210)':'$color';g.fillRect(0,0,c.width,c.height);g.fillStyle='yellow';g.fillRect(8,8,32,32)}addEventListener('resize',paint);paint();$scrollScript</script>""".toByteArray()
                 s.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray());s.getOutputStream().write(html)
             }}catch(_:Exception){if(server.isClosed)break}
         }.apply{isDaemon=true;start()}
@@ -143,6 +214,14 @@ class RelayLatestBpRuntimeTest {
                 scenario.onActivity{a->a.geckoView.postOnAnimation{a.collapse(FloatingMode.CHAT)}}
                 await("floating"){checkMain{BubbleService.active?.window?.mode==FloatingMode.CHAT&&Workspace.peek()?.floatingVisible==true}}
                 await("floating-red"){pageHasColor(true)};save("floating-A")
+                assertSharedHost("initial")
+                geometryAndNativeControlChecks()
+                var beforeMove: WindowBox?=null
+                main { beforeMove=BubbleService.active!!.window!!.box }
+                val handle=descriptionBounds("Drag floating window")
+                drag(handle.exactCenterX(),handle.exactCenterY(),-24f,-30f)
+                await("dragged-page") {checkMain{BubbleService.active!!.window!!.box!=beforeMove}&&pageHasColor(true)}
+                assertSharedHost("dragged");save("dragged-page")
                 assertTrue("Floating hardware window",checkMain { inputHost()?.isHardwareAccelerated == true })
                 assertEquals(6L,NativeAhbBridge.nativeDebugStats()[7]);assertEquals(4L,NativeAhbBridge.nativeDebugStats()[8]);assertEquals(1L,NativeAhbBridge.nativeDebugStats()[9])
                 pageTap(.45f);await("click"){checkMain{Workspace.peek()?.selected?.title=="CLICKED-A"}}
@@ -163,14 +242,38 @@ class RelayLatestBpRuntimeTest {
                 // not send the first character before the actual field accepts
                 // focus; still require the complete unchanged input string.
                 await("composer-focused"){checkMain{Workspace.peek()?.selected?.title=="FOCUSED-A"&&inputHost()?.hasFocus()==true}}
+                await("ime-visible") { checkMain {inputHost()?.rootWindowInsets?.isVisible(WindowInsets.Type.ime())==true} }
+                save("ime-visible")
                 shell("input text relay")
                 await("typing"){checkMain{Workspace.peek()?.selected?.title=="TYPED-relay"}}
                 shell("input keyevent KEYCODE_BACK")
+                await("ime-hidden-not-collapsed") { checkMain {
+                    BubbleService.active?.window?.mode==FloatingMode.CHAT &&
+                    inputHost()?.rootWindowInsets?.isVisible(WindowInsets.Type.ime())==false
+                } }
                 main{second=Workspace.peek()!!.create("http://127.0.0.1:${server.localPort}/two").id;BubbleService.active!!.window!!.openChat(second)}
                 await("cold-tab-cyan"){pageHasColor(false)};save("floating-cold-B")
                 repeat(6){i->val red=i%2==0;main{BubbleService.active!!.window!!.openChat(if(red)first else second)};await("tab-$i"){pageHasColor(red)}}
-                main{val v=requireNotNull(inputHost());val root=v.parent as View;val p=root.layoutParams as WindowManager.LayoutParams;p.width-=40;v.context.getSystemService(WindowManager::class.java).updateViewLayout(root,p)}
+                var beforeWidth=0
+                main { beforeWidth=BubbleService.active!!.window!!.box.width }
+                val resize=descriptionBounds("Resize floating chat")
+                drag(resize.exactCenterX(),resize.exactCenterY(),-40f,0f)
+                await("resize-layout") {checkMain{BubbleService.active!!.window!!.box.width<beforeWidth}}
+                assertSharedHost("resized")
                 await("resized-cyan"){pageHasColor(false)};save("resized")
+                // Real touch -> Gecko APZ -> scrollable document; not a JS scroll timer.
+                var sx=0f;var sy=0f;var distance=0f
+                main { val v=requireNotNull(inputHost());val p=IntArray(2);v.getLocationOnScreen(p)
+                    sx=p[0]+v.width*.75f;sy=p[1]+v.height*.90f;distance=-v.height*.70f }
+                drag(sx,sy,0f,distance)
+                await("scrolled-B") {checkMain{Workspace.peek()?.selected?.title?.let{it.startsWith("SCROLLED-B-")&&it!="SCROLLED-B-0"}==true}}
+                save("scrolled-B")
+                tapDescription("Choose another conversation")
+                await("chooser") {checkMain{BubbleService.active?.window?.mode==FloatingMode.CHOOSER}}
+                save("chooser-without-page")
+                main { BubbleService.active!!.window!!.openChat(second) }
+                await("chooser-return-cyan") {pageHasColor(false)}
+                assertSharedHost("chooser-return")
                 await("old-generations-reclaimed"){val a=NativeAhbBridge.nativeDebugStats();a[0]==1L&&a[1]==0L&&a[5]==1L}
                 assertEquals("No native relay errors",0L,NativeAhbBridge.nativeDebugStats()[6])
                 tapDescription("Open fullscreen")

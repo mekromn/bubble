@@ -9,7 +9,7 @@
 #include <vector>
 using ADataSpace = int;
 using media_status_t = int;
-constexpr int ADATASPACE_UNKNOWN=0, AMEDIA_OK=0, AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE=1,
+constexpr int ADATASPACE_SRGB=142671872, ADATASPACE_UNKNOWN=0, AMEDIA_OK=0, AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE=1,
     AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED=2, AIMAGE_FORMAT_PRIVATE=34;
 constexpr uint64_t AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE=1, AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY=2;
 constexpr int ANDROID_LOG_INFO=4, ANDROID_LOG_ERROR=6;
@@ -91,3 +91,8 @@ inline void ASurfaceTransaction_setEnableBackPressure(ASurfaceTransaction*,ASurf
 inline void ASurfaceTransaction_setPosition(ASurfaceTransaction*,ASurfaceControl*,int,int) {}
 inline void ASurfaceTransaction_setScale(ASurfaceTransaction*,ASurfaceControl*,float,float) {}
 inline void ASurfaceTransaction_reparent(ASurfaceTransaction*,ASurfaceControl*,ASurfaceControl*) {}
+
+inline std::atomic<int> backgroundClearWrites{0};
+inline void ASurfaceTransaction_setColor(ASurfaceTransaction*,ASurfaceControl*,float r,float g,float b,float alpha,ADataSpace) {
+    assert(r==0 && g==0 && b==0); if(alpha==0)backgroundClearWrites++;
+}

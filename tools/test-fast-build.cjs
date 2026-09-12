@@ -27,5 +27,7 @@ for(const name of fs.readdirSync('app/src/main/java/com/mekromn/bubble')) {
    assert.equal(text.slice(Math.max(0,match.index-27),match.index),'if (DiagnosticLog.ENABLED) ',name+' eager diagnostic argument');calls++;
  }
 }
-assert(calls>=67);
+// Old standalone-window diagnostic sites were removed with that window.
+// Every remaining site's eager arguments are guarded by the loop above.
+assert(calls>=66);
 console.log('Fast-build guards passed: optimized/profileable packaging, JNI boundary, no per-submission transaction/Lease allocation, guarded diagnostic calls:',calls);

@@ -57,6 +57,7 @@ struct State {
     ASurfaceTransaction* frameTransaction = nullptr; // One consumer owns and reuses this object.
     std::array<Lease, kMaxImages> leaseSlots;
     int32_t appliedDataSpace = ADATASPACE_UNKNOWN;
+    bool hasSubmittedBuffer = false; // Consumer-owned; initial background only.
     std::atomic<bool> stopping{false}, workerFinished{false}, cleanupQueued{false};
     std::atomic<int> leases{0};
     std::atomic<float> requestedRate{0};
@@ -232,6 +233,12 @@ void consume(const std::shared_ptr<State>& s) {
         return;
     }
     s->leases++; totalOutstanding++;
+    if (!s->hasSubmittedBuffer) {
+        // Remove the setup-only black fill atomically with the first fenced
+        // buffer. No polling/JNI readiness callback and no per-frame fill layer.
+        ASurfaceTransaction_setColor(tx, s->output, 0, 0, 0, 0, ADATASPACE_SRGB);
+        s->hasSubmittedBuffer = true;
+    }
     ASurfaceTransaction_setBufferWithRelease(tx, s->output, buffer, latestFence, lease, releaseFrame);
     int32_t space = ADATASPACE_UNKNOWN;
     if (AImage_getDataSpace(latest, &space) != AMEDIA_OK) space = ADATASPACE_UNKNOWN;
@@ -306,6 +313,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_mekromn_bubble_NativeAhbBridge_nativ
     ASurfaceTransaction* tx = s->frameTransaction;
     if (!tx) return 0;
     ASurfaceTransaction_setEnableBackPressure(tx, s->output, kOutputBackpressure);
+    ASurfaceTransaction_setColor(tx, s->output, 0, 0, 0, 1, ADATASPACE_SRGB);
     ASurfaceTransaction_setPosition(tx, s->output, 0, 0);
     ASurfaceTransaction_setScale(tx, s->output, 1.0f, 1.0f);
     ASurfaceTransaction_setBufferTransparency(tx, s->output, ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);

@@ -21,9 +21,9 @@ import kotlin.math.min
 internal enum class FloatingMode { BUBBLE, CHOOSER, CHAT }
 
 /**
- * One interactive black-glass chrome overlay plus a separate first-class Gecko page window.
- * Existing GeckoSessions are handed between the floating SurfaceView and fullscreen SurfaceView;
- * chrome never creates a replacement session and Gecko never uses TextureView.
+ * One interactive black-glass window hosting BOTH native page input and chrome.
+ * Webpage pixels remain a separately composed child SurfaceControl, never a View texture.
+ * Existing sessions transfer to fullscreen unchanged; the blur backdrop remains separate.
  */
 internal class FloatingWindow(private val service: BubbleService, private val workspace: Workspace) {
     private val context=themedWindowContext(service)
@@ -57,6 +57,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var backControl: GlyphView?=null
     private var bubble: GlassBubble?=null
     private var geckoWindow: FloatingGeckoWindow?=null
+    private var pageContainer: FrameLayout?=null
     private val gecko: LiveGeckoView? get()=geckoWindow?.view
     private var backCallback: android.window.OnBackInvokedCallback?=null
     private var backDispatcher: android.window.OnBackInvokedDispatcher?=null
@@ -84,6 +85,13 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }
             return super.onTouchEvent(event)
         }
+    }
+    init {
+        // UI-property animations need matching layer geometry. An update listener
+        // keeps these short animations on the UI timeline rather than allowing
+        // RenderThread-only transforms invisible to our AttachedSurfaceControl.
+        // There is no callback while this animator is idle or while only Gecko draws.
+        root.animate().setUpdateListener { geckoWindow?.geometryChanged() }
     }
     private val listener: () -> Unit={ render() }
     private fun back() {
@@ -213,6 +221,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(mode==next) { render(); return }
         QuickPanel.dismissFor(root); main.removeCallbacks(hold); dismiss.hide(true); motion.cancel()
         root.animate().cancel(); root.animate().withEndAction(null); root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
+        geckoWindow?.coverForReveal(false)
         val previous=mode; val from=rectangle
         if(previous==FloatingMode.CHAT)chatBox=from else if(previous==FloatingMode.CHOOSER)chooserBox=from
         if(next==FloatingMode.CHOOSER) { context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0); imeBottom=0 }
@@ -223,15 +232,20 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             destination=WindowGeometry.fit(destination.copy(
                 x=destination.x.coerceIn(cx-destination.width+r,cx-r),
                 y=destination.y.coerceIn(cy-destination.height+r,cy-r)),safeArea())
+            if(next==FloatingMode.CHAT)geckoWindow?.coverForReveal(true)
             rememberPanelBox(next,destination); place(destination,true); render()
             val localX=cx-destination.x; val localY=cy-destination.y
             val mark=GlassBubble(context).apply { isClickable=false; isFocusable=false; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
             root.addView(mark,FrameLayout.LayoutParams(d(64),d(64)).apply { leftMargin=localX-r; topMargin=localY-r })
-            motion.reveal(root,localX,localY,r.toFloat(),true) { if(mark.parent===root)root.removeView(mark) }
+            motion.reveal(root,localX,localY,r.toFloat(),true) {
+                if(mark.parent===root)root.removeView(mark)
+                geckoWindow?.coverForReveal(false)
+            }
             mark.animate().alpha(0f).setDuration(110).start()
         } else {
             destination=WindowGeometry.fit(panelBox(next) ?: destination,safeArea()); place(destination,true); render()
             root.getChildAt(0)?.let { content -> if(ValueAnimator.areAnimatorsEnabled()) {
+                content.animate().setUpdateListener { geckoWindow?.geometryChanged() }
                 content.animate().cancel(); content.alpha=.28f; content.scaleX=.985f; content.scaleY=.985f
                 content.translationY=(if(next==FloatingMode.CHOOSER)d(10) else -d(10)).toFloat()
                 content.animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
@@ -245,9 +259,9 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         mode=next; workspace.floatingVisible=next==FloatingMode.CHAT; build(next); workspace.applyPolicy()
     }
     private fun build(next: FloatingMode) {
-        root.removeAllViews(); list=null; heading=null; subtitle=null; error=null; bubble=null; count=null; backControl=null
+        root.removeAllViews(); pageContainer=null; list=null; heading=null; subtitle=null; error=null; bubble=null; count=null; backControl=null
         root.clipToOutline=next!=FloatingMode.BUBBLE
-        root.background=if(next==FloatingMode.BUBBLE)null else Ui.glassPanel(context,26f,glassBlur)
+        setPanelBackground(next)
         if(next==FloatingMode.BUBBLE) {
             val mark=GlassBubble(context); bubble=mark
             mark.setOnClickListener { showChooser() }; mark.setOnLongClickListener { openChat(workspace.selectedId); true }
@@ -292,7 +306,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
         } else {
             if(geckoWindow==null)geckoWindow=FloatingGeckoWindow(context)
-            val content=FrameLayout(context)
+            val content=FrameLayout(context).also { pageContainer=it }
             error=Ui.text(context,"",13f,Ui.TEXT).apply {
                 setPadding(d(20),d(20),d(20),d(20)); background=Ui.shape(context,Ui.SURFACE,20f)
                 gravity=Gravity.CENTER; visibility=View.GONE; setOnClickListener { workspace.retry() }
@@ -449,7 +463,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         val nowBlur=OverlayGlass.available(manager)
         if(nowBlur!=glassBlur) {
             glassBlur=nowBlur
-            if(mode!=FloatingMode.BUBBLE)root.background=Ui.glassPanel(context,26f,glassBlur)
+            if(mode!=FloatingMode.BUBBLE)setPanelBackground(mode)
             place(rectangle,true)
         }
         bubble?.update(workspace.tabs.size,workspace.tabs.count { it.unread },workspace.tabs.any { it.generating }); list?.refresh(workspace)
@@ -470,7 +484,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(subtitle?.text!=profileState)subtitle?.text=profileState
         val view=gecko
         if(tab.error==null && view!=null) {
-            geckoWindow?.show(pageBox(rectangle))
+            pageContainer?.let { geckoWindow?.show(it) }
             val session=tab.session
             if(session!=null && session.isOpen)workspace.attachSurface(view,session) else if(view.session!=null)workspace.detachSurface(view)
         } else {
@@ -502,9 +516,14 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         return WindowBox(d(4),d(28),(p.x-d(8)).coerceAtLeast(1),(p.y-d(60)).coerceAtLeast(1))
     }
     private fun headBox()=WindowGeometry.placed(safeArea(),workspace.bubbleX,workspace.bubbleY,d(64),d(64))
-    private fun pageBox(panel: WindowBox): WindowBox {
-        val top=d(52); val bottom=d(48)
-        return WindowBox(panel.x,panel.y+top,panel.width,(panel.height-top-bottom).coerceAtLeast(1))
+    private fun setPanelBackground(forMode: FloatingMode) {
+        root.background=when(forMode) {
+            FloatingMode.BUBBLE -> null
+            FloatingMode.CHOOSER -> Ui.glassPanel(context,26f,glassBlur)
+            FloatingMode.CHAT -> EmbeddedPageBackground(Ui.glassPanel(context,26f,glassBlur),root) {
+                geckoWindow?.backgroundCutout()
+            }
+        }
     }
     private fun panelBox(forMode: FloatingMode): WindowBox?=when(forMode) {
         FloatingMode.CHAT -> chatBox
@@ -539,7 +558,8 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         OverlayGlass.apply(context,manager,params,mode!=FloatingMode.BUBBLE)
         try {
             manager.updateViewLayout(root,params)
-            if(mode==FloatingMode.CHAT)geckoWindow?.sync(pageBox(fitted))
+            // The page is a child of this same root Surface/window. Its position
+            // moves with the parent; no second WindowManager operation is needed.
         } catch(_:RuntimeException) { service.stopSelf() }
     }
     private fun drag(event: MotionEvent,resize: Boolean,isHead: Boolean): Boolean {

@@ -33,7 +33,7 @@ int main() {
     s=makeState();
     // Four images: discard 1-3 with their own acquire fences; submit exactly #4.
     for(int i=1;i<=4;i++)enqueue(s,i,42);
-    consume(s);assert(totalSubmitted==1);assert(s->leases==1);assert(readable(s));
+    consume(s);assert(totalSubmitted==1);assert(backgroundClearWrites==1);assert(s->leases==1);assert(readable(s));
     assert(returnedImages==std::vector<int>({1,2,3}));assert(returnedFences==std::vector<int>({1001,1002,1003}));
     auto p=releaseOne(7004);assert(p.bufferId==4&&p.acquireFence==1004);assert(returnedFences.back()==7004);
     clear(s);consume(s);assert(!readable(s)); // Empty pass must not self-schedule.
@@ -51,7 +51,7 @@ int main() {
     // 10,000 serial frames must reuse the same transaction and pool slots.
     const int txBefore=transactionCreates.load(), spaceBefore=spaceWrites.load();
     for(int i=0;i<10000;i++){enqueue(s,100+i);consume(s);releaseOne();clear(s);}
-    assert(transactionCreates==txBefore);assert(spaceWrites==spaceBefore);assert(opacityWrites==0);
+    assert(transactionCreates==txBefore);assert(backgroundClearWrites==1);assert(spaceWrites==spaceBefore);assert(opacityWrites==0);
     assert(totalOutstanding==0);assert(totalSubmitted==totalReleased);assert(totalErrors==0);
     // Release can be on another thread; recycle bookkeeping only after copying ownership.
     for(int i=0;i<6;i++){enqueue(s,20000+i);consume(s);clear(s);}

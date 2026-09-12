@@ -70,3 +70,5 @@ require('./test-fullscreen-tab-sync.cjs');
 require('./test-notification-routing.cjs');
 require('./test-voice-notification-routing.cjs');
 require('./test-gecko-turbo.cjs');
+
+require('./test-embedded-page.cjs');
