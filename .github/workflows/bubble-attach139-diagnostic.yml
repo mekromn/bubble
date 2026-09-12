@@ -1,0 +1,75 @@
+name: Bubble 139 attachment diagnosis only
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast139]
+    paths: ['.github/workflows/bubble-attach139-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: 2560d7708ee0434703714276e22c9b343908c9f3
+      - name: Add CI-only exception breadcrumb, never publish this binary
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/BubbleService.kt')
+          s=p.read_text()
+          old='} catch (_: RuntimeException) {'
+          assert s.count(old)>=3
+          s=s.replace(old, '} catch (failure: RuntimeException) {\n            android.util.Log.e("BubbleAttachDiagnostic", "CI-only caught service exception", failure)')
+          p.write_text(s)
+          PY
+          git diff > diagnosis-source-only.patch
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Build diagnostic x86_64 target and existing test
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest 2>&1 | tee diagnostic-build.txt
+      - run: sudo chmod a+rw /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 15
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 180s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > diagnostic-runtime.txt 2>&1 || true
+            adb logcat -d > diagnostic-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence diagnostic-evidence || true
+            cat diagnostic-runtime.txt
+            grep -A35 -B2 BubbleAttachDiagnostic diagnostic-logcat.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bubble139-attachment-diagnosis-only
+          path: |
+            diagnosis-source-only.patch
+            diagnostic-*.txt
+            diagnostic-evidence/
+          retention-days: 7
