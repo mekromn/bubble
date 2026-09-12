@@ -1,0 +1,135 @@
+name: Bubble relay_latest_bp integration
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-build115]
+    paths: ['tools/relay-bp-source.*.b64', '.github/workflows/relay-latest-bp.yml']
+permissions:
+  contents: write
+concurrency:
+  group: bubble-relay-latest-bp
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply hash-checked source and commit ordinary files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma
+          from pathlib import Path
+          encoded=''.join(Path(f'tools/relay-bp-source.{i}.b64').read_text().strip() for i in (1,2,3))
+          raw=lzma.decompress(base64.b64decode(encoded,validate=True))
+          assert hashlib.sha256(raw).hexdigest()=='0074c8df121ed615e251fb4cebbc0d6abf8e90decc1c84cc9dc51db9d19711f6'
+          payload=json.loads(raw)
+          for item in payload['files']:
+              path=Path(item['path']);assert not path.is_absolute() and '..' not in path.parts
+              content=item['content'].encode()
+              old=path.read_bytes() if path.exists() else None
+              if old==content: continue
+              assert (hashlib.sha256(old).hexdigest() if old is not None else None)==item['beforeSha256'],str(path)
+              path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
+          PY
+          node tools/test-foreground.cjs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app docs/RELAY_LATEST_BP.md tools/test-floating-performance.cjs
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat(renderer): integrate selected relay_latest_bp into Build-115-derived Bubble'
+            git push origin HEAD:relay-latest-bp-build115
+          fi
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+          cache-read-only: false
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Build and sign ARM64 Bubble, not the probe
+        id: build
+        run: |
+          set -euo pipefail
+          echo '4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks' | sha256sum -c -
+          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug 2>&1 | tee relay-build.txt
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/Bubble-135-relay-latest-bp-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk > dist/signature.txt
+          sha256sum dist/*.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+          git archive HEAD > dist/source.tar
+      - name: Publish real-browser candidate
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="bubble-relay-bp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          cat > dist/NOTES.md <<EOF
+          Bubble 135 — relay_latest_bp browser integration
+          Package com.mekromn.bubble.debug, same existing public development signing identity/profile.
+          Actual Bubble app, NOT Renderer Lab. Floating uses selected policy (maxImages 6, bounded drain 4, one native consumer, output backpressure on).
+          Fullscreen, Gecko version/scrolling and unrelated Build-115-derived features are unchanged.
+          ARM64 compilation/unit tests/lint/signing passed. Focused emulator verification is a separate gate. Physical Pixel behavior is not yet verified.
+          Source: ${SOURCE_COMMIT}
+          EOF
+          gh release create "$TAG" dist/*.apk dist/signature.txt dist/SHA256SUMS dist/SOURCE.txt --target "$SOURCE_COMMIT" --title 'Bubble 135 — selected relay_latest_bp' --notes-file dist/NOTES.md --prerelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-relay-latest-bp-arm64
+          path: dist/
+          retention-days: 2
+      - name: Build emulator test variant
+        run: gradle --no-daemon -PgeckoAbi=x86_64 :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee relay-emulator-build.txt
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Real browser overlay, input and retirement test
+        id: runtime
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          profile: pixel_7_pro
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            adb logcat -c
+            timeout 240s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > relay-runtime.txt 2>&1
+            adb logcat -d > relay-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat relay-runtime.txt
+            grep -q 'OK (1 test)' relay-runtime.txt
+      - name: Preserve exact validation outcome
+        if: always() && !cancelled()
+        env:
+          RUNTIME: ${{ steps.runtime.outcome }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p evidence
+          echo "Focused Android 16 emulator test: $RUNTIME. Physical Pixel untested. No scrolling-engine port in this build." > evidence/STATUS.txt
+          cp relay-*.txt evidence/ 2>/dev/null || true
+          cp -r runtime-evidence evidence/ 2>/dev/null || true
+          cp -r app/build/reports evidence/ 2>/dev/null || true
+          tar -czf relay-verification.tar.gz evidence
+          if [ -n "${RELEASE_TAG:-}" ]; then gh release upload "$RELEASE_TAG" relay-verification.tar.gz evidence/STATUS.txt --clobber; fi
+      - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
+        with:
+          name: bubble-relay-latest-bp-verification
+          path: evidence/
+          retention-days: 2
