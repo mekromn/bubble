@@ -1,0 +1,151 @@
+name: Apply Bubble 139 real underlay anchor
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast139]
+    paths: ['.github/workflows/bubble-underlay139.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply checked source delta once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt')
+          s=p.read_text()
+          if 'private var anchorReady = false' not in s:
+              def replace(old,new):
+                  global s
+                  assert s.count(old)==1,(old,s.count(old))
+                  s=s.replace(old,new)
+              replace('import android.graphics.Color\n','import android.graphics.Color\nimport android.graphics.PixelFormat\n')
+              replace('import android.view.SurfaceControl\n','import android.view.SurfaceControl\nimport android.view.SurfaceHolder\nimport android.view.SurfaceView\n')
+              replace('private class NativeBufferHost(context: Context) : View(context), GeckoDisplay.NewSurfaceProvider {','''private class NativeBufferHost(context: Context) : SurfaceView(context),
+                  GeckoDisplay.NewSurfaceProvider, SurfaceHolder.Callback2 {
+                  // In-window surface ANCHOR only: Android owns the relative underlay
+                  // Z and RenderThread geometry. Only our child receives relay buffers.
+                  private var anchorReady = false''')
+              replace('''                tx.setPosition(control, value.x, value.y)
+                              .setScale(control, value.scaleX, value.scaleY)
+                              .setCrop(control, Rect(0, 0, pipelineWidth, pipelineHeight))''','''                // Geometry is inherited from SurfaceView: do not transform twice.
+                          tx.setCrop(control, Rect(0, 0, pipelineWidth, pipelineHeight))''')
+              replace('''        init { setBackgroundColor(Color.TRANSPARENT); isFocusable = true; isFocusableInTouchMode = true }''','''        init {
+                      setBackgroundColor(Color.TRANSPARENT)
+                      isFocusable = true; isFocusableInTouchMode = true
+                      setZOrderOnTop(false)
+                      holder.setFormat(PixelFormat.TRANSLUCENT)
+                      holder.addCallback(this)
+                  }
+                  override fun surfaceCreated(holder: SurfaceHolder) {
+                      anchorReady = true
+                      schedulePipelineStart()
+                  }
+                  override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+                      anchorReady = true
+                      if ((nativeHandle != 0L || creating) && (w != pipelineWidth || h != pipelineHeight)) {
+                          releasePipeline()
+                      }
+                      schedulePipelineStart(); updateScreenOrigin()
+                  }
+                  override fun surfaceDestroyed(holder: SurfaceHolder) {
+                      anchorReady = false
+                      releasePipeline()
+                  }
+                  override fun surfaceRedrawNeeded(holder: SurfaceHolder) {
+                      rootView.invalidate()
+                  }
+                  override fun surfaceRedrawNeededAsync(holder: SurfaceHolder, drawingFinished: Runnable) {
+                      // Nothing is queued to holder.surface. Complete the empty anchor
+                      // handshake; the native child's first fenced frame is independent.
+                      rootView.invalidate()
+                      drawingFinished.run()
+                  }''')
+              replace('''            if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36 || session == null ||
+                          creating || nativeHandle != 0L || pipelineRetryPosted || pipelineFailureNotified) return''','''            if (!isAttachedToWindow || !anchorReady || Build.VERSION.SDK_INT < 36 || session == null ||
+                          creating || nativeHandle != 0L || pipelineRetryPosted || pipelineFailureNotified) return''')
+              replace('''            val parentControl = rootSurfaceControl ?: run { schedulePipelineStart(); return }
+                      val control = try {''','''            // A bounds-container child's negative Z is not necessarily below
+                      // the window buffer. SurfaceView supplies the public underlay parent.
+                      val anchor = surfaceControl
+                      if (!anchorReady || anchor?.isValid != true) { schedulePipelineStart(); return }
+                      val control = try {''')
+              replace('''            val transaction = try { parentControl.buildReparentTransaction(control) }
+                          catch (e: RuntimeException) { control.release(); failPipeline(e.javaClass.simpleName); return }
+                      if (transaction == null) { control.release(); schedulePipelineStart(); return }
+                      try {
+                          // Below translucent chrome, above the separate blur backdrop. Native
+                          // controls/edge strip stay in front without another Surface/ViewRoot.
+                          transaction.setLayer(control, -1).setVisibility(control, true).setOpaque(control, true)''','''            val transaction = SurfaceControl.Transaction()
+                      try {
+                          // Above the anchor's UNUSED buffer layer, with the entire
+                          // anchor hierarchy below chrome. Do not mutate the anchor itself.
+                          transaction.reparent(control, anchor).setLayer(control, 1)
+                              .setVisibility(control, true).setOpaque(control, true)''')
+              p.write_text(s)
+              Path('app/src/main/java/com/mekromn/bubble/EmbeddedSurfacePlacement.kt').write_text('''package com.mekromn.bubble
+
+          import android.view.View
+
+          /** SurfaceView owns surface-space placement. Only opacity/reveal coverage
+           * needs app metadata; applying absolute geometry again would double it. */
+          internal class EmbeddedSurfacePlacement {
+              data class Value(val alpha: Float, val visible: Boolean)
+              fun read(view: View, covered: Boolean): Value {
+                  var opacity = 1f
+                  var current: View? = view
+                  while (current != null) {
+                      if (current.visibility != View.VISIBLE) opacity = 0f
+                      opacity *= current.alpha
+                      current = current.parent as? View
+                  }
+                  val visible = !covered && view.isShown && view.windowVisibility == View.VISIBLE && opacity > 0f
+                  return Value(opacity.coerceIn(0f, 1f), visible)
+              }
+          }
+          ''')
+              p=Path('tools/test-embedded-page.cjs');s=p.read_text()
+              old=r'assert.match(page,/setLayer\(control, -1\)/);'
+              new=r'''assert.match(page,/: SurfaceView\(context\),/);
+          assert.match(page,/setZOrderOnTop\(false\)/);
+          assert.match(page,/transaction.reparent\(control, anchor\).setLayer\(control, 1\)/);
+          assert.match(page,/override fun surfaceCreated/);assert.match(page,/override fun surfaceDestroyed/);
+          assert.match(page,/!anchorReady/);
+          assert(!/GeckoDisplay.SurfaceInfo.Builder\(holder.surface\)|lockHardwareCanvas|lockCanvas/.test(page));
+          assert(!/tx.setPosition|tx.setScale|parentControl.buildReparentTransaction/.test(page));'''
+              assert s.count(old)==1;s=s.replace(old,new)
+              old='assert.match(geometry,/getLocationInSurface/);assert.match(geometry,/transformMatrixToGlobal/);'
+              assert s.count(old)==1;s=s.replace(old,'assert(!/getLocationInSurface|transformMatrixToGlobal/.test(geometry));')
+              s=s.replace('draw-synchronized geometry, native controls above page','platform-anchored geometry, draw-synchronized visibility, native controls above page')
+              p.write_text(s)
+              p=Path('AGENTS.md');s=p.read_text()
+              old='Build139 embeds the native page input host and negative-Z output layer in the existing floating chrome window;'
+              assert s.count(old)==1
+              p.write_text(s.replace(old,"Build139 embeds the native input/SurfaceView anchor in the existing floating chrome window. The anchor is a platform underlay; ONLY its child control receives the selected PRIVATE relay buffers, never holder.surface. Keep callback-bounded anchor lifetime and platform geometry;"))
+          PY
+          node tools/test-foreground.cjs
+          node tools/test-embedded-page.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          git diff --check
+          git diff --exit-code a593528cc8510f151ccb4ea27acbae634ab043e1 -- app/src/main/cpp app/src/main/assets app/src/main/AndroidManifest.xml app/src/androidTest app/src/performance app/proguard-performance.pro app/build.gradle.kts app/signing
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt app/src/main/java/com/mekromn/bubble/EmbeddedSurfacePlacement.kt tools/test-embedded-page.cjs AGENTS.md
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(window): parent unchanged native relay under the platform surface underlay'
+            git push origin HEAD:relay-latest-bp-fast139
+          fi
+          gh workflow run 356739449 --ref relay-latest-bp-fast139
+          git rev-parse HEAD
