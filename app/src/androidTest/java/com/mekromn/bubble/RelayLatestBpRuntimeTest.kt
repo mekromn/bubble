@@ -87,7 +87,7 @@ class RelayLatestBpRuntimeTest {
         val failure = AtomicReference<Throwable?>(null)
         main {
             GeckoPreferenceController.getGeckoPrefs(expected.keys.toList()).accept(
-                { values -> actual.set(values.associate { it.pref to it.value }) },
+                { values -> if (values == null) failure.set(IllegalStateException("Null preference result")) else actual.set(values.associate { it.pref to it.value }) },
                 { error -> failure.set(error) }
             )
         }
