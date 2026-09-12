@@ -65,4 +65,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    // AndroidX test references these annotations; retain the real dependency for R8.
+    // Test APK only: does not add code to the delivered browser.
+    androidTestImplementation("com.google.errorprone:error_prone_annotations:2.42.0")
 }
