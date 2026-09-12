@@ -1,0 +1,40 @@
+name: Apply Bubble 138 recovery checks
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast138]
+    paths: ['.staging/recovery138.patch.xz', '.github/workflows/bubble-recovery138.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply tested recovery delta, remove staging and start full verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -f .staging/recovery138.patch.xz ]; then
+            echo '47a952f1358588691be222db19ceb24e60a16734d803b00cdc4d373680e2b46d  .staging/recovery138.patch.xz' | sha256sum -c -
+            xz -dc .staging/recovery138.patch.xz > /tmp/recovery138.patch
+            echo '7d1127996f4806bbc1d2a8a5d5de55cb0623952ebbe322813f94461442420caf  /tmp/recovery138.patch' | sha256sum -c -
+            git apply --check /tmp/recovery138.patch
+            git apply /tmp/recovery138.patch
+            git rm .staging/recovery138.patch.xz
+            git add app tools docs
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(relay): retain error/backlog progress and wait for actual input focus in test'
+            git push origin HEAD:relay-latest-bp-fast138
+          fi
+          # GITHUB_TOKEN pushes do not trigger another push workflow; dispatch the
+          # existing full ARM64 + optimized Android runtime verification explicitly.
+          gh workflow run 356714434 --ref relay-latest-bp-fast138
+          git rev-parse HEAD
