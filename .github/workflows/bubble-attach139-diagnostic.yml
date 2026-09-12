@@ -22,7 +22,7 @@ jobs:
           s=p.read_text()
           old='} catch (_: RuntimeException) {'
           assert s.count(old)>=3
-          s=s.replace(old, '} catch (failure: RuntimeException) {\n            android.util.Log.e("BubbleAttachDiagnostic", "CI-only caught service exception", failure)')
+          s=s.replace(old, '} catch (failure: RuntimeException) {\n            android.util.Log.e("BubbleAttachDiagnostic", "CI-only caught service exception", failure);\n')
           p.write_text(s)
           PY
           git diff > diagnosis-source-only.patch
