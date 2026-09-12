@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [relay-latest-bp-build115]
-    paths: ['tools/relay-bp-source.*.b64', '.github/workflows/relay-latest-bp.yml']
+    paths: ['app/**', 'tools/test-*.cjs', 'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', '.github/workflows/relay-latest-bp.yml']
 permissions:
   contents: write
 concurrency:
@@ -17,32 +17,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Apply hash-checked source and commit ordinary files
+      - name: Validate ordinary checked-in browser source
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import base64, hashlib, json, lzma
-          from pathlib import Path
-          encoded=''.join(Path(f'tools/relay-bp-source.{i}.b64').read_text().strip() for i in (1,2,3))
-          raw=lzma.decompress(base64.b64decode(encoded,validate=True))
-          assert hashlib.sha256(raw).hexdigest()=='0074c8df121ed615e251fb4cebbc0d6abf8e90decc1c84cc9dc51db9d19711f6'
-          payload=json.loads(raw)
-          for item in payload['files']:
-              path=Path(item['path']);assert not path.is_absolute() and '..' not in path.parts
-              content=item['content'].encode()
-              old=path.read_bytes() if path.exists() else None
-              if old==content: continue
-              assert (hashlib.sha256(old).hexdigest() if old is not None else None)==item['beforeSha256'],str(path)
-              path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
-          PY
           node tools/test-foreground.cjs
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app docs/RELAY_LATEST_BP.md tools/test-floating-performance.cjs
-          if ! git diff --cached --quiet; then
-            git commit -m 'feat(renderer): integrate selected relay_latest_bp into Build-115-derived Bubble'
-            git push origin HEAD:relay-latest-bp-build115
-          fi
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v5
         with:
@@ -92,7 +70,9 @@ jobs:
           path: dist/
           retention-days: 2
       - name: Build emulator test variant
-        run: gradle --no-daemon -PgeckoAbi=x86_64 :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee relay-emulator-build.txt
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee relay-emulator-build.txt
       - run: sudo chmod a+rw /dev/kvm
       - name: Real browser overlay, input and retirement test
         id: runtime
@@ -108,7 +88,7 @@ jobs:
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             adb logcat -c
-            timeout 240s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > relay-runtime.txt 2>&1
+            timeout 300s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > relay-runtime.txt 2>&1 || true
             adb logcat -d > relay-logcat.txt
             adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
             cat relay-runtime.txt

@@ -28,8 +28,8 @@ class RelayLatestBpRuntimeTest {
     private val auto = inst.uiAutomation
     private fun main(block: () -> Unit) = inst.runOnMainSync(block)
     private fun checkMain(block: () -> Boolean): Boolean { var answer=false; main { answer=block() }; return answer }
-    private fun await(label: String, block: () -> Boolean) {
-        val end=SystemClock.elapsedRealtime()+30_000
+    private fun await(label: String, timeoutMs: Long = 30_000, block: () -> Boolean) {
+        val end=SystemClock.elapsedRealtime()+timeoutMs
         while(SystemClock.elapsedRealtime()<end) { if(block())return;Thread.sleep(100) }
         save("failure-$label");fail("Timed out: $label")
     }
@@ -45,6 +45,8 @@ class RelayLatestBpRuntimeTest {
         val t=SystemClock.uptimeMillis()
         val down=MotionEvent.obtain(t,t,MotionEvent.ACTION_DOWN,x,y,0)
         val up=MotionEvent.obtain(t,t+45,MotionEvent.ACTION_UP,x,y,0)
+        down.source=android.view.InputDevice.SOURCE_TOUCHSCREEN
+        up.source=android.view.InputDevice.SOURCE_TOUCHSCREEN
         try { assertTrue(auto.injectInputEvent(down,true));assertTrue(auto.injectInputEvent(up,true)) }
         finally {down.recycle();up.recycle()}
     }
@@ -90,15 +92,22 @@ class RelayLatestBpRuntimeTest {
             }}catch(_:Exception){if(server.isClosed)break}
         }.apply{isDaemon=true;start()}
         val oldFlags=auto.serviceInfo.flags
+        val health=context.getSharedPreferences("notification-health",android.content.Context.MODE_PRIVATE)
+        val previouslyOffered=health.getBoolean("test-offer-v3",false)
         try{
             shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
             shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+            // This is not a notification-onboarding test. The first attempt's screenshot
+            // showed its unrelated modal covering the page before the relay was reached.
+            assertTrue(health.edit().putBoolean("test-offer-v3",true).commit())
             auto.serviceInfo=auto.serviceInfo.apply{flags=flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS}
             ActivityScenario.launch<BrowserActivity>(Intent(context,BrowserActivity::class.java)).use { scenario ->
                 await("workspace"){checkMain{Workspace.peek()?.ready==true}}
                 var first="";var second=""
                 scenario.onActivity{a->AccessPreferences.get(a).update(AccessPreferences.get(a).options.copy(enabled=false));first=a.workspace.create("http://127.0.0.1:${server.localPort}/one").id}
-                await("first-page"){checkMain{Workspace.peek()?.selected?.painted==true&&Workspace.peek()?.selected?.title=="RELAY-A"}}
+                // Cold multi-process startup under software-emulated graphics is outside
+                // the tested relay operation. Keep the paint/title and screen-pixel gates.
+                await("first-page",90_000){checkMain{Workspace.peek()?.selected?.painted==true&&Workspace.peek()?.selected?.title=="RELAY-A"}}
                 await("fullscreen-red"){pageHasColor(true)};save("fullscreen-before")
                 scenario.onActivity{a->a.geckoView.postOnAnimation{a.collapse(FloatingMode.CHAT)}}
                 await("floating"){checkMain{BubbleService.active?.window?.mode==FloatingMode.CHAT&&Workspace.peek()?.floatingVisible==true}}
@@ -111,7 +120,6 @@ class RelayLatestBpRuntimeTest {
                 main{second=Workspace.peek()!!.create("http://127.0.0.1:${server.localPort}/two").id;BubbleService.active!!.window!!.openChat(second)}
                 await("cold-tab-cyan"){pageHasColor(false)};save("floating-cold-B")
                 repeat(6){i->val red=i%2==0;main{BubbleService.active!!.window!!.openChat(if(red)first else second)};await("tab-$i"){pageHasColor(red)}}
-                // Exercise actual overlay-native target recreation without a synthetic second session.
                 main{val v=requireNotNull(inputHost());val root=v.parent as View;val p=root.layoutParams as WindowManager.LayoutParams;p.width-=40;v.context.getSystemService(WindowManager::class.java).updateViewLayout(root,p)}
                 await("resized-cyan"){pageHasColor(false)};save("resized")
                 await("old-generations-reclaimed"){val a=NativeAhbBridge.nativeDebugStats();a[0]==1L&&a[1]==0L&&a[5]==1L}
@@ -124,6 +132,7 @@ class RelayLatestBpRuntimeTest {
             }
         }finally{
             context.stopService(Intent(context,BubbleService::class.java));server.close();serving.join(1000)
+            health.edit().putBoolean("test-offer-v3",previouslyOffered).commit()
             auto.serviceInfo=auto.serviceInfo.apply{flags=oldFlags}
         }
     }
