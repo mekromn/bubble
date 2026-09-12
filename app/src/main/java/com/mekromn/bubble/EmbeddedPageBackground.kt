@@ -20,7 +20,9 @@ internal class EmbeddedPageBackground(
     private val cutout = RectF()
     override fun draw(canvas: Canvas) {
         val child = page()
-        if (child == null || !child.isAttachedToWindow || child.width <= 0 || child.height <= 0) {
+        // On older Android the native host cannot be active; preserve normal chrome.
+        if (android.os.Build.VERSION.SDK_INT < 29 || child == null ||
+            !child.isAttachedToWindow || child.width <= 0 || child.height <= 0) {
             super.draw(canvas); return
         }
         transform.reset()

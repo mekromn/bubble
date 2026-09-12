@@ -15,6 +15,8 @@ internal class EmbeddedSurfacePlacement {
     private val surface = IntArray(2)
     private val screen = IntArray(2)
 
+    // This reader is called only by the API-36 native floating host.
+    @androidx.annotation.RequiresApi(29)
     fun read(view: View, covered: Boolean): Value {
         matrix.reset(); view.transformMatrixToGlobal(matrix); matrix.getValues(values)
         view.getLocationInSurface(surface); view.getLocationOnScreen(screen)
