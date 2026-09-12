@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Persistent physical-device crash diagnostics.
  *
- * Diagnostics are intentionally ENABLED on this forensic native-renderer build. Logs are mirrored
+ * Diagnostics are disabled in the selected-renderer build. When enabled, logs are mirrored
  * to Downloads/Bubble Logs and an app-private shadow, uncaught Java exceptions are synchronously
  * flushed, and the next process launch records ApplicationExitInfo including native crash traces
  * when Android provides them.
@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicLong
  * Never log page text, cookies, request headers, auth/session tokens, form contents or URL queries.
  */
 internal object DiagnosticLog {
-    const val ENABLED = true
+    const val ENABLED = false
 
     private const val TAG = "BubbleDiag"
     private const val PREFS = "bubble_diagnostics"

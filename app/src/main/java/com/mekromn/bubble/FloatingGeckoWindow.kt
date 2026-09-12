@@ -5,6 +5,9 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.Executors
 import android.util.Log
 import android.util.TypedValue
 import android.view.DragEvent
@@ -23,7 +26,7 @@ import android.widget.Toast
 import org.mozilla.geckoview.GeckoDisplay
 import org.mozilla.geckoview.GeckoSession
 
-/** Android-16 combined ANativeWindow + AHardwareBuffer floating renderer experiment. */
+/** Bubble floating renderer: the user-selected, queued relay_latest_bp transport. */
 @SuppressLint("NewApi")
 internal class FloatingGeckoWindow(private val context: Context) {
     private val manager = context.getSystemService(WindowManager::class.java)
@@ -45,7 +48,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
     fun show(box: WindowBox): Boolean {
         if (Build.VERSION.SDK_INT < 36) {
-            Toast.makeText(context, "ANativeWindow + AHardwareBuffer test requires Android 16", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "The native floating renderer requires Android 16", Toast.LENGTH_LONG).show()
             return false
         }
         val safe = box.copy(width = box.width.coerceAtLeast(1), height = box.height.coerceAtLeast(1))
@@ -161,255 +164,121 @@ internal class FloatingGeckoWindow(private val context: Context) {
         private var pipelineRetryPosted = false
         private var pipelineRetryCount = 0
         private var pipelineFailureNotified = false
-        private var framePumpPosted = false
-        private var framePumpTicks = 0
-        private var firstSubmittedLogged = false
-        private var lastNegativePumpStatus = 0
         private val screenOrigin = IntArray(2)
+        @Volatile private var generation = 0L
+        private var creating = false
+        private val main = Handler(Looper.getMainLooper())
+        private var creationTimeout: Runnable? = null
 
-        private val pipelineRetry = object : Runnable {
-            override fun run() {
-                pipelineRetryPosted = false
-                if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36 || nativeHandle != 0L) return
-                val w = width.coerceAtLeast(1)
-                val h = height.coerceAtLeast(1)
-                if (createPipeline(w, h)) {
-                    DiagnosticLog.event("NATIVE_BUFFER", "pipeline ready after retries=$pipelineRetryCount size=${w}x$h")
-                    pipelineRetryCount = 0
-                    pipelineFailureNotified = false
-                    publishSurfaceIfReady()
-                    return
-                }
-                pipelineRetryCount++
-                if (pipelineRetryCount in RETRY_LOG_POINTS) {
-                    DiagnosticLog.event(
-                        "NATIVE_BUFFER",
-                        "pipeline not ready retry=$pipelineRetryCount rootSC=${rootSurfaceControl != null} size=${w}x$h"
-                    )
-                }
-                if (pipelineRetryCount < MAX_PIPELINE_RETRIES) {
-                    schedulePipelineStart()
-                } else if (!pipelineFailureNotified) {
-                    pipelineFailureNotified = true
-                    DiagnosticLog.event("NATIVE_BUFFER", "pipeline gave up after $pipelineRetryCount VSYNC retries")
-                    Toast.makeText(context, "Native buffer compositor layer never became ready", Toast.LENGTH_LONG).show()
-                }
+        // Only attachment-readiness retries use Android's frame callback. There is
+        // NO per-frame Java/JNI acquisition or presentation pump.
+        private val pipelineRetry = Runnable {
+            pipelineRetryPosted = false
+            if (isAttachedToWindow && session != null && !creating && nativeHandle == 0L) {
+                if (width > 0 && height > 0) startPipeline(width, height)
+                else schedulePipelineStart()
             }
         }
 
-        private val framePump = object : Runnable {
-            override fun run() {
-                framePumpPosted = false
-                val handle = nativeHandle
-                if (!isAttachedToWindow || !surfacePublished || handle == 0L) return
-                framePumpTicks++
-                val status = try {
-                    NativeAhbBridge.nativePump(handle)
-                } catch (error: RuntimeException) {
-                    DiagnosticLog.error("NATIVE_BUFFER", "nativePump threw", error)
-                    return
-                }
-                when {
-                    status > 0 && !firstSubmittedLogged -> {
-                        firstSubmittedLogged = true
-                        DiagnosticLog.event(
-                            "NATIVE_BUFFER",
-                            "first AHardwareBuffer submitted count=$status pumpTick=$framePumpTicks"
-                        )
-                    }
-                    status == 0 && framePumpTicks in PUMP_LOG_POINTS -> {
-                        DiagnosticLog.event(
-                            "NATIVE_BUFFER",
-                            "shared-buffer pump has no image tick=$framePumpTicks"
-                        )
-                    }
-                    status < 0 && status != lastNegativePumpStatus -> {
-                        lastNegativePumpStatus = status
-                        DiagnosticLog.event(
-                            "NATIVE_BUFFER",
-                            "shared-buffer pump error status=$status tick=$framePumpTicks"
-                        )
-                    }
-                }
-                scheduleFramePump()
-            }
-        }
-
-        init {
-            setBackgroundColor(Color.TRANSPARENT)
-            isFocusable = true
-            isFocusableInTouchMode = true
-        }
+        init { setBackgroundColor(Color.TRANSPARENT); isFocusable = true; isFocusableInTouchMode = true }
 
         override fun onAttachedToWindow() {
-            super.onAttachedToWindow()
-            DiagnosticLog.event("NATIVE_BUFFER", "host attached rootSC=${rootSurfaceControl != null}")
-            if (pipelineFrameRate > 0f) schedulePipelineStart()
-            updateScreenOrigin()
+            super.onAttachedToWindow(); schedulePipelineStart(); updateScreenOrigin()
         }
-
         override fun onDetachedFromWindow() {
-            removeCallbacks(pipelineRetry)
-            removeCallbacks(framePump)
-            pipelineRetryPosted = false
-            framePumpPosted = false
-            releasePipeline()
-            super.onDetachedFromWindow()
+            releasePipeline(); super.onDetachedFromWindow()
         }
-
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             super.onSizeChanged(w, h, oldw, oldh)
-            if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow || w <= 0 || h <= 0) return
-            if (nativeHandle != 0L && (w != pipelineWidth || h != pipelineHeight)) {
-                recreatePipeline(w, h)
-            } else if (nativeHandle == 0L && pipelineFrameRate > 0f) {
-                schedulePipelineStart()
-            }
+            if ((nativeHandle != 0L || creating) && (w != pipelineWidth || h != pipelineHeight)) releasePipeline()
+            schedulePipelineStart(); updateScreenOrigin()
         }
-
-        fun preparePipeline(rate: Float) {
-            pipelineFrameRate = rate.takeIf { it > 0f } ?: 120f
-            if (nativeHandle != 0L && producerSurface?.isValid == true) {
-                NativeAhbBridge.nativeSetFrameRate(nativeHandle, pipelineFrameRate)
-                publishSurfaceIfReady()
-                return
-            }
-            schedulePipelineStart()
+        fun preparePipeline(frameRate: Float) {
+            pipelineFrameRate = frameRate.takeIf { it > 0f } ?: 120f
+            if (nativeHandle != 0L) NativeAhbBridge.nativeSetFrameRate(nativeHandle, pipelineFrameRate)
+            else schedulePipelineStart()
         }
-
         private fun schedulePipelineStart() {
-            if (!isAttachedToWindow || pipelineRetryPosted || nativeHandle != 0L || pipelineFailureNotified) return
-            pipelineRetryPosted = true
-            postOnAnimation(pipelineRetry)
+            if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36 || session == null ||
+                creating || nativeHandle != 0L || pipelineRetryPosted || pipelineFailureNotified) return
+            if (++pipelineRetryCount > MAX_PIPELINE_RETRIES) {
+                failPipeline("Android did not expose a ready output layer"); return
+            }
+            pipelineRetryPosted = true; postOnAnimation(pipelineRetry)
         }
-
-        private fun scheduleFramePump() {
-            if (!isAttachedToWindow || framePumpPosted || !surfacePublished || nativeHandle == 0L) return
-            framePumpPosted = true
-            postOnAnimation(framePump)
-        }
-
-        private fun tryEnsureOutputControl(w: Int, h: Int): SurfaceControl? {
-            outputControl?.takeIf { it.isValid }?.let { return it }
-            releaseOutputControl()
-            val attachedControl = rootSurfaceControl ?: return null
+        private fun startPipeline(w: Int, h: Int) {
+            val parentControl = rootSurfaceControl ?: run { schedulePipelineStart(); return }
             val control = try {
-                SurfaceControl.Builder()
-                    .setName("Bubble AHardwareBuffer output")
-                    .setBufferSize(w.coerceAtLeast(1), h.coerceAtLeast(1))
-                    .build()
-            } catch (error: RuntimeException) {
-                DiagnosticLog.error("NATIVE_BUFFER", "SurfaceControl.Builder failed", error)
-                return null
-            }
-            val transaction = try {
-                attachedControl.buildReparentTransaction(control)
-            } catch (error: RuntimeException) {
-                DiagnosticLog.error("NATIVE_BUFFER", "buildReparentTransaction threw", error)
-                null
-            }
-            if (transaction == null) {
-                control.release()
-                return null
-            }
-            return try {
-                transaction
-                    .setLayer(control, 1)
-                    .setVisibility(control, true)
-                    .setOpaque(control, true)
-                    .apply()
-                outputControl = control
-                DiagnosticLog.event("NATIVE_BUFFER", "SurfaceControl child parented size=${w}x$h")
-                control
-            } catch (error: RuntimeException) {
-                DiagnosticLog.error("NATIVE_BUFFER", "SurfaceControl reparent apply failed", error)
-                runCatching { control.release() }
-                null
+                SurfaceControl.Builder().setName("Bubble relay_latest_bp generation ${generation + 1}")
+                    .setBufferSize(w, h).build()
+            } catch (e: RuntimeException) { failPipeline(e.javaClass.simpleName); return }
+            val transaction = try { parentControl.buildReparentTransaction(control) }
+                catch (e: RuntimeException) { control.release(); failPipeline(e.javaClass.simpleName); return }
+            if (transaction == null) { control.release(); schedulePipelineStart(); return }
+            try {
+                transaction.setLayer(control, 1).setVisibility(control, true).setOpaque(control, true)
+                    .setCrop(control, android.graphics.Rect(0, 0, w, h)).apply()
+            } catch (e: RuntimeException) {
+                control.release(); failPipeline(e.javaClass.simpleName); return
+            } finally { transaction.close() }
+            val ticket = ++generation
+            outputControl = control; creating = true; pipelineWidth = w; pipelineHeight = h
+            val rate = pipelineFrameRate
+            creationTimeout = Runnable {
+                if (generation == ticket && creating) failPipeline("Native producer creation timed out")
+            }.also { main.postDelayed(it, 10_000) }
+            creator.execute {
+                var handle = 0L
+                var surface: Surface? = null
+                var failure: String? = null
+                try {
+                    if (generation == ticket) {
+                        handle = NativeAhbBridge.nativeCreate(w, h, control, rate)
+                        if (handle != 0L) surface = NativeAhbBridge.nativeGetProducerSurface(handle)
+                        if (handle == 0L || surface?.isValid != true) failure = "Native producer unavailable"
+                    }
+                } catch (e: Exception) { failure = e.javaClass.simpleName }
+                catch (e: LinkageError) { failure = e.javaClass.simpleName }
+                val createdHandle = handle; val createdSurface = surface; val error = failure
+                main.post {
+                    // A resize, tab switch, or hide can complete while native setup is
+                    // in flight. That old generation must never publish into a new tab.
+                    if (generation != ticket || !isAttachedToWindow || session == null) {
+                        createdSurface?.release()
+                        if (createdHandle != 0L) NativeAhbBridge.nativeDestroy(createdHandle)
+                        detachAndRelease(control, true)
+                    } else {
+                        creationTimeout?.let(main::removeCallbacks); creationTimeout = null
+                        creating = false; nativeHandle = createdHandle; producerSurface = createdSurface
+                        if (error != null) failPipeline(error)
+                        else { pipelineRetryCount = 0; publishSurfaceIfReady() }
+                    }
+                }
             }
         }
-
-        private fun createPipeline(w: Int, h: Int): Boolean {
-            if (Build.VERSION.SDK_INT < 36 || !isAttachedToWindow) return false
-            val control = tryEnsureOutputControl(w, h) ?: return false
-            DiagnosticLog.event("NATIVE_BUFFER", "nativeCreate begin size=${w}x$h rate=$pipelineFrameRate")
-            val handle = try {
-                NativeAhbBridge.nativeCreate(w.coerceAtLeast(1), h.coerceAtLeast(1), control, pipelineFrameRate)
-            } catch (error: RuntimeException) {
-                DiagnosticLog.error("NATIVE_BUFFER", "nativeCreate threw", error)
-                0L
-            }
-            if (handle == 0L) {
-                DiagnosticLog.event("NATIVE_BUFFER", "nativeCreate returned 0")
-                return false
-            }
-            val surface = try {
-                NativeAhbBridge.nativeGetProducerSurface(handle)
-            } catch (error: RuntimeException) {
-                DiagnosticLog.error("NATIVE_BUFFER", "nativeGetProducerSurface threw", error)
-                null
-            }
-            if (surface == null || !surface.isValid) {
-                surface?.release()
-                runCatching { NativeAhbBridge.nativeDestroy(handle) }
-                DiagnosticLog.event("NATIVE_BUFFER", "producer Surface invalid")
-                return false
-            }
-            nativeHandle = handle
-            producerSurface = surface
-            pipelineWidth = w.coerceAtLeast(1)
-            pipelineHeight = h.coerceAtLeast(1)
-            publishFailurePosted = false
-            framePumpTicks = 0
-            firstSubmittedLogged = false
-            lastNegativePumpStatus = 0
-            DiagnosticLog.event("NATIVE_BUFFER", "native producer Surface ready handle=$handle")
-            return true
+        private fun detachAndRelease(control: SurfaceControl, release: Boolean) {
+            runCatching { SurfaceControl.Transaction().use { it.reparent(control, null).apply() } }
+            if (release) runCatching { control.release() }
         }
-
-        private fun recreatePipeline(w: Int, h: Int) {
-            removeCallbacks(framePump)
-            framePumpPosted = false
-            val activeDisplay = display
-            if (surfacePublished && activeDisplay != null) runCatching { activeDisplay.surfaceDestroyed() }
-            surfacePublished = false
-            releaseNativeProducer(keepOutputControl = true)
-            pipelineRetryCount = 0
-            pipelineFailureNotified = false
-            if (createPipeline(w, h)) publishSurfaceIfReady() else schedulePipelineStart()
+        private fun failPipeline(message: String) {
+            releasePipeline(); pipelineFailureNotified = true
+            Log.e(TAG, "relay_latest_bp: $message")
+            Toast.makeText(context, "Floating renderer failed: $message", Toast.LENGTH_LONG).show()
         }
-
         fun releasePipeline() {
-            removeCallbacks(pipelineRetry)
-            removeCallbacks(framePump)
-            pipelineRetryPosted = false
-            framePumpPosted = false
-            pipelineRetryCount = 0
-            pipelineFailureNotified = false
-            if (surfacePublished) display?.let { runCatching { it.surfaceDestroyed() } }
-            surfacePublished = false
-            releaseNativeProducer(keepOutputControl = false)
-        }
-
-        private fun releaseNativeProducer(keepOutputControl: Boolean) {
-            producerSurface?.release()
-            producerSurface = null
-            val oldHandle = nativeHandle
+            ++generation
+            removeCallbacks(pipelineRetry); pipelineRetryPosted = false
+            creationTimeout?.let(main::removeCallbacks); creationTimeout = null
+            if (surfacePublished) runCatching { display?.surfaceDestroyed() }
+            surfacePublished = false; publishFailurePosted = false
+            producerSurface?.release(); producerSurface = null
+            if (nativeHandle != 0L) NativeAhbBridge.nativeDestroy(nativeHandle)
             nativeHandle = 0L
-            if (oldHandle != 0L) runCatching { NativeAhbBridge.nativeDestroy(oldHandle) }
-            pipelineWidth = 0
-            pipelineHeight = 0
-            publishFailurePosted = false
-            framePumpTicks = 0
-            firstSubmittedLogged = false
-            lastNegativePumpStatus = 0
-            if (!keepOutputControl) releaseOutputControl()
-        }
-
-        private fun releaseOutputControl() {
-            val control = outputControl ?: return
-            outputControl = null
-            runCatching { if (control.isValid) SurfaceControl.Transaction().reparent(control, null).apply() }
-            runCatching { control.release() }
+            // During creation the completion callback owns the Java control reference;
+            // dropping it early would race ASurfaceControl_fromJava on the worker.
+            outputControl?.let { detachAndRelease(it, !creating) }; outputControl = null
+            creating = false; pipelineWidth = 0; pipelineHeight = 0
+            pipelineRetryCount = 0; pipelineFailureNotified = false
         }
 
         fun bind(next: GeckoSession): Boolean {
@@ -436,8 +305,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         fun unbind(expected: GeckoSession) {
             if (session !== expected) return
-            removeCallbacks(framePump)
-            framePumpPosted = false
+            releasePipeline()
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
             if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
@@ -456,8 +324,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         private fun cleanupAfterBindFailure(target: GeckoSession, error: RuntimeException) {
             DiagnosticLog.error("NATIVE_BUFFER", "GeckoDisplay bind failed", error)
-            removeCallbacks(framePump)
-            framePumpPosted = false
+            releasePipeline()
             val oldDisplay = display
             val oldAccessibilityHost = accessibilityHost
             if (surfacePublished && oldDisplay != null) runCatching { oldDisplay.surfaceDestroyed() }
@@ -500,9 +367,13 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 schedulePipelineStart()
                 return
             }
+            if (surfacePublished) return
             val androidSurface = producerSurface ?: return
-            val w = pipelineWidth.coerceAtLeast(width.coerceAtLeast(1))
-            val h = pipelineHeight.coerceAtLeast(height.coerceAtLeast(1))
+            val w = pipelineWidth
+            val h = pipelineHeight
+            if (w != width || h != height || w <= 0 || h <= 0) {
+                releasePipeline(); schedulePipelineStart(); return
+            }
             try {
                 val info = GeckoDisplay.SurfaceInfo.Builder(androidSurface)
                     .newSurfaceProvider(this)
@@ -513,8 +384,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
                 surfacePublished = true
                 publishFailurePosted = false
                 updateScreenOrigin()
-                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success; VSYNC consumer pump armed")
-                scheduleFramePump()
+                DiagnosticLog.event("NATIVE_BUFFER", "Gecko surfaceChanged success; relay_latest_bp native consumer active")
             } catch (error: RuntimeException) {
                 if (!publishFailurePosted) {
                     publishFailurePosted = true
@@ -539,7 +409,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         override fun requestNewSurface() {
             post {
                 if (!isAttachedToWindow || Build.VERSION.SDK_INT < 36) return@post
-                recreatePipeline(width.coerceAtLeast(1), height.coerceAtLeast(1))
+                releasePipeline(); schedulePipelineStart()
             }
         }
 
@@ -597,8 +467,9 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         companion object {
             private const val MAX_PIPELINE_RETRIES = 120
-            private val RETRY_LOG_POINTS = setOf(1, 2, 4, 8, 16, 32, 64, 120)
-            private val PUMP_LOG_POINTS = setOf(1, 2, 4, 8, 16, 32, 64, 120, 240)
+            private val creator = Executors.newSingleThreadExecutor { task ->
+                Thread(task, "BubbleRelaySetup").apply { isDaemon = true }
+            }
         }
     }
 

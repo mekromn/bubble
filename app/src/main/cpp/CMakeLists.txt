@@ -9,7 +9,6 @@ find_library(log-lib log)
 find_library(android-lib android)
 find_library(media-lib mediandk)
 find_library(nativewindow-lib nativewindow)
-find_library(dl-lib dl)
 
 target_link_libraries(
     bubble-ahb
@@ -17,6 +16,5 @@ target_link_libraries(
     ${android-lib}
     ${media-lib}
     ${nativewindow-lib}
-    ${dl-lib}
     ${log-lib}
 )
