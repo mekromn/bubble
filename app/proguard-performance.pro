@@ -1,6 +1,13 @@
 # Preserve the Gecko JNI/reflection boundary. Its prebuilt libxul is unchanged.
 -keep class org.mozilla.** { *; }
 -keep interface org.mozilla.** { *; }
+# Gecko DebugConfig invokes SnakeYAML at startup. TypeDescription relies on its
+# Package metadata and the parser constructs Java objects reflectively. R8
+# flattening TypeDescription into the default package caused an actual startup
+# crash in the optimized Android test. Preserve this startup-only dependency's
+# package/class/member names and constructors, not just its public entry point.
+-keep class org.yaml.snakeyaml.** { *; }
+-keep interface org.yaml.snakeyaml.** { *; }
 # First optimized delivery retains application binary names and instrumentable members.
 # Optimizations (including folding disabled diagnostics) are allowed; no profile migration.
 -keep,allowoptimization class com.mekromn.bubble.** { *; }
