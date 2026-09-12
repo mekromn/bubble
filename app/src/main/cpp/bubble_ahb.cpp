@@ -3,7 +3,7 @@
 #include <array>
 #include <android/data_space.h>
 #include <android/hardware_buffer.h>
-#include <android/log.h>
+#include "relay_logging.h"
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <android/surface_control.h>
@@ -32,7 +32,6 @@ constexpr bool kOutputBackpressure = true;
 constexpr size_t kMaximumLiveGenerations = 8;
 constexpr uint64_t kConsumerUsage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
                                     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
-constexpr const char* kTag = "BubbleRelayBP";
 struct State;
 struct Lease {
     // Callback context storage is bounded, but image ownership still lasts until
@@ -60,7 +59,9 @@ struct State {
     std::atomic<int> leases{0};
     std::atomic<float> requestedRate{0};
     float appliedRate = -1;
+#if BUBBLE_RELAY_LOGGING
     uint64_t submitted = 0;
+#endif
     void wake() { (void)event.notify(); }
     ~State() {
         // Normal cleanup is on the cleanup thread; construction failures are
@@ -101,7 +102,7 @@ class CleanupQueue {
                     std::lock_guard<std::mutex> lock(registryMutex);
                     retiring.erase(s->id);
                 }
-                __android_log_print(ANDROID_LOG_INFO, kTag, "generation=%lld retired cleanly", static_cast<long long>(s->id));
+                BUBBLE_RELAY_LOG(ANDROID_LOG_INFO, "generation=%lld retired cleanly", static_cast<long long>(s->id));
             }
         }).detach();
     }
@@ -152,9 +153,14 @@ void discard(AImage* image, int fence) {
     else if (fence >= 0) close(fence);
 }
 void error(const char* stage, int status) {
-    const auto count = ++totalErrors;
+    ++totalErrors; // Retain error/lifetime verification; no text or IO in the release path.
+#if BUBBLE_RELAY_LOGGING
+    const auto count = totalErrors.load();
     if (count < 8 || (count & (count - 1)) == 0)
-        __android_log_print(ANDROID_LOG_ERROR, kTag, "%s status=%d total=%lld", stage, status, static_cast<long long>(count));
+        BUBBLE_RELAY_LOG(ANDROID_LOG_ERROR, "%s status=%d total=%lld", stage, status, static_cast<long long>(count));
+#else
+    (void)stage; (void)status;
+#endif
 }
 void voteRate(const std::shared_ptr<State>& s) {
     const float rate = s->requestedRate.load();
@@ -202,8 +208,10 @@ void consume(const std::shared_ptr<State>& s) {
     // The callback owns its Lease independently; reuse is only on this worker.
     ASurfaceTransaction_apply(tx);
     totalSubmitted++;
-    if (++s->submitted == 1) __android_log_print(ANDROID_LOG_INFO, kTag,
+#if BUBBLE_RELAY_LOGGING
+    if (++s->submitted == 1) BUBBLE_RELAY_LOG(ANDROID_LOG_INFO,
         "generation=%lld first submitted; latest/bp images=6 drain=4 worker=1", static_cast<long long>(s->id));
+#endif
     // Only a full bounded pass can leave an unobserved backlog after coalesced
     // notifications. EMPTY waits for new images; MAX_IMAGES waits for release.
     if (reachedDrainLimit) s->wake();

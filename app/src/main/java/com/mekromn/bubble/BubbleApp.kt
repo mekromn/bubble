@@ -14,7 +14,7 @@ class BubbleApp : Application(), Application.ActivityLifecycleCallbacks {
         super.onCreate()
         // Install before GeckoRuntime/Workspace are ever created so startup/session-open failures and
         // the next-launch ApplicationExitInfo record are captured as early as Android allows.
-        DiagnosticLog.install(this)
+        if (DiagnosticLog.ENABLED) DiagnosticLog.install(this)
         if (DiagnosticLog.ENABLED) DiagnosticLog.event("APP", "BubbleApp.onCreate begin")
         NotificationHealth.prepare(this)
         UploadStaging.io.execute { ArchiveCache.cleanup(this) }

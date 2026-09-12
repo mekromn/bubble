@@ -16,6 +16,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicReference
+import org.mozilla.geckoview.GeckoPreferenceController
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -76,6 +78,30 @@ class RelayLatestBpRuntimeTest {
         await(description){found=null;auto.windows.forEach{walk(it.root)};found!=null}
         val r=requireNotNull(found);tap(r.exactCenterX(),r.exactCenterY())
     }
+    @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
+    private fun verifyHardwarePreferences(config: File) {
+        val expected = Regex("(?m)^  ([a-z][a-z0-9.-]+): (true|false)$")
+            .findAll(config.readText()).associate { it.groupValues[1] to (it.groupValues[2] == "true") }
+        assertEquals("All intended startup preferences", 13, expected.size)
+        val actual = AtomicReference<Map<String, Any?>?>(null)
+        val failure = AtomicReference<Throwable?>(null)
+        main {
+            GeckoPreferenceController.getGeckoPrefs(expected.keys.toList()).accept(
+                { values -> actual.set(values.associate { it.pref to it.value }) },
+                { error -> failure.set(error) }
+            )
+        }
+        await("engine-preference-readback") { actual.get() != null || failure.get() != null }
+        failure.get()?.let { throw AssertionError("Engine preference readback failed", it) }
+        val observed = requireNotNull(actual.get())
+        val evidence = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
+        evidence.resolve("hardware-preferences.txt").writeText(
+            "Requested settings vs Gecko readback; NOT proof every operation used physical GPU.\n" +
+                expected.entries.joinToString("\n") { (name, value) -> "$name expected=$value actual=${observed[name]}" }
+        )
+        expected.forEach { (name, value) -> assertEquals(name, value, observed[name]) }
+    }
+
     @Test fun actualBubblePixelsInputTabSwapResizeAndFullscreenReturn() {
         val server=ServerSocket(0)
         val serving=Thread {
@@ -109,9 +135,15 @@ class RelayLatestBpRuntimeTest {
                 // the tested relay operation. Keep the paint/title and screen-pixel gates.
                 await("first-page",90_000){checkMain{Workspace.peek()?.selected?.painted==true&&Workspace.peek()?.selected?.title=="RELAY-A"}}
                 await("fullscreen-red"){pageHasColor(true)};save("fullscreen-before")
+                assertTrue("Fullscreen hardware window",checkMain { inputHost()?.isHardwareAccelerated == true })
+                val hardwareConfig=File(context.noBackupFilesDir,"gecko-hardware.yaml")
+                assertTrue("Private startup policy exists",hardwareConfig.isFile)
+                assertTrue(hardwareConfig.readText().contains("gfx.webrender.all: true"))
+                verifyHardwarePreferences(hardwareConfig)
                 scenario.onActivity{a->a.geckoView.postOnAnimation{a.collapse(FloatingMode.CHAT)}}
                 await("floating"){checkMain{BubbleService.active?.window?.mode==FloatingMode.CHAT&&Workspace.peek()?.floatingVisible==true}}
                 await("floating-red"){pageHasColor(true)};save("floating-A")
+                assertTrue("Floating hardware window",checkMain { inputHost()?.isHardwareAccelerated == true })
                 assertEquals(6L,NativeAhbBridge.nativeDebugStats()[7]);assertEquals(4L,NativeAhbBridge.nativeDebugStats()[8]);assertEquals(1L,NativeAhbBridge.nativeDebugStats()[9])
                 pageTap(.45f);await("click"){checkMain{Workspace.peek()?.selected?.title=="CLICKED-A"}}
                 pageTap(.60f);shell("input text relay")

@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.Executors
-import android.util.Log
 import android.util.TypedValue
 import android.view.DragEvent
 import android.view.Gravity
@@ -84,7 +83,6 @@ internal class FloatingGeckoWindow(private val context: Context) {
             true
         } catch (error: RuntimeException) {
             if (DiagnosticLog.ENABLED) DiagnosticLog.error("NATIVE_BUFFER", "overlay attach failed", error)
-            Log.e(TAG, "Could not attach native-buffer Gecko window", error)
             runCatching { if (root.isAttachedToWindow) manager.removeViewImmediate(root) }
             host.releasePipeline()
             params = null
@@ -265,7 +263,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
         }
         private fun failPipeline(message: String) {
             releasePipeline(); pipelineFailureNotified = true
-            Log.e(TAG, "relay_latest_bp: $message")
+            if (DiagnosticLog.ENABLED) DiagnosticLog.event("NATIVE_BUFFER_FAILURE", message)
             Toast.makeText(context, "Floating renderer failed: $message", Toast.LENGTH_LONG).show()
         }
         fun releasePipeline() {

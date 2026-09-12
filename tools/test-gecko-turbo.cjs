@@ -7,13 +7,14 @@ const workspace = fs.readFileSync('app/src/main/java/com/mekromn/bubble/Workspac
 for (const required of [
   '.remoteDebuggingEnabled(false)',
   '.consoleOutput(false)',
+  '.debugLogging(false)',
+  '.configFilePath(startupConfigPath)',
 ]) {
   assert.ok(turbo.includes(required), `Build-84 Gecko baseline must contain ${required}`);
 }
 
 for (const forbidden of [
   'appZygoteProcessEnabled',
-  'debugLogging(',
   'aboutConfigEnabled(',
   'extensionsProcessEnabled(',
   'extensionsWebAPIEnabled(',
@@ -36,4 +37,8 @@ for (const forbidden of [
 assert.match(workspace, /GeckoRuntime\.create\(app, GeckoTurboPolicy\.settings\(\)\)/,
   'Workspace must create Gecko from the Build-84-compatible policy wrapper');
 
-console.log('Hybrid Gecko runtime: exact Build-84 settings baseline, no speculative runtime toggles.');
+assert.match(workspace, /GeckoTurboPolicy\.prepare\(app\)/);
+assert.match(turbo, /UploadStaging\.io\.execute/);
+assert.match(turbo, /app\.noBackupFilesDir/);
+assert.ok(!turbo.includes('/data/local/tmp'));
+console.log('Gecko hardware policy: explicit pre-start private config, logging off, other runtime settings preserved.');

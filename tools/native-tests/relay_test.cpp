@@ -22,6 +22,10 @@ std::shared_ptr<State> makeState() {
     s->frameTransaction=ASurfaceTransaction_create();return s;
 }
 int main() {
+    int disabledLogArgument = 0;
+    BUBBLE_RELAY_LOG(ANDROID_LOG_INFO, "%d", ++disabledLogArgument);
+    assert(disabledLogArgument == 0); // Compiled out, not a no-op function call.
+
     // A burst of 10,000 notifications requires a single eventfd increment.
     auto s=makeState();for(int i=0;i<10000;i++)s->wake();
     uint64_t n=0;assert(read(s->event.fd(),&n,sizeof(n))==sizeof(n));assert(n==1);

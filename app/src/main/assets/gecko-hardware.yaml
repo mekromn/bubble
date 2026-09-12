@@ -1,0 +1,18 @@
+# Bubble 137: user-requested hardware preference overrides, before Gecko starts.
+# No external path, environment injection, profile changes, or security overrides.
+prefs:
+  layers.acceleration.disabled: false
+  layers.acceleration.force-enabled: true
+  gfx.webrender.all: true
+  gfx.webrender.software: false
+  gfx.canvas.accelerated: true
+  gfx.canvas.accelerated.force-enabled: true
+  webgl.disabled: false
+  webgl.force-enabled: true
+  webgl.out-of-process.enable-ahardwarebuffer: true
+  media.hardware-video-decoding.enabled: true
+  media.hardware-video-decoding.force-enabled: true
+  media.android-media-codec.enabled: true
+  media.android-media-codec.preferred: true
+# Do not force a desktop compositor, software VSYNC, unsafe GL threading, or a
+# nonexistent Vulkan backend. Unsupported operations/codecs retain their fallback.

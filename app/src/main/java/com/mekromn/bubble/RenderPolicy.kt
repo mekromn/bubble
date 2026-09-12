@@ -35,6 +35,8 @@ internal object RenderPolicy {
     private val surfaceVotes = WeakHashMap<SurfaceView, SurfaceVote>()
 
     fun vote(context: Context, view: View, params: WindowManager.LayoutParams? = null): Float {
+        // Set before addView, even if display-mode information is not ready yet.
+        params?.let { it.flags = it.flags or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED }
         val display = view.display
             ?: context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
             ?: return 0f

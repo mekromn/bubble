@@ -143,29 +143,31 @@ internal class Workspace private constructor(private val app: Context, initialUr
         if (DiagnosticLog.ENABLED) DiagnosticLog.event("WORKSPACE", "construct begin initialUrlPresent=${initialUrl != null}")
         UploadStaging.initialize(app)
         BrowserDownloads.initialize(app)
-        store.load { saved, error ->
-            notice = error
-            profiles += ProfilePolicy.restore(saved?.profiles ?: ProfilePolicy.defaults(), saved?.let { (it.tabs + it.closedTabs).map { tab -> tab.profileId } } ?: emptyList())
-            saved?.let { state ->
-                bubbleX = state.bubbleX; bubbleY = state.bubbleY; windowX = state.windowX; windowY = state.windowY
-                windowWidth = state.windowWidth; windowHeight = state.windowHeight
-                state.tabs.forEach { tabs += ChatTab.restore(it) }; closedTabs += state.closedTabs; selectedId = state.selected
-            }
-            prompts += saved?.prompts ?: StarterPrompts.items()
-            if (tabs.isEmpty()) tabs += ChatTab(url = initialUrl ?: Policy.HOME)
-            else if (initialUrl != null) tabs += ChatTab(url = initialUrl, profileId = selected?.profileId ?: ProfilePolicy.DEFAULT_ID).also { selectedId = it.id }
-            if (selected == null) selectedId = tabs.first().id
-            selected?.let { resumeState(it) }
-            if (DiagnosticLog.ENABLED) DiagnosticLog.event("WORKSPACE", "store loaded tabs=${tabs.size} selected=${selectedId.take(8)} error=${error != null}")
-            ready = true; ensureSession(selected!!); ChatTabMaintenance.attach(this); changed(true)
-            tabs.filter { it.id != selectedId }.forEachIndexed { index, tab -> main.postDelayed({
-                if (tab !in tabs) return@postDelayed
-                when {
-                    Policy.isVoice(tab.url) -> { tab.manualSuspended = false; tab.suspended = false; tab.error = null; ensureSession(tab) }
-                    tab.manualSuspended -> { tab.suspended = true; changed() }
-                    else -> ensureSession(tab)
+        GeckoTurboPolicy.prepare(app) { hardwareWarning ->
+            store.load { saved, error ->
+                notice = error ?: hardwareWarning
+                profiles += ProfilePolicy.restore(saved?.profiles ?: ProfilePolicy.defaults(), saved?.let { (it.tabs + it.closedTabs).map { tab -> tab.profileId } } ?: emptyList())
+                saved?.let { state ->
+                    bubbleX = state.bubbleX; bubbleY = state.bubbleY; windowX = state.windowX; windowY = state.windowY
+                    windowWidth = state.windowWidth; windowHeight = state.windowHeight
+                    state.tabs.forEach { tabs += ChatTab.restore(it) }; closedTabs += state.closedTabs; selectedId = state.selected
                 }
-            }, 250L + index * 120L) }
+                prompts += saved?.prompts ?: StarterPrompts.items()
+                if (tabs.isEmpty()) tabs += ChatTab(url = initialUrl ?: Policy.HOME)
+                else if (initialUrl != null) tabs += ChatTab(url = initialUrl, profileId = selected?.profileId ?: ProfilePolicy.DEFAULT_ID).also { selectedId = it.id }
+                if (selected == null) selectedId = tabs.first().id
+                selected?.let { resumeState(it) }
+                if (DiagnosticLog.ENABLED) DiagnosticLog.event("WORKSPACE", "store loaded tabs=${tabs.size} selected=${selectedId.take(8)} error=${error != null}")
+                ready = true; ensureSession(selected!!); ChatTabMaintenance.attach(this); changed(true)
+                tabs.filter { it.id != selectedId }.forEachIndexed { index, tab -> main.postDelayed({
+                    if (tab !in tabs) return@postDelayed
+                    when {
+                        Policy.isVoice(tab.url) -> { tab.manualSuspended = false; tab.suspended = false; tab.error = null; ensureSession(tab) }
+                        tab.manualSuspended -> { tab.suspended = true; changed() }
+                        else -> ensureSession(tab)
+                    }
+                }, 250L + index * 120L) }
+            }
         }
     }
     fun listen(listener: () -> Unit) { listeners += listener; listener() }

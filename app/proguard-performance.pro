@@ -10,4 +10,8 @@
 # Keep binary API names/members across the two APKs; still optimize method bodies.
 -keep,allowoptimization class androidx.** { *; }
 -keep,allowoptimization interface androidx.** { *; }
+# Kotlin runtime names are also shared with the separately compiled test runner.
+# Preserve its binary ABI; keep optimization enabled in method bodies.
+-keep,allowoptimization class kotlin.** { *; }
+-keep,allowoptimization interface kotlin.** { *; }
 -keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*

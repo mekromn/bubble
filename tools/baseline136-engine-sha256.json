@@ -1,0 +1,19 @@
+{
+  "source": "933c8fd043f8bc42af2337207f431e19d8ac133b",
+  "sha256": {
+    "lib/arm64-v8a/libxul.so": "7654f71282b515f92bcb8f980ca2691fab3320a1d700acc303fd115a3b0c68d7",
+    "assets/omni.ja": "3fbc57661f05a312cd3a3f69eef97344ec7c77614c6c8e921342da0fda586a2b",
+    "assets/chat-monitor/appearance.js": "0eb2293c4bb0c6a365b09d27ca5324d05a5aa33dcbe94339567edc8a78962003",
+    "assets/chat-monitor/download-bridge.js": "8a73b5a529dbc89663728df1050a89adb23ab483e1f79bb711bab73ebaf3ae08",
+    "assets/chat-monitor/download-hook.js": "67167bd0533d6236655788f8de799b8b135d0560f4d2658f51b8a8ecd9f85030",
+    "assets/chat-monitor/foreground.js": "c6ef8e4e68c15722ee38d1a72e5de3c7199af6ff25758760864c5e8fd3a412c4",
+    "assets/chat-monitor/manifest.json": "0da313fbf8b47872d0da14303b26b5821ae1a35c01c9f9a2ec083f0dca68fd8f",
+    "assets/chat-monitor/monitor.js": "0f8388b98100dd884451f5e09a9735a1120a79fc061805bbb4d93343bc46b145",
+    "assets/chat-monitor/vault-composer-fix.js": "3b126c17cb177308ddb6d370420546f1c29363b1abdd771a6a775168c1dff4a6",
+    "assets/chat-monitor/vault-history-bridge.js": "5b321cd70171c1aa793701c6e5634d97beceb447c04cb1660313769041d2fab6",
+    "assets/chat-monitor/vault-history-hook.js": "ede7b4ac1ec6f1e6f94a8c657f8a4988bcc023063cd10c84728e036d5f93ba55",
+    "assets/chat-monitor/vault-transcript-command.js": "d896420339ce13ca90894770c82d18ba890c33a6a62059a6c117a14c64dcaa52",
+    "assets/chat-monitor/vault.js": "362c9217ac541b085bfb44fb49ff62b4232c0a6c16b184892ed5eecf4e2551b6",
+    "assets/chat-monitor/voice-ui.js": "70fd571c216e862eb2d20415e85b8d7b1f61e2e125c020f432c9727af3b70a20"
+  }
+}
