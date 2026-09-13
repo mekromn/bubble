@@ -9,7 +9,6 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
-import android.view.SurfaceView
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -20,7 +19,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Production hybrid correctness: direct SurfaceView steady state, frozen frame only during morphs. */
+/** Production hybrid correctness: direct GeckoView SurfaceView steady state, frozen frame only during morphs. */
 @RunWith(AndroidJUnit4::class)
 class HybridDirectRuntimeTest {
     private val inst=InstrumentationRegistry.getInstrumentation()
@@ -38,7 +37,13 @@ class HybridDirectRuntimeTest {
     private fun pageTap(){var x=0f;var y=0f;main{val v=requireNotNull(inputHost());val p=IntArray(2);v.getLocationOnScreen(p);x=p[0]+v.width*.5f;y=p[1]+v.height*.46f};tap(x,y)}
     private fun descriptionBounds(description:String):Rect{var found:Rect?=null;fun walk(node:AccessibilityNodeInfo?){if(node==null||found!=null)return;if(node.isVisibleToUser&&node.contentDescription==description){found=Rect().also{node.getBoundsInScreen(it)};return};for(i in 0 until node.childCount)walk(node.getChild(i))};await(description){found=null;auto.windows.forEach{walk(it.root)};found!=null};return requireNotNull(found)}
     private fun tapDescription(description:String){val r=descriptionBounds(description);tap(r.exactCenterX(),r.exactCenterY())}
-    private fun directFloating():Boolean=checkMain{val w=BubbleService.active?.window?:return@checkMain false;val host=inputHost();w.mode==FloatingMode.CHAT&&Workspace.peek()?.floatingVisible==true&&host is SurfaceView&&host.javaClass.simpleName.contains("DirectSurfaceHost")}
+    private fun directFloating():Boolean=checkMain{
+        val w=BubbleService.active?.window?:return@checkMain false
+        val host=inputHost()
+        w.mode==FloatingMode.CHAT && Workspace.peek()?.floatingVisible==true &&
+            w.pageHost?.transport==RendererArena.Transport.DIRECT_GECKO_SURFACE &&
+            host is LiveGeckoView && host.isAttachedToWindow && host.session===Workspace.peek()?.selected?.session
+    }
 
     @Test fun directBrowsingSurvivesBothSnapshotWindowMorphsWithoutRelaySteadyState(){
         val server=ServerSocket(0)
@@ -69,7 +74,7 @@ class HybridDirectRuntimeTest {
                 assertTrue("same GeckoSession after fullscreen-to-floating snapshot morph",checkMain{Workspace.peek()?.selected?.session===original})
                 pageTap();await("direct-second-click"){checkMain{Workspace.peek()?.selected?.title=="HYBRID-MAGENTA"}&&pageIs(true)}
                 save("direct-after-shrink")
-                File(context.getExternalFilesDir(null),"evidence").apply{mkdirs()}.resolve("hybrid-direct.txt").writeText("PASS: DIRECT Gecko SurfaceView remained steady-state renderer; relay stats idle; same GeckoSession survived floating->fullscreen and fullscreen->floating snapshot morphs. ${FullscreenHandoff.debugSummary()}\n")
+                File(context.getExternalFilesDir(null),"evidence").apply{mkdirs()}.resolve("hybrid-direct.txt").writeText("PASS: Mozilla GeckoView SurfaceView remained steady-state renderer; relay stats idle; same GeckoSession survived floating->fullscreen and fullscreen->floating snapshot morphs. ${FullscreenHandoff.debugSummary()}\n")
             }
         }finally{context.stopService(Intent(context,BubbleService::class.java));server.close();serving.join(1000);health.edit().putBoolean("test-offer-v3",oldOffer).commit();auto.serviceInfo=auto.serviceInfo.apply{flags=oldFlags}}
     }
