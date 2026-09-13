@@ -162,7 +162,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             surfaceReady = holder.surface?.isValid == true
-            applyFrameRate(holder.surface)
+            if (requestedRate > 0f) RenderPolicy.voteTree(this, requestedRate)
             publishSurfaceIfReady(true)
         }
 
@@ -202,18 +202,9 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
 
         fun prepareFrameRate(rate: Float) {
             requestedRate = rate.takeIf { it > 0f } ?: 120f
-            applyFrameRate(holder.surface)
-        }
-
-        private fun applyFrameRate(surface: Surface?) {
-            if (Build.VERSION.SDK_INT < 31 || requestedRate <= 0f || surface?.isValid != true) return
-            runCatching {
-                surface.setFrameRate(
-                    requestedRate,
-                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                    Surface.CHANGE_FRAME_RATE_ALWAYS
-                )
-            }
+            // Use Bubble's single Android-16 UI/scroll contract. It chooses
+            // FRAME_RATE_COMPATIBILITY_AT_LEAST and avoids a second conflicting vote.
+            RenderPolicy.voteTree(this, requestedRate)
         }
 
         fun bind(next: GeckoSession): Boolean {
@@ -227,7 +218,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
                 configureInput(next)
                 display = next.acquireDisplay()
                 if (requestedRate <= 0f) requestedRate = requestedFrameRate.takeIf { it > 0f } ?: 120f
-                applyFrameRate(holder.surface)
+                if (requestedRate > 0f) RenderPolicy.voteTree(this, requestedRate)
                 publishSurfaceIfReady(false)
                 updateScreenOrigin()
                 display != null
