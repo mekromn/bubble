@@ -14,9 +14,9 @@ import android.widget.Toast
  * Fast steady-state floating renderer.
  *
  * GeckoView already constructs its SurfaceView backend by default. Keep that original backend
- * instance intact: replacing it with setViewBackend(BACKEND_SURFACE_VIEW) is not a no-op in the
- * pinned GeckoView. It swaps in a new SurfaceView after the listener was registered on the original
- * holder, so the replacement never reports surfaceChanged() to Gecko and remains bufferless.
+ * instance intact: explicitly re-selecting the SurfaceView backend is not a no-op in the pinned
+ * GeckoView. It swaps in a new SurfaceView after the listener was registered on the original holder,
+ * so the replacement never reports surfaceChanged() to Gecko and remains bufferless.
  *
  * This host only places Mozilla's original GeckoView/SurfaceView inside Bubble's existing floating
  * ViewRoot, keeps Bubble's refresh-rate request, and exposes one-shot compositor capture for the
@@ -30,8 +30,8 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
 
     override val view: LiveGeckoView = LiveGeckoView(context).apply {
         // GeckoView's constructor already created and wired the direct SurfaceView backend.
-        // Do not call setViewBackend(SURFACE_VIEW) here: the pinned implementation would replace
-        // that wired SurfaceView with a fresh holder that has no registered display listener.
+        // Do not replace that backend here: the pinned implementation would install a fresh holder
+        // that has no registered display listener.
         setBackgroundColor(Color.TRANSPARENT)
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
