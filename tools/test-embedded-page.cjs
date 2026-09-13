@@ -21,13 +21,16 @@ assert.match(relay,/applyTransactionOnDraw\(tx\)/);
 assert.match(relay,/RendererArena.Transport.RELAY_LATEST_BP/);
 assert.match(relay,/capturePagePixels/);
 
-// Production steady state is now Gecko directly rendering to the real SurfaceView Surface.
+// Production steady state delegates the whole direct lifecycle to Mozilla GeckoView.
+// GeckoView's explicit SurfaceView backend is the path that supplies its real Surface
+// and matching SurfaceControl internally; Bubble must not reproduce input/display plumbing.
 assert.match(selector,/var transport: Transport = Transport.DIRECT_GECKO_SURFACE/);
-assert.match(direct,/GeckoDisplay\.SurfaceInfo\.Builder\(androidSurface\)/);
-assert.match(direct,/\.surfaceControl\(control\)/);
+assert.match(direct,/LiveGeckoView\(context\)/);
+assert.match(direct,/setViewBackend\(GeckoView\.BACKEND_SURFACE_VIEW\)/);
 assert.match(direct,/RendererArena\.Transport\.DIRECT_GECKO_SURFACE/);
-assert.match(direct,/capturePagePixels/);
-assert(!/NativeAhbBridge|AImageReader|nativeCreate|nativeGetProducerSurface/.test(direct));
+assert.match(direct,/view\.capturePixels\(\)/);
+assert(!/NativeAhbBridge|AImageReader|nativeCreate|nativeGetProducerSurface|GeckoDisplay\.SurfaceInfo|panZoomController\.onTouchEvent|textInput\.setView|accessibility\.setView/.test(direct));
+assert(!/class DirectSurfaceHost|SurfaceHolder\.Callback|requestNewSurface/.test(direct));
 
 // Actual floating chrome owns the host selection and can fall back without page reload.
 assert.match(chrome,/RendererArena\.createHost\(context\)/);
@@ -53,4 +56,4 @@ const runtime=read('app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRun
 for(const requirement of ['same-window','dragged-page','resized-cyan','scrolled-B','ime-visible','native-control-over-page','geometry-alpha-hidden'])assert(runtime.includes(requirement));
 const hybrid=read('app/src/androidTest/java/com/mekromn/bubble/HybridDirectRuntimeTest.kt');
 for(const requirement of ['direct-floating','fullscreen-return','direct-floating-return','relayIdle','same GeckoSession'])assert(hybrid.includes(requirement));
-console.log('Hybrid page guards: direct Gecko steady state, relay fallback preserved, one floating ViewRoot, snapshot-only fullscreen morphs.');
+console.log('Hybrid page guards: Mozilla GeckoView SurfaceView steady state, relay fallback preserved, one floating ViewRoot, snapshot-only fullscreen morphs.');
