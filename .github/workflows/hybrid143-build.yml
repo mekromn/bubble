@@ -34,13 +34,15 @@ jobs:
           node tools/test-foreground.cjs
           node tools/test-fast-build.cjs
           node tools/test-hardware-policy.cjs
+          node tools/test-embedded-page.cjs
           bash tools/test-relay-native.sh
           python3 - <<'PY'
           from pathlib import Path
           direct=Path('app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt').read_text()
-          assert '.surfaceControl(control)' in direct
-          assert 'GeckoDisplay.SurfaceInfo.Builder(androidSurface)' in direct
-          assert 'NativeAhbBridge' not in direct
+          assert 'LiveGeckoView(context)' in direct
+          assert 'setViewBackend(GeckoView.BACKEND_SURFACE_VIEW)' in direct
+          for forbidden in ('NativeAhbBridge','GeckoDisplay.SurfaceInfo','panZoomController.onTouchEvent','textInput.setView','accessibility.setView'):
+              assert forbidden not in direct, forbidden
           renderer=Path('app/src/main/java/com/mekromn/bubble/RendererArena.kt').read_text()
           assert 'var transport: Transport = Transport.DIRECT_GECKO_SURFACE' in renderer
           handoff=Path('app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt').read_text()
