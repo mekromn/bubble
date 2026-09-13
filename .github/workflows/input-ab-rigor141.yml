@@ -1,0 +1,188 @@
+name: Harden Bubble 141 benchmark rigor and rerun
+on:
+  workflow_dispatch:
+  push:
+    branches: [input-ab-benchmark141]
+    paths: ['.github/workflows/input-ab-rigor141.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Remove cue contamination, blind arms, anchor blocks to fresh gestures, tighten thermal pairing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/InputBenchmark.kt')
+          s=p.read_text()
+          def once(old,new):
+              global s
+              if old in s:
+                  assert s.count(old)==1,(old[:80],s.count(old))
+                  s=s.replace(old,new)
+              else:
+                  assert new in s,new[:100]
+          once('private const val SETTLE_MS = 2500L','private const val SETTLE_MS = 4500L')
+          once('''    private var specIndex = 0
+              private val results = ArrayList<BlockResult>()''','''    private var specIndex = 0
+              private var pendingSpec: Spec? = null
+              private var blindFlip = false
+              private val results = ArrayList<BlockResult>()''')
+          once('''    fun beginTouch(host: Int, view: View, event: MotionEvent): Int {
+                  if (!measuring) return -1
+                  if (touchN >= MAX_TOUCH) { overflow++; return -1 }''','''    fun beginTouch(host: Int, view: View, event: MotionEvent): Int {
+                  if (!measuring) {
+                      val pending = pendingSpec
+                      // Never begin a measured arm halfway through a gesture from the
+                      // previous policy. The next fresh page DOWN is the block boundary.
+                      if (!running || pending == null || event.actionMasked != MotionEvent.ACTION_DOWN) return -1
+                      activateBlock(pending)
+                  }
+                  if (!measuring) return -1
+                  if (touchN >= MAX_TOUCH) { overflow++; return -1 }''')
+          once('''            results.clear()
+                      specs = buildList {
+                          repeat(count) { pair ->
+                              // AB / BA / BA / AB is balanced against linear drift while every
+                              // pair still contains both methods back-to-back.
+                              val aFirst = pair % 4 == 0 || pair % 4 == 3
+                              val first = if (aFirst) PageTouchDispatch.Arm.BUFFERED_139 else PageTouchDispatch.Arm.UNBUFFERED_140''','''            results.clear()
+                      blindFlip = Random.nextBoolean()
+                      val orderFlip = Random.nextBoolean()
+                      specs = buildList {
+                          repeat(count) { pair ->
+                              // AB / BA / BA / AB is balanced against linear drift. Flip the
+                              // entire pattern randomly per run so the first method is not fixed.
+                              val patternFirst = pair % 4 == 0 || pair % 4 == 3
+                              val aFirst = if (orderFlip) !patternFirst else patternFirst
+                              val first = if (aFirst) PageTouchDispatch.Arm.BUFFERED_139 else PageTouchDispatch.Arm.UNBUFFERED_140''')
+          once('''            toast("A/B ready. Use the real page normally. First measured block starts in 6 seconds.")''','''            toast("A/B ready. Arms are blinded. Use the real page normally; each measured block begins silently on a fresh webpage gesture after its setup cue disappears.")''')
+          old='''    private fun scheduleSpec() {
+                  if (!running) return
+                  if (specIndex >= specs.size) { finishSuite(); return }
+                  val spec = specs[specIndex]
+                  PageTouchDispatch.arm = spec.arm
+                  measuring = false
+                  toast("Pair ${spec.pair + 1}/${specs.size / 2} · ${spec.arm.shortLabel} · settle ${SETTLE_MS / 1000.0}s, then interact continuously")
+                  main.postDelayed({ startBlock(spec) }, SETTLE_MS)
+              }
+
+              private fun startBlock(spec: Spec) {
+                  if (!running || specs.getOrNull(specIndex) != spec) return
+                  resetSamples()
+                  blockId++
+                  startedAtMs = android.os.SystemClock.elapsedRealtime()
+                  cpuStartMs = Process.getElapsedCpuTime()
+                  pssStartKb = Debug.getPss()
+                  thermalStart = thermal()
+                  currentStartUa = batteryInt(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+                  energyStartNwh = batteryLong(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
+                  nativeStart = nativeStats()
+                  measuring = true
+                  lastFrameNs = 0L
+                  toast("MEASURE ${spec.arm.shortLabel} — keep scrolling/dragging/tapping; no confirmation tap needed")
+                  main.postDelayed({ finishBlock(spec) }, blockMs)
+              }
+'''
+          new='''    private fun scheduleSpec() {
+                  if (!running) return
+                  if (specIndex >= specs.size) { finishSuite(); return }
+                  val spec = specs[specIndex]
+                  PageTouchDispatch.arm = spec.arm
+                  measuring = false
+                  pendingSpec = null
+                  toast("Pair ${spec.pair + 1}/${specs.size / 2} · Method ${blindLabel(spec.arm)} · setup. After this cue disappears, your next NEW finger/stylus DOWN on the webpage silently starts the ${blockMs / 1000}s measured block.")
+                  main.postDelayed({ armBlock(spec) }, SETTLE_MS)
+              }
+
+              private fun armBlock(spec: Spec) {
+                  if (!running || specs.getOrNull(specIndex) != spec) return
+                  resetSamples()
+                  pendingSpec = spec
+              }
+
+              private fun activateBlock(spec: Spec) {
+                  if (!running || measuring || pendingSpec != spec || specs.getOrNull(specIndex) != spec) return
+                  pendingSpec = null
+                  blockId++
+                  startedAtMs = android.os.SystemClock.elapsedRealtime()
+                  cpuStartMs = Process.getElapsedCpuTime()
+                  pssStartKb = Debug.getPss()
+                  thermalStart = thermal()
+                  currentStartUa = batteryInt(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+                  energyStartNwh = batteryLong(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
+                  nativeStart = nativeStats()
+                  measuring = true
+                  lastFrameNs = 0L
+                  // No toast/overlay/haptic/confirmation contaminates the measured interval.
+                  main.postDelayed({ finishBlock(spec) }, blockMs)
+              }
+
+              private fun blindLabel(arm: PageTouchDispatch.Arm): String = when (arm) {
+                  PageTouchDispatch.Arm.BUFFERED_139 -> if (blindFlip) "B" else "A"
+                  PageTouchDispatch.Arm.UNBUFFERED_140 -> if (blindFlip) "A" else "B"
+                  PageTouchDispatch.Arm.STYLUS_ONLY -> "C"
+              }
+'''
+          once(old,new)
+          once('''        measuring = false
+                  val elapsed = max(1L, android.os.SystemClock.elapsedRealtime() - startedAtMs)''','''        measuring = false
+                  pendingSpec = null
+                  val elapsed = max(1L, android.os.SystemClock.elapsedRealtime() - startedAtMs)''')
+          once('''        val thermalMatched = thermalStart < 0 || thermalEnd < 0 || abs(thermalEnd - thermalStart) <= 1''','''        // Moderate-or-higher throttling and thermal state transitions are excluded.
+                  val thermalMatched = thermalStart < 0 || (thermalEnd == thermalStart && thermalStart < 2)''')
+          once('''            if (a != null && b != null && a.valid && b.valid && a.dominantHost == b.dominantHost) paired.add(a to b)''','''            val thermalPairMatched = a == null || b == null || a.thermalStart < 0 || b.thermalStart < 0 || a.thermalStart == b.thermalStart
+                      if (a != null && b != null && a.valid && b.valid && a.dominantHost == b.dominantHost && thermalPairMatched) paired.add(a to b)''')
+          once('''            append(overall).append("\\n")
+                      append("Statistical unit: ").append(paired.size).append(" counterbalanced paired blocks; 95% bootstrap CI over pair differences.\\n")''','''            append(overall).append("\\n")
+                      append("Blinded during collection: Method A=").append(if (blindFlip) "140 unbuffered" else "139 buffered")
+                          .append(", Method B=").append(if (blindFlip) "139 buffered" else "140 unbuffered").append(".\\n")
+                      append("Statistical unit: ").append(paired.size).append(" randomized/counterbalanced paired blocks; 95% bootstrap CI over pair differences.\\n")''')
+          once('''        running = false; measuring = false; frameLoop = false
+                  Choreographer.getInstance().removeFrameCallback(frameCallback)''','''        running = false; measuring = false; pendingSpec = null; frameLoop = false
+                  Choreographer.getInstance().removeFrameCallback(frameCallback)''')
+          once('''        running = false; measuring = false; frameLoop = false
+                  main.removeCallbacksAndMessages(null)''','''        running = false; measuring = false; pendingSpec = null; frameLoop = false
+                  main.removeCallbacksAndMessages(null)''')
+          p.write_text(s)
+
+          w=Path('.github/workflows/input-ab-benchmark141.yml')
+          y=w.read_text()
+          old="assert any(a.attrib.get(ns+'name')=='.InputBenchmarkActivity' for a in acts)"
+          new="assert any(a.attrib.get(ns+'name','').endswith('.InputBenchmarkActivity') for a in acts)"
+          if old in y:
+              assert y.count(old)==1
+              y=y.replace(old,new)
+          else: assert new in y
+          # Harden source gate against future reintroduction of a measurement-start cue.
+          old2="assert 'need at least 6' in b and 'Missing data is not a tie' in b"
+          new2="""assert 'need at least 6' in b and 'Missing data is not a tie' in b
+          assert 'pendingSpec' in b and 'event.actionMasked != MotionEvent.ACTION_DOWN' in b
+          assert 'No toast/overlay/haptic/confirmation contaminates the measured interval.' in b
+          assert 'randomized/counterbalanced paired blocks' in b"""
+          if old2 in y:
+              assert y.count(old2)==1
+              y=y.replace(old2,new2)
+          else: assert new2 in y
+          w.write_text(y)
+          PY
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/InputBenchmark.kt .github/workflows/input-ab-benchmark141.yml
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(benchmark): blind paired arms and anchor measurements to uncontaminated fresh gestures'
+            git push origin HEAD:input-ab-benchmark141
+          fi
+          gh workflow run 357194963 --ref input-ab-benchmark141
+          git rev-parse HEAD
