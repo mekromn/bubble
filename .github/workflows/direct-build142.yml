@@ -13,6 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # Re-run after normalizing the direct SurfaceView to Bubble's Android-16 UI frame-rate contract.
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
