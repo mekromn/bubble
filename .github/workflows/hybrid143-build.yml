@@ -6,6 +6,7 @@ on:
       - hybrid-direct143
     paths:
       - 'app/**'
+      - 'tools/**'
       - '.github/workflows/hybrid143-build.yml'
 permissions:
   contents: read
