@@ -3,6 +3,7 @@ package com.mekromn.bubble
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
 import org.mozilla.geckoview.GeckoView
 
 /**
@@ -24,6 +25,11 @@ internal open class LiveGeckoView(context: Context) : GeckoView(context) {
     private fun reconcileLater() {
         main.removeCallbacks(reconcile)
         main.post(reconcile)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        PageTouchDispatch.request(this, event, session != null)
+        return super.onTouchEvent(event)
     }
 
     override fun hasWindowFocus(): Boolean {

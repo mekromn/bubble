@@ -11,8 +11,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 139
-        versionName = "0.7.11-relay-bp-unified"
+        versionCode = 140
+        versionName = "0.7.12-relay-bp-input"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += geckoAbi }
         externalNativeBuild {

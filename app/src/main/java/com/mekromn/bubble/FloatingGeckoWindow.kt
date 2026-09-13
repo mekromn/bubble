@@ -474,6 +474,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             val current = session ?: return false
+            PageTouchDispatch.request(this, event, true)
             if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
             current.panZoomController.onTouchEvent(event)
             return true

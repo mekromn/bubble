@@ -181,10 +181,10 @@ class RelayLatestBpRuntimeTest {
                 val color=if(id=="A")"rgb(220,30,180)" else "rgb(20,200,210)"
                 val scrollStyle=if(id=="B")"html,body{overflow:auto;height:auto}body{min-height:300vh}" else ""
                 val scrollScript=if(id=="B")"addEventListener('scroll',()=>{document.title='SCROLLED-B-'+Math.round(scrollY)})" else ""
-                val html="""<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>RELAY-$id</title>
+                val html=(if(request.contains("/input")) PageTouchChecks.HTML else """<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>RELAY-$id</title>
                 <style>html,body{margin:0;height:100%;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%}button,input{position:absolute;left:10%;width:80%;height:10%;z-index:2}button{top:40%}input{top:55%}$scrollStyle</style>
                 <canvas id="c"></canvas><button onclick="document.title='CLICKED-$id'; flipped=!flipped;paint()">Relay button $id</button><input onfocus="document.title='FOCUSED-$id'" oninput="document.title='TYPED-'+this.value" aria-label="Relay composer">
-                <script>const c=document.querySelector('canvas'),g=c.getContext('2d');let flipped=false;function paint(){c.width=innerWidth;c.height=innerHeight;g.fillStyle=flipped?'rgb(20,200,210)':'$color';g.fillRect(0,0,c.width,c.height);g.fillStyle='yellow';g.fillRect(8,8,32,32)}addEventListener('resize',paint);paint();$scrollScript</script>""".toByteArray()
+                <script>const c=document.querySelector('canvas'),g=c.getContext('2d');let flipped=false;function paint(){c.width=innerWidth;c.height=innerHeight;g.fillStyle=flipped?'rgb(20,200,210)':'$color';g.fillRect(0,0,c.width,c.height);g.fillStyle='yellow';g.fillRect(8,8,32,32)}addEventListener('resize',paint);paint();$scrollScript</script>""").toByteArray()
                 s.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.size}\r\nConnection: close\r\n\r\n").toByteArray());s.getOutputStream().write(html)
             }}catch(_:Exception){if(server.isClosed)break}
         }.apply{isDaemon=true;start()}
@@ -211,6 +211,8 @@ class RelayLatestBpRuntimeTest {
                 assertTrue("Private startup policy exists",hardwareConfig.isFile)
                 assertTrue(hardwareConfig.readText().contains("gfx.webrender.all: true"))
                 verifyHardwarePreferences(hardwareConfig)
+                PageTouchChecks(inst).run("fullscreen", "http://127.0.0.1:${server.localPort}/input?fullscreen", "http://127.0.0.1:${server.localPort}/one")
+                await("fullscreen-after-input"){pageHasColor(true)}
                 scenario.onActivity{a->a.geckoView.postOnAnimation{a.collapse(FloatingMode.CHAT)}}
                 await("floating"){checkMain{BubbleService.active?.window?.mode==FloatingMode.CHAT&&Workspace.peek()?.floatingVisible==true}}
                 await("floating-red"){pageHasColor(true)};save("floating-A")
@@ -227,6 +229,8 @@ class RelayLatestBpRuntimeTest {
                     assertFalse("Canceled Back must not start collapse",w.isTransitioning)
                 }
                 geometryAndNativeControlChecks()
+                PageTouchChecks(inst).run("floating", "http://127.0.0.1:${server.localPort}/input?floating", "http://127.0.0.1:${server.localPort}/one")
+                await("floating-after-input"){pageHasColor(true)}
                 var beforeMove: WindowBox?=null
                 main { beforeMove=BubbleService.active!!.window!!.box }
                 val handle=descriptionBounds("Drag floating window")
