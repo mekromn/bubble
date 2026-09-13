@@ -1,0 +1,83 @@
+name: Bubble 142 direct renderer build
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - direct-gecko-arena142
+    paths:
+      - 'app/**'
+      - '.github/workflows/direct-build142.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Source and native regressions
+        run: |
+          node tools/test-foreground.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          bash tools/test-relay-native.sh
+      - name: Build optimized ARM64 arena
+        run: |
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-142-DIRECT-vs-RELAY-ARENA-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk > dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/*.apk > dist/AndroidManifest.xml
+          sha256sum dist/*.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-direct-arena142-arm64
+          path: dist/
+          retention-days: 7
+      - name: Build optimized x86_64 instrumentation
+        run: gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Direct to relay to direct runtime test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            adb shell am instrument -w -e class com.mekromn.bubble.DirectGeckoArenaRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > arena-runtime.txt 2>&1 || true
+            adb logcat -d > arena-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat arena-runtime.txt
+            grep -q 'OK (1 test)' arena-runtime.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bubble-direct-arena142-runtime
+          path: |
+            arena-runtime.txt
+            arena-logcat.txt
+            runtime-evidence/
+          retention-days: 7
