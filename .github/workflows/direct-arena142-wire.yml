@@ -1,0 +1,70 @@
+name: Wire direct renderer arena 142
+on:
+  workflow_dispatch:
+  push:
+    branches: [direct-gecko-arena142]
+    paths: ['.github/workflows/direct-arena142-wire.yml']
+permissions:
+  contents: write
+jobs:
+  wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply narrow source wiring
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          def once(path, old, new):
+              p=Path(path); t=p.read_text()
+              if old in t:
+                  assert t.count(old)==1,(path,t.count(old))
+                  p.write_text(t.replace(old,new))
+              else:
+                  assert new in t,(path,new)
+          p='app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt'
+          once(p,'internal class FloatingGeckoWindow(private val context: Context) {\n    private val host = NativeBufferHost(context)',
+                 'internal class FloatingGeckoWindow(private val context: Context) : FloatingPageHost {\n    private val host = NativeBufferHost(context)\n    override val transport = RendererArena.Transport.RELAY_LATEST_BP')
+          once(p,'    val view: LiveGeckoView = RawSessionBridge(context, host).apply {','    override val view: LiveGeckoView = RawSessionBridge(context, host).apply {')
+          for old,new in [
+              ('    fun show(parent: FrameLayout): Boolean {','    override fun show(parent: FrameLayout): Boolean {'),
+              ('    fun geometryChanged() { host.rootView.invalidate() }','    override fun geometryChanged() { host.rootView.invalidate() }'),
+              ('    fun coverForReveal(covered: Boolean) { host.coveredForReveal = covered; geometryChanged() }','    override fun coverForReveal(covered: Boolean) { host.coveredForReveal = covered; geometryChanged() }'),
+              ('    fun backgroundCutout(): View? = host.takeIf { it.hasLiveLayer && !it.coveredForReveal }','    override fun backgroundCutout(): View? = host.takeIf { it.hasLiveLayer && !it.coveredForReveal }'),
+              ('    fun hide() {','    override fun hide() {'),
+              ('    fun destroy() = hide()','    override fun destroy() = hide()')]: once(p,old,new)
+          p='app/src/main/java/com/mekromn/bubble/FloatingWindow.kt'
+          once(p,'    private var geckoWindow: FloatingGeckoWindow?=null','    private var geckoWindow: FloatingPageHost?=null')
+          once(p,'            if(geckoWindow==null)geckoWindow=FloatingGeckoWindow(context)','            if(geckoWindow==null)geckoWindow=RendererArena.createHost(context)')
+          marker='    fun configurationChanged() {'
+          method='''    internal fun setRendererTransportForArena(next: RendererArena.Transport) {
+        RendererArena.transport=next
+        if(destroyed)return
+        val current=geckoWindow
+        if(current?.transport==next) { render(); return }
+        current?.view?.let { workspace.detachSurface(it) }
+        current?.destroy()
+        geckoWindow=null
+        if(mode==FloatingMode.CHAT) {
+            geckoWindow=RendererArena.createHost(context)
+            setPanelBackground(FloatingMode.CHAT)
+            render()
+        }
+    }
+'''
+          t=Path(p).read_text()
+          if method not in t:
+              assert marker in t
+              Path(p).write_text(t.replace(marker,method+marker,1))
+          PY
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt app/src/main/java/com/mekromn/bubble/FloatingWindow.kt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat(renderer): wire live relay/direct transport switch in floating window'
+            git push origin HEAD:direct-gecko-arena142
+          fi
