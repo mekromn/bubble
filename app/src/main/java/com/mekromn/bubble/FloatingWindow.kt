@@ -56,7 +56,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var count: GlyphView?=null
     private var backControl: GlyphView?=null
     private var bubble: GlassBubble?=null
-    private var geckoWindow: FloatingGeckoWindow?=null
+    private var geckoWindow: FloatingPageHost?=null
     private var pageContainer: FrameLayout?=null
     private val gecko: LiveGeckoView? get()=geckoWindow?.view
     private var backCallback: android.window.OnBackInvokedCallback?=null
@@ -311,7 +311,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
             column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
         } else {
-            if(geckoWindow==null)geckoWindow=FloatingGeckoWindow(context)
+            if(geckoWindow==null)geckoWindow=RendererArena.createHost(context)
             val content=FrameLayout(context).also { pageContainer=it }
             error=Ui.text(context,"",13f,Ui.TEXT).apply {
                 setPadding(d(20),d(20),d(20),d(20)); background=Ui.shape(context,Ui.SURFACE,20f)
@@ -644,6 +644,20 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             ViewCompat.addAccessibilityAction(view,name) { _,_ -> place(rectangle.copy(x=rectangle.x+direction.first*d(40),y=rectangle.y+direction.second*d(40)),false); savePosition(false); true }
         }
         ViewCompat.addAccessibilityAction(view,"Hide in notification") { _,_ -> service.park() }
+    }
+    internal fun setRendererTransportForArena(next: RendererArena.Transport) {
+        RendererArena.transport=next
+        if(destroyed)return
+        val current=geckoWindow
+        if(current?.transport==next) { render(); return }
+        current?.view?.let { workspace.detachSurface(it) }
+        current?.destroy()
+        geckoWindow=null
+        if(mode==FloatingMode.CHAT) {
+            geckoWindow=RendererArena.createHost(context)
+            setPanelBackground(FloatingMode.CHAT)
+            render()
+        }
     }
     fun configurationChanged() {
         if(!destroyed) { QuickPanel.dismissFor(root); motion.cancel(); dismiss.hide(true); chatBox=null; chooserBox=null; place(if(mode==FloatingMode.BUBBLE)headBox() else expandedBox(),true) }

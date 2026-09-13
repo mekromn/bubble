@@ -30,12 +30,13 @@ import org.mozilla.geckoview.GeckoSession
 
 /** Bubble floating renderer: the user-selected, queued relay_latest_bp transport. */
 @SuppressLint("NewApi")
-internal class FloatingGeckoWindow(private val context: Context) {
+internal class FloatingGeckoWindow(private val context: Context) : FloatingPageHost {
     private val host = NativeBufferHost(context)
+    override val transport = RendererArena.Transport.RELAY_LATEST_BP
 
     // This remains a DETACHED bookkeeping adapter. Only host and its real
     // FrameLayout accessibility parent join the existing chrome hierarchy.
-    val view: LiveGeckoView = RawSessionBridge(context, host).apply {
+    override val view: LiveGeckoView = RawSessionBridge(context, host).apply {
         visibility = View.INVISIBLE
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
     }
@@ -46,7 +47,7 @@ internal class FloatingGeckoWindow(private val context: Context) {
     private var container: FrameLayout? = null
 
     /** Attach to the existing floating page slot; never allocate another Window/ViewRoot. */
-    fun show(parent: FrameLayout): Boolean {
+    override fun show(parent: FrameLayout): Boolean {
         if (Build.VERSION.SDK_INT < 36) {
             Toast.makeText(context, "The native floating renderer requires Android 16", Toast.LENGTH_LONG).show()
             return false
@@ -69,17 +70,17 @@ internal class FloatingGeckoWindow(private val context: Context) {
     }
 
     /** Called only by UI animation/layout, not by webpage rendering or buffer callbacks. */
-    fun geometryChanged() { host.rootView.invalidate() }
-    fun coverForReveal(covered: Boolean) { host.coveredForReveal = covered; geometryChanged() }
-    fun backgroundCutout(): View? = host.takeIf { it.hasLiveLayer && !it.coveredForReveal }
+    override fun geometryChanged() { host.rootView.invalidate() }
+    override fun coverForReveal(covered: Boolean) { host.coveredForReveal = covered; geometryChanged() }
+    override fun backgroundCutout(): View? = host.takeIf { it.hasLiveLayer && !it.coveredForReveal }
 
-    fun hide() {
+    override fun hide() {
         view.releaseSession()
         host.releasePipeline()
         (root.parent as? ViewGroup)?.removeView(root)
         container = null
     }
-    fun destroy() = hide()
+    override fun destroy() = hide()
 
     private class RawSessionBridge(
         context: Context,
