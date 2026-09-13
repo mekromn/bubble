@@ -1,48 +1,65 @@
-name: Fix Bubble 143 hybrid host handoff
+name: Bubble 143 SurfaceView composition diagnosis
 on:
   workflow_dispatch:
   push:
     branches: [hybrid-direct143]
     paths: ['.github/workflows/hybrid143-fix-call.yml']
 permissions:
-  contents: write
-  actions: write
+  contents: read
 jobs:
-  apply:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
-          fetch-depth: 0
-      - name: Patch host plumbing, commit, and dispatch full hybrid gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Build optimized x86_64 production app plus diagnostic test only
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          def one(path, old, new):
-              p=Path(path); s=p.read_text()
-              if old in s:
-                  assert s.count(old)==1,(path,s.count(old))
-                  p.write_text(s.replace(old,new))
-              else:
-                  assert new in s,path
-          one('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt',
-              '    val geckoView: GeckoView? get()=gecko\n',
-              '    val geckoView: GeckoView? get()=gecko\n    internal val pageHost: FloatingPageHost? get()=geckoWindow\n')
-          one('app/src/main/java/com/mekromn/bubble/BubbleService.kt',
-              '            try { FullscreenHandoff.launchFromFloating(this, source, intent); return }',
-              '            try { FullscreenHandoff.launchFromFloating(this, source, window?.pageHost, intent); return }')
-          PY
-          git diff --check
-          grep -q 'internal val pageHost: FloatingPageHost? get()=geckoWindow' app/src/main/java/com/mekromn/bubble/FloatingWindow.kt
-          grep -q 'launchFromFloating(this, source, window?.pageHost, intent)' app/src/main/java/com/mekromn/bubble/BubbleService.kt
-          git add app/src/main/java/com/mekromn/bubble/FloatingWindow.kt app/src/main/java/com/mekromn/bubble/BubbleService.kt
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix(hybrid): pass direct floating host into snapshot capture'
-          git push origin HEAD:hybrid-direct143
-          gh workflow run hybrid143-build.yml --ref hybrid-direct143
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest 2>&1 | tee diagnostic-build.txt
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Sample Gecko compositor, SurfaceView and final screen independently
+        id: device
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 240s adb shell am instrument -w -e class com.mekromn.bubble.HybridDirectRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > diagnostic-runtime.txt 2>&1 || true
+            adb logcat -d > diagnostic-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence diagnostic-evidence || true
+            cat diagnostic-runtime.txt
+            cat diagnostic-evidence/direct-surface-diagnostic.txt 2>/dev/null || true
+            grep -q 'OK (1 test)' diagnostic-runtime.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bubble143-surface-composition-diagnosis
+          path: |
+            diagnostic-build.txt
+            diagnostic-runtime.txt
+            diagnostic-logcat.txt
+            diagnostic-evidence/
+          retention-days: 7
