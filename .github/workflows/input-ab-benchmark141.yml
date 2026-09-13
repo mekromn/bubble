@@ -1,0 +1,188 @@
+name: Bubble 141 production input A-B benchmark
+on:
+  workflow_dispatch:
+  push:
+    branches: [input-ab-benchmark141]
+    paths: ['app/**', 'tools/**', '.github/workflows/input-ab-benchmark141.yml', 'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties']
+permissions:
+  contents: write
+concurrency:
+  group: bubble-input-ab-141
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Wire floating production host into the same recorder, once
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt')
+          old='''        override fun onTouchEvent(event: MotionEvent): Boolean {
+                      val current = session ?: return false
+                      PageTouchDispatch.request(this, event, true)
+                      if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
+                      current.panZoomController.onTouchEvent(event)
+                      return true
+                  }'''
+          new='''        override fun onTouchEvent(event: MotionEvent): Boolean {
+                      val current = session ?: return false
+                      val token = InputBenchmark.beginTouch(InputBenchmark.HOST_FLOATING, this, event)
+                      return try {
+                          PageTouchDispatch.request(this, event, true)
+                          if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
+                          current.panZoomController.onTouchEvent(event)
+                          true
+                      } finally {
+                          InputBenchmark.endTouch(token)
+                      }
+                  }'''
+          text=p.read_text()
+          if old in text:
+              assert text.count(old)==1
+              p.write_text(text.replace(old,new))
+          else:
+              assert new in text, 'expected floating onTouchEvent shape not found'
+          PY
+          grep -q 'HOST_FULLSCREEN' app/src/main/java/com/mekromn/bubble/LiveGeckoView.kt
+          grep -q 'HOST_FLOATING' app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+          grep -q 'BUFFERED_139' app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt
+          grep -q 'UNBUFFERED_140' app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'feat(benchmark): record floating input around unchanged APZ handler'
+            git push origin HEAD:input-ab-benchmark141
+          fi
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Existing source/native regressions plus benchmark invariants
+        run: |
+          set -euo pipefail
+          node tools/test-foreground.cjs | tee foreground-tests.txt
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          bash tools/test-relay-native.sh | tee native-unit-tests.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt').read_text()
+          assert 'Arm.BUFFERED_139 -> false' in p
+          assert 'Arm.UNBUFFERED_140 -> true' in p
+          for f in ('LiveGeckoView.kt','FloatingGeckoWindow.kt'):
+              t=Path('app/src/main/java/com/mekromn/bubble/'+f).read_text()
+              assert 'InputBenchmark.beginTouch' in t and 'InputBenchmark.endTouch' in t
+          b=Path('app/src/main/java/com/mekromn/bubble/InputBenchmark.kt').read_text()
+          assert 'counterbalanced' in b and 'bootstrap' in b and 'NO DECISION' in b
+          assert 'need at least 6' in b and 'Missing data is not a tie' in b
+          PY
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+          cache-read-only: false
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Build optimized same-identity ARM64 benchmark
+        run: |
+          set -euo pipefail
+          echo '4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks' | sha256sum -c -
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance 2>&1 | tee benchmark-build.txt
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-141-139-vs-140-PRODUCTION-AB-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk > dist/signature.txt
+          grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/*.apk > dist/AndroidManifest.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('dist/AndroidManifest.xml').getroot();ns='{http://schemas.android.com/apk/res/android}'
+          assert root.attrib['package']=='com.mekromn.bubble.debug'
+          assert root.attrib[ns+'versionCode']=='141'
+          app=root.find('application')
+          assert app.attrib.get(ns+'debuggable','false')=='false'
+          assert app.attrib.get(ns+'hardwareAccelerated')=='true'
+          acts=app.findall('activity')
+          assert any(a.attrib.get(ns+'name')=='.InputBenchmarkActivity' for a in acts)
+          PY
+          python3 tools/audit-hardware-apk.py dist/Bubble-141-139-vs-140-PRODUCTION-AB-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          cp native-unit-tests.txt foreground-tests.txt dist/
+          sha256sum dist/*.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+          git archive HEAD -- . ':!app/signing' | gzip > dist/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-input-ab141-arm64
+          path: dist/
+          retention-days: 7
+      - name: Build same optimized browser and instrumentation for x86_64
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest 2>&1 | tee benchmark-emulator-build.txt
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Preserve Build 140 browser/window/renderer integration
+        id: runtime
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 320s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > benchmark-runtime.txt 2>&1 || true
+            adb logcat -d > benchmark-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat benchmark-runtime.txt
+            grep -q 'OK (1 test)' benchmark-runtime.txt
+      - name: Preserve exact verification result
+        if: always() && !cancelled()
+        env:
+          RUNTIME: ${{ steps.runtime.outcome }}
+        run: |
+          mkdir -p evidence
+          printf 'Android 16 optimized production-window regression: %s\nSource: %s\nEmulator correctness only; Pixel A/B performance must be measured on the physical device.\n' "$RUNTIME" "$SOURCE_COMMIT" > evidence/STATUS.txt
+          cp benchmark-*.txt native-unit-tests.txt foreground-tests.txt evidence/ 2>/dev/null || true
+          cp -r runtime-evidence app/build/reports evidence/ 2>/dev/null || true
+          tar -czf benchmark141-verification.tar.gz evidence
+      - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
+        with:
+          name: bubble-input-ab141-verification
+          path: evidence/
+          retention-days: 7
+      - name: Publish only after full browser regression passes
+        if: success() && steps.runtime.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="bubble-input-ab-141-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cat > dist/NOTES.md <<EOF
+          Bubble 141 — production 139 vs 140 A/B benchmark
+          Installs OVER 140 with the same package/certificate/profile. Non-debuggable optimized browser, not the old Renderer Lab.
+          Both arms share the exact same Gecko engine, relay_latest_bp renderer, unified window, hardware preferences, chrome, profile and controls. The runtime switch changes only Android page touch batching: 139=no requestUnbufferedDispatch; 140=gesture-scoped requestUnbufferedDispatch on DOWN.
+          A second launcher icon 'Bubble A/B Benchmark' starts paired counterbalanced blocks on the real fullscreen or floating page. No positive confirmation tap occurs during measured blocks. Results use paired blocks, explicit practical margins, 95% bootstrap confidence intervals, and export raw CSV + summary to Downloads/Bubble Benchmarks.
+          Controlled loopback stress page adds browser-domain pointer delivery/rAF/EventTiming observations without Internet variability. Real sites use Android-input/UI/native-relay observations only; root UI cadence and relay release counts are not mislabeled as physical presentation or touch-to-photon timing.
+          Android regression gate passed. Physical Pixel benchmark results are intentionally not claimed by CI.
+          Source: ${SOURCE_COMMIT}
+          EOF
+          gh release create "$TAG" dist/*.apk dist/SHA256SUMS dist/SOURCE.txt dist/signature.txt dist/HARDWARE_AUDIT.json benchmark141-verification.tar.gz --target "$SOURCE_COMMIT" --title 'Bubble 141 — production 139 vs 140 A/B benchmark' --notes-file dist/NOTES.md --prerelease
