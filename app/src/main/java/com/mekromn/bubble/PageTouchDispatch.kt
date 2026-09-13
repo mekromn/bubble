@@ -30,14 +30,15 @@ internal object PageTouchDispatch {
             (source and InputDevice.SOURCE_TOUCHSCREEN == InputDevice.SOURCE_TOUCHSCREEN ||
                 source and InputDevice.SOURCE_STYLUS == InputDevice.SOURCE_STYLUS)
 
+    fun shouldUnbuffer(selected: Arm, source: Int): Boolean = when (selected) {
+        Arm.BUFFERED_139 -> false
+        Arm.UNBUFFERED_140 -> true
+        Arm.STYLUS_ONLY -> source and InputDevice.SOURCE_STYLUS == InputDevice.SOURCE_STYLUS
+    }
+
     fun request(view: View, event: MotionEvent, hasSession: Boolean) {
         if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
-        val shouldUnbuffer = when (arm) {
-            Arm.BUFFERED_139 -> false
-            Arm.UNBUFFERED_140 -> true
-            Arm.STYLUS_ONLY -> event.source and InputDevice.SOURCE_STYLUS == InputDevice.SOURCE_STYLUS
-        }
-        if (shouldUnbuffer) {
+        if (shouldUnbuffer(arm, event.source)) {
             // Gesture-scoped public API. No event copy/queue/retimestamp/synthesis.
             view.requestUnbufferedDispatch(event)
         }
