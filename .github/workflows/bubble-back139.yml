@@ -1,0 +1,83 @@
+name: Bubble 139 Back recovery
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast139]
+    paths: ['.github/workflows/bubble-back139.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Commit precise source fix and stronger runtime assertions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          def replace_once(path, old, new):
+              p=Path(path);text=p.read_text()
+              if old in text:
+                  assert text.count(old)==1,(path,text.count(old))
+                  p.write_text(text.replace(old,new))
+              else: assert new in text,path
+          replace_once('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt',
+              'if(event.action==KeyEvent.ACTION_UP)back(); return true',
+              '''// Android can forward a canceled key-up after the platform/IME
+                          // already consumed Back. It must not dismiss a second layer.
+                          if(event.action==KeyEvent.ACTION_UP && !event.isCanceled)back()
+                          return true''')
+          replace_once('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt',
+              'else if(imeBottom>0)context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)',
+              '''// A repositioned/floating keyboard can be visible with zero overlap.
+                  // imeBottom is layout geometry, not the keyboard's visibility state.
+                  else if(ViewCompat.getRootWindowInsets(root)?.isVisible(WindowInsetsCompat.Type.ime())==true)
+                      context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)''')
+          replace_once('app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRuntimeTest.kt',
+              '                assertSharedHost("initial")',
+              '''                assertSharedHost("initial")
+                          // Cancellation is not a second navigation. Exercise the actual
+                          // root key handler deterministically before the real IME test.
+                          main {
+                              val w=requireNotNull(BubbleService.active?.window)
+                              val t=SystemClock.uptimeMillis()
+                              w.transitionView.dispatchKeyEvent(android.view.KeyEvent(t,t,android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_BACK,0))
+                              val up=android.view.KeyEvent(t,t+1,android.view.KeyEvent.ACTION_UP,android.view.KeyEvent.KEYCODE_BACK,0)
+                              w.transitionView.dispatchKeyEvent(android.view.KeyEvent.changeFlags(up,android.view.KeyEvent.FLAG_CANCELED))
+                              assertEquals(FloatingMode.CHAT,w.mode)
+                              assertFalse("Canceled Back must not start collapse",w.isTransitioning)
+                          }''')
+          replace_once('app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRuntimeTest.kt',
+              '                main{second=Workspace.peek()!!.create("http://127.0.0.1:${server.localPort}/two").id;BubbleService.active!!.window!!.openChat(second)}',
+              '''                save("ime-hidden-chat-retained")
+                          // A separate second Back, after IME is hidden, still collapses.
+                          // Do not fix the first-Back bug by disabling navigation.
+                          shell("input keyevent KEYCODE_BACK")
+                          await("second-back-collapses"){checkMain{BubbleService.active?.window?.mode==FloatingMode.BUBBLE}}
+                          main { BubbleService.active!!.window!!.openChat(first) }
+                          await("back-reopen-same-page"){pageHasColor(true)}
+                          assertSharedHost("back-reopened")
+                          File(context.getExternalFilesDir(null),"evidence/back-ime.txt").writeText(
+                              "PASS: canceled key-up does not dismiss; real Back hides IME without collapse; separate second Back collapses; retained page reopens. Correctness, not latency.\\n")
+                          main{second=Workspace.peek()!!.create("http://127.0.0.1:${server.localPort}/two").id;BubbleService.active!!.window!!.openChat(second)}''')
+          PY
+          node tools/test-foreground.cjs
+          node tools/test-embedded-page.cjs
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/FloatingWindow.kt app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRuntimeTest.kt
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(window): ignore canceled Back and keep visible IME dismissal separate from collapse'
+            git push origin HEAD:relay-latest-bp-fast139
+          fi
+          gh workflow run 356739449 --ref relay-latest-bp-fast139
+          git rev-parse HEAD
