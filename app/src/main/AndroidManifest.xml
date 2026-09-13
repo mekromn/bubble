@@ -13,12 +13,6 @@
             <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="https"/><data android:scheme="http"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
         </activity>
-        <activity android:name=".RendererArenaActivity" android:exported="true" android:label="Bubble Renderer Arena">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
         <activity android:name=".FloatingFileActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <activity android:name=".ArchivePickerActivity" android:exported="true" android:label="Bubble Archive Picker" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.archive_picker" android:theme="@style/Theme.Bubble.Prompt">
             <intent-filter>

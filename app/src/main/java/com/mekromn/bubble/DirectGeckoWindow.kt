@@ -2,6 +2,7 @@ package com.mekromn.bubble
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
@@ -38,6 +39,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     private val host = DirectSurfaceHost(context)
 
     override val transport = RendererArena.Transport.DIRECT_GECKO_SURFACE
+    override val pageView: View get() = host
 
     override val view: LiveGeckoView = RawSessionBridge(context, host).apply {
         visibility = View.INVISIBLE
@@ -81,6 +83,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
         geometryChanged()
     }
     override fun backgroundCutout(): View? = host.takeIf { it.hasLiveLayer && !it.coveredForReveal }
+    override fun capturePagePixels(done: (Bitmap?) -> Unit) = host.capturePagePixels(done)
 
     override fun hide() {
         view.releaseSession()
@@ -352,6 +355,14 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
             } finally {
                 tx.close()
             }
+        }
+
+        fun capturePagePixels(done: (Bitmap?) -> Unit) {
+            val gecko = display
+            if (gecko == null || !surfacePublished) { done(null); return }
+            try {
+                gecko.capturePixels().accept({ image -> done(image) }, { _ -> done(null) })
+            } catch (_: RuntimeException) { done(null) }
         }
 
         fun updateScreenOrigin() {

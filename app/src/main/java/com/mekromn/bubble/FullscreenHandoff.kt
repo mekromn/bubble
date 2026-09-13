@@ -35,6 +35,7 @@ internal object FullscreenHandoff {
     private const val GECKO_CAPTURE_TIMEOUT_MS = 280L
     private const val SURFACE_COPY_RETRIES = 3
     private const val SHRINK_WATCHDOG_MS = 1400L
+    private const val LIVE_DESTINATION_WARM_ALPHA = 0.002f
     private val main = Handler(Looper.getMainLooper())
     private val capturePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         isDither = true
@@ -42,6 +43,8 @@ internal object FullscreenHandoff {
     private var pendingFullscreenFrame: MorphFrame? = null
     private var shrinkOverlay: FullscreenShrinkOverlay? = null
     private var shrinkWatchdog: Runnable? = null
+    private var expandOverlay: FullscreenShrinkOverlay? = null
+    private var pendingExpandFrame: MorphFrame? = null
 
     // Compact diagnostics for the currently-developed transition. These do not alter the animation;
     // they let the Android runtime gate distinguish a bad source capture from a bad overlay handoff.
@@ -198,30 +201,38 @@ internal object FullscreenHandoff {
     }
 
     /**
-     * Keep floating -> fullscreen exactly on the accepted pre-matched-morph behavior. Android owns
-     * the clip reveal from the whole floating card; Bubble does not insert a screenshot compositor.
+     * Floating -> fullscreen hybrid handoff. Normal browsing stays direct-to-SurfaceView; only the
+     * brief cross-window geometry animation uses one frozen frame. Capture happens before the
+     * floating service can release Gecko's direct Surface.
      */
-    fun launchFromFloating(context: Context, source: View, intent: Intent) {
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    fun launchFromFloating(context: Context, source: View, host: FloatingPageHost?, intent: Intent) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         intent.putExtra(EXTRA_FROM_FLOATING, true)
-
-        var launchSource = source
-        var parent = source.parent
-        while (parent is View && parent.isLaidOut && parent.width > 0 && parent.height > 0) {
-            launchSource = parent
-            parent = parent.parent
+        cancelPendingExpandFrame()
+        captureFloatingFrame(source, host) { frame ->
+            if (frame == null) {
+                context.startActivity(intent)
+                return@captureFloatingFrame
+            }
+            pendingExpandFrame = frame
+            val overlay = FullscreenShrinkOverlay(
+                context.applicationContext,
+                frame,
+                fullscreenTarget(context),
+                Ui.dp(context,26f).toFloat(),
+                0f
+            )
+            expandOverlay?.detach()
+            expandOverlay = overlay
+            try {
+                overlay.attach { context.startActivity(intent) }
+            } catch (_: RuntimeException) {
+                if (expandOverlay === overlay) expandOverlay = null
+                pendingExpandFrame = null
+                overlay.detach()
+                context.startActivity(intent)
+            }
         }
-
-        val options = if (launchSource.isLaidOut && launchSource.width > 0 && launchSource.height > 0) {
-            ActivityOptions.makeClipRevealAnimation(
-                launchSource,
-                0,
-                0,
-                launchSource.width,
-                launchSource.height
-            ).toBundle()
-        } else null
-        context.startActivity(intent, options)
     }
 
     fun floatingTarget(context: Context, workspace: Workspace): WindowBox {
@@ -266,15 +277,45 @@ internal object FullscreenHandoff {
         root.pivotY = root.height / 2f
     }
 
-    /** Compatibility with BrowserActivity left by the rejected matched-morph experiment. */
-    fun isEnteringFullscreen(intent: Intent?): Boolean = false
-    fun finishIntoFullscreen(activity: Activity, root: View) = Unit
+    fun isEnteringFullscreen(intent: Intent?): Boolean =
+        intent?.getBooleanExtra(EXTRA_FROM_FLOATING,false)==true && expandOverlay!=null
+
+    fun finishIntoFullscreen(activity: Activity, root: View) {
+        val overlay=expandOverlay ?: run { root.alpha=1f; return }
+        pendingExpandFrame=null
+        fun begin(attempt:Int) {
+            if(activity.isFinishing) {
+                root.alpha=1f
+                if(expandOverlay===overlay)expandOverlay=null
+                overlay.detach(); return
+            }
+            if(!root.isAttachedToWindow || !root.isLaidOut || root.width<=0 || root.height<=0) {
+                if(attempt<30)main.postDelayed({begin(attempt+1)},8L)
+                else { root.alpha=1f; if(expandOverlay===overlay)expandOverlay=null; overlay.detach() }
+                return
+            }
+            // The direct fullscreen Gecko surface is already attached under the opaque frozen frame.
+            // Give it two 120-Hz opportunities before the screenshot starts moving.
+            root.alpha=LIVE_DESTINATION_WARM_ALPHA
+            root.postOnAnimation { root.postOnAnimation {
+                if(expandOverlay!==overlay)return@postOnAnimation
+                overlay.morphInto(root,durationMs=300L,crossfadeStart=.72f) {
+                    root.alpha=1f
+                    if(expandOverlay===overlay)expandOverlay=null
+                    overlay.detach()
+                    activity.intent?.removeExtra(EXTRA_FROM_FLOATING)
+                }
+            } }
+        }
+        begin(0)
+    }
 
     fun cancelAll() {
         cancelPendingFullscreenFrame()
+        cancelPendingExpandFrame()
         clearShrinkWatchdog()
-        shrinkOverlay?.detach()
-        shrinkOverlay = null
+        shrinkOverlay?.detach(); shrinkOverlay = null
+        expandOverlay?.detach(); expandOverlay = null
     }
 
     /**
@@ -595,6 +636,43 @@ internal object FullscreenHandoff {
         card.scaleY = 1f
         card.translationX = 0f
         card.translationY = 0f
+    }
+
+
+    private fun captureFloatingFrame(root: View, host: FloatingPageHost?, result: (MorphFrame?) -> Unit) {
+        if(!root.isLaidOut || root.width<=0 || root.height<=0 || !root.isAttachedToWindow) { result(null); return }
+        val base=drawFallback(root) ?: run { result(null); return }
+        val location=IntArray(2); root.getLocationOnScreen(location)
+        val box=WindowBox(location[0],location[1],root.width,root.height)
+        if(host==null) { result(MorphFrame(base,box)); return }
+        val finished=AtomicBoolean(false)
+        val timeout=Runnable { if(finished.compareAndSet(false,true)) result(MorphFrame(base,box)) }
+        main.postDelayed(timeout,GECKO_CAPTURE_TIMEOUT_MS)
+        host.capturePagePixels { pixels ->
+            if(!finished.compareAndSet(false,true)) { pixels?.safeRecycle(); return@capturePagePixels }
+            main.removeCallbacks(timeout)
+            if(pixels!=null && !pixels.isRecycled) {
+                try { compositeIntoOwner(host.pageView,root,base,pixels) } catch(_:Throwable) { }
+                pixels.safeRecycle()
+            }
+            result(MorphFrame(base,box))
+        }
+    }
+
+    private fun fullscreenTarget(context: Context): WindowBox {
+        val manager=context.getSystemService(WindowManager::class.java)
+        return if(Build.VERSION.SDK_INT>=30) {
+            val b=manager.maximumWindowMetrics.bounds
+            WindowBox(b.left,b.top,b.width().coerceAtLeast(1),b.height().coerceAtLeast(1))
+        } else {
+            val p=Point(); @Suppress("DEPRECATION") manager.defaultDisplay.getRealSize(p)
+            WindowBox(0,0,p.x.coerceAtLeast(1),p.y.coerceAtLeast(1))
+        }
+    }
+
+    private fun cancelPendingExpandFrame() {
+        if(expandOverlay==null) pendingExpandFrame?.bitmap.safeRecycle()
+        pendingExpandFrame=null
     }
 
     private fun cancelPendingFullscreenFrame() {

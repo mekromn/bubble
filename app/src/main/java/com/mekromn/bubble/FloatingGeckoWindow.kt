@@ -2,6 +2,7 @@ package com.mekromn.bubble
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -33,6 +34,7 @@ import org.mozilla.geckoview.GeckoSession
 internal class FloatingGeckoWindow(private val context: Context) : FloatingPageHost {
     private val host = NativeBufferHost(context)
     override val transport = RendererArena.Transport.RELAY_LATEST_BP
+    override val pageView: View get() = host
 
     // This remains a DETACHED bookkeeping adapter. Only host and its real
     // FrameLayout accessibility parent join the existing chrome hierarchy.
@@ -73,6 +75,7 @@ internal class FloatingGeckoWindow(private val context: Context) : FloatingPageH
     override fun geometryChanged() { host.rootView.invalidate() }
     override fun coverForReveal(covered: Boolean) { host.coveredForReveal = covered; geometryChanged() }
     override fun backgroundCutout(): View? = host.takeIf { it.hasLiveLayer && !it.coveredForReveal }
+    override fun capturePagePixels(done: (Bitmap?) -> Unit) = host.capturePagePixels(done)
 
     override fun hide() {
         view.releaseSession()
@@ -453,6 +456,14 @@ internal class FloatingGeckoWindow(private val context: Context) : FloatingPageH
                     }
                 }
             }
+        }
+
+        fun capturePagePixels(done: (Bitmap?) -> Unit) {
+            val gecko = display
+            if (gecko == null || !surfacePublished) { done(null); return }
+            try {
+                gecko.capturePixels().accept({ image -> done(image) }, { _ -> done(null) })
+            } catch (_: RuntimeException) { done(null) }
         }
 
         fun updateScreenOrigin() {

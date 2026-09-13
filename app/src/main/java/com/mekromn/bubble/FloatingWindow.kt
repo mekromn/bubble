@@ -488,11 +488,21 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         val profileState=if(tab.profileId==ProfilePolicy.DEFAULT_ID)state else "${workspace.profileName(tab.profileId)} · $state"
         if(subtitle?.text!=profileState)subtitle?.text=profileState
-        val view=gecko
-        if(tab.error==null && view!=null) {
-            pageContainer?.let { geckoWindow?.show(it) }
+        if(tab.error==null && geckoWindow!=null) {
+            pageContainer?.let { parent ->
+                val current=geckoWindow
+                if(current!=null && !current.show(parent) && current.transport==RendererArena.Transport.DIRECT_GECKO_SURFACE) {
+                    current.destroy()
+                    RendererArena.transport=RendererArena.Transport.RELAY_LATEST_BP
+                    geckoWindow=RendererArena.createFallback(context)
+                    geckoWindow?.show(parent)
+                    setPanelBackground(FloatingMode.CHAT)
+                }
+            }
+            val view=gecko
             val session=tab.session
-            if(session!=null && session.isOpen)workspace.attachSurface(view,session) else if(view.session!=null)workspace.detachSurface(view)
+            if(view!=null && session!=null && session.isOpen)workspace.attachSurface(view,session)
+            else if(view?.session!=null)workspace.detachSurface(view)
         } else {
             geckoWindow?.hide()
         }
@@ -502,10 +512,12 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     }
     private fun fullscreen() {
         QuickPanel.dismissFor(root)
-        geckoWindow?.hide()
-        try { service.startActivity(Intent(service,BrowserActivity::class.java).apply {
-            flags=Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP; putExtra(BrowserActivity.EXTRA_TAB,workspace.selectedId)
-        }) } catch(_:RuntimeException) { Toast.makeText(context,"Could not open the browser window",Toast.LENGTH_SHORT).show(); render() }
+        val intent=Intent(service,BrowserActivity::class.java).apply {
+            flags=Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(BrowserActivity.EXTRA_TAB,workspace.selectedId)
+        }
+        try { FullscreenHandoff.launchFromFloating(context,root,geckoWindow,intent) }
+        catch(_:RuntimeException) { Toast.makeText(context,"Could not open the browser window",Toast.LENGTH_SHORT).show(); render() }
     }
     fun offerExternal(raw: String) { Toast.makeText(context,"Open fullscreen to confirm this external-app link.",Toast.LENGTH_LONG).show() }
     private fun flags(next: FloatingMode): Int {
