@@ -1,0 +1,16 @@
+name: Direct arena wiring runner
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - direct-gecko-arena142
+permissions:
+  contents: write
+jobs:
+  wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: echo wiring-runner-ok
