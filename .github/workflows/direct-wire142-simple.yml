@@ -17,11 +17,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/wire_arena142.py
+          python3 tools/fix_direct_rate142.py
           git diff --check
-          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt app/src/main/java/com/mekromn/bubble/FloatingWindow.kt
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt app/src/main/java/com/mekromn/bubble/FloatingWindow.kt app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if ! git diff --cached --quiet; then
-            git commit -m 'feat(renderer): wire live relay/direct transport switch in floating window'
+            git commit -m 'perf(renderer): wire direct arena and keep Android-16 UI frame-rate contract'
             git push origin HEAD:direct-gecko-arena142
           fi
