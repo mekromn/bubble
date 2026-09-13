@@ -1,0 +1,48 @@
+name: Fix Bubble 143 hybrid host handoff
+on:
+  workflow_dispatch:
+  push:
+    branches: [hybrid-direct143]
+    paths: ['.github/workflows/hybrid143-fix-call.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Patch host plumbing, commit, and dispatch full hybrid gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          def one(path, old, new):
+              p=Path(path); s=p.read_text()
+              if old in s:
+                  assert s.count(old)==1,(path,s.count(old))
+                  p.write_text(s.replace(old,new))
+              else:
+                  assert new in s,path
+          one('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt',
+              '    val geckoView: GeckoView? get()=gecko\n',
+              '    val geckoView: GeckoView? get()=gecko\n    internal val pageHost: FloatingPageHost? get()=geckoWindow\n')
+          one('app/src/main/java/com/mekromn/bubble/BubbleService.kt',
+              '            try { FullscreenHandoff.launchFromFloating(this, source, intent); return }',
+              '            try { FullscreenHandoff.launchFromFloating(this, source, window?.pageHost, intent); return }')
+          PY
+          git diff --check
+          grep -q 'internal val pageHost: FloatingPageHost? get()=geckoWindow' app/src/main/java/com/mekromn/bubble/FloatingWindow.kt
+          grep -q 'launchFromFloating(this, source, window?.pageHost, intent)' app/src/main/java/com/mekromn/bubble/BubbleService.kt
+          git add app/src/main/java/com/mekromn/bubble/FloatingWindow.kt app/src/main/java/com/mekromn/bubble/BubbleService.kt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(hybrid): pass direct floating host into snapshot capture'
+          git push origin HEAD:hybrid-direct143
+          gh workflow run hybrid143-build.yml --ref hybrid-direct143
