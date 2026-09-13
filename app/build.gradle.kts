@@ -11,8 +11,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 140
-        versionName = "0.7.12-relay-bp-input"
+        versionCode = 142
+        versionName = "0.7.14-renderer-arena"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += geckoAbi }
         externalNativeBuild {
@@ -66,7 +66,5 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
-    // AndroidX test references these annotations; retain the real dependency for R8.
-    // Test APK only: does not add code to the delivered browser.
     androidTestImplementation("com.google.errorprone:error_prone_annotations:2.42.0")
 }
