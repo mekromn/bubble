@@ -5,7 +5,9 @@ on:
     branches:
       - hybrid-direct143
     paths:
-      - 'app/**'
+      - 'app/src/main/**'
+      - 'app/build.gradle.kts'
+      - 'app/proguard-*.pro'
       - 'tools/**'
       - '.github/workflows/hybrid143-build.yml'
 permissions:
