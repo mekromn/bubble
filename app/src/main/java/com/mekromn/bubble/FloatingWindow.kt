@@ -74,7 +74,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         override fun dispatchKeyEvent(event: KeyEvent): Boolean {
             if(event.keyCode==KeyEvent.KEYCODE_BACK && mode!=FloatingMode.BUBBLE) {
-                if(event.action==KeyEvent.ACTION_UP)back(); return true
+                // Android can forward a canceled key-up after the platform/IME
+                // already consumed Back. It must not dismiss a second layer.
+                if(event.action==KeyEvent.ACTION_UP && !event.isCanceled)back()
+                return true
             }
             return super.dispatchKeyEvent(event)
         }
@@ -96,7 +99,10 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private val listener: () -> Unit={ render() }
     private fun back() {
         if(workspace.quickMenuVisible)QuickPanel.dismissFor(root)
-        else if(imeBottom>0)context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
+        // A repositioned/floating keyboard can be visible with zero overlap.
+        // imeBottom is layout geometry, not the keyboard's visibility state.
+        else if(ViewCompat.getRootWindowInsets(root)?.isVisible(WindowInsetsCompat.Type.ime())==true)
+            context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken,0)
         else collapse()
     }
     fun attach(initial: FloatingMode=FloatingMode.BUBBLE, origin: WindowBox?=null) {

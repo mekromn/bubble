@@ -215,6 +215,17 @@ class RelayLatestBpRuntimeTest {
                 await("floating"){checkMain{BubbleService.active?.window?.mode==FloatingMode.CHAT&&Workspace.peek()?.floatingVisible==true}}
                 await("floating-red"){pageHasColor(true)};save("floating-A")
                 assertSharedHost("initial")
+                // Cancellation is not a second navigation. Exercise the actual
+                // root key handler deterministically before the real IME test.
+                main {
+                    val w=requireNotNull(BubbleService.active?.window)
+                    val t=SystemClock.uptimeMillis()
+                    w.transitionView.dispatchKeyEvent(android.view.KeyEvent(t,t,android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_BACK,0))
+                    val up=android.view.KeyEvent(t,t+1,android.view.KeyEvent.ACTION_UP,android.view.KeyEvent.KEYCODE_BACK,0)
+                    w.transitionView.dispatchKeyEvent(android.view.KeyEvent.changeFlags(up,android.view.KeyEvent.FLAG_CANCELED))
+                    assertEquals(FloatingMode.CHAT,w.mode)
+                    assertFalse("Canceled Back must not start collapse",w.isTransitioning)
+                }
                 geometryAndNativeControlChecks()
                 var beforeMove: WindowBox?=null
                 main { beforeMove=BubbleService.active!!.window!!.box }
@@ -251,6 +262,16 @@ class RelayLatestBpRuntimeTest {
                     BubbleService.active?.window?.mode==FloatingMode.CHAT &&
                     inputHost()?.rootWindowInsets?.isVisible(WindowInsets.Type.ime())==false
                 } }
+                save("ime-hidden-chat-retained")
+                // A separate second Back, after IME is hidden, still collapses.
+                // Do not fix the first-Back bug by disabling navigation.
+                shell("input keyevent KEYCODE_BACK")
+                await("second-back-collapses"){checkMain{BubbleService.active?.window?.mode==FloatingMode.BUBBLE}}
+                main { BubbleService.active!!.window!!.openChat(first) }
+                await("back-reopen-same-page"){pageHasColor(true)}
+                assertSharedHost("back-reopened")
+                File(context.getExternalFilesDir(null),"evidence/back-ime.txt").writeText(
+                    "PASS: canceled key-up does not dismiss; real Back hides IME without collapse; separate second Back collapses; retained page reopens. Correctness, not latency.\n")
                 main{second=Workspace.peek()!!.create("http://127.0.0.1:${server.localPort}/two").id;BubbleService.active!!.window!!.openChat(second)}
                 await("cold-tab-cyan"){pageHasColor(false)};save("floating-cold-B")
                 repeat(6){i->val red=i%2==0;main{BubbleService.active!!.window!!.openChat(if(red)first else second)};await("tab-$i"){pageHasColor(red)}}
