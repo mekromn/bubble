@@ -5,15 +5,25 @@ import android.view.MotionEvent
 import android.view.View
 
 /**
- * Let Gecko's asynchronous input/compositor pipeline receive a page gesture without
- * Android deliberately retaining its pending moves for the View hierarchy's frame.
+ * Runtime-selectable input policy for the production A/B build.
  *
- * This is a gesture-scoped request, not the persistent input-source overload. Android
- * restores batching on UP/CANCEL. Never enqueue, clone, retimestamp, split, synthesize
- * or consume the event here: the existing Gecko/APZ handler remains its sole owner.
- * Unbuffering can increase callback work; it is not a touch-to-photon speed guarantee.
+ * BUFFERED_139 is the exact Build-139 behavior: no unbuffered request.
+ * UNBUFFERED_140 is Build 140: request unbuffered delivery for the current
+ * touchscreen/stylus gesture on ACTION_DOWN. STYLUS_ONLY is an additional
+ * conservative arena candidate: keep Android's normal finger resampling while
+ * requesting immediate delivery only for stylus streams.
+ *
+ * The existing Gecko/APZ handler remains sole owner of the original MotionEvent.
  */
 internal object PageTouchDispatch {
+    enum class Arm(val shortLabel: String) {
+        BUFFERED_139("139 buffered"),
+        UNBUFFERED_140("140 unbuffered"),
+        STYLUS_ONLY("adaptive stylus-only")
+    }
+
+    @Volatile var arm: Arm = Arm.UNBUFFERED_140
+
     /** Pure predicate also exercised on the JVM; Android constant values are inlined. */
     fun eligible(action: Int, source: Int, hasSession: Boolean): Boolean =
         hasSession && action == MotionEvent.ACTION_DOWN &&
@@ -21,9 +31,14 @@ internal object PageTouchDispatch {
                 source and InputDevice.SOURCE_STYLUS == InputDevice.SOURCE_STYLUS)
 
     fun request(view: View, event: MotionEvent, hasSession: Boolean) {
-        if (eligible(event.actionMasked, event.source, hasSession) && view.isAttachedToWindow) {
-            // The exact event must be in normal Android dispatch when this is called.
-            // No global setting, hidden API, log, allocation, timer or per-frame pump.
+        if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
+        val shouldUnbuffer = when (arm) {
+            Arm.BUFFERED_139 -> false
+            Arm.UNBUFFERED_140 -> true
+            Arm.STYLUS_ONLY -> event.source and InputDevice.SOURCE_STYLUS == InputDevice.SOURCE_STYLUS
+        }
+        if (shouldUnbuffer) {
+            // Gesture-scoped public API. No event copy/queue/retimestamp/synthesis.
             view.requestUnbufferedDispatch(event)
         }
     }
