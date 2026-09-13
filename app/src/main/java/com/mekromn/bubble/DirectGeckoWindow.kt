@@ -9,30 +9,29 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.Toast
-import org.mozilla.geckoview.GeckoView
 
 /**
  * Fast steady-state floating renderer.
  *
- * Do not reimplement GeckoView around a standalone SurfaceView here. GeckoView's own
- * BACKEND_SURFACE_VIEW is already Mozilla's direct Android path: it owns the real
- * SurfaceView, passes that holder Surface together with its matching SurfaceControl to
- * GeckoDisplay, and also owns the APZ/input/focus/IME/accessibility lifecycle around it.
+ * GeckoView already constructs its SurfaceView backend by default. Keep that original backend
+ * instance intact: replacing it with setViewBackend(BACKEND_SURFACE_VIEW) is not a no-op in the
+ * pinned GeckoView. It swaps in a new SurfaceView after the listener was registered on the original
+ * holder, so the replacement never reports surfaceChanged() to Gecko and remains bufferless.
  *
- * This host only places that real GeckoView inside Bubble's existing floating ViewRoot,
- * keeps Bubble's refresh-rate request, and exposes one-shot compositor capture for the
- * short fullscreen/floating snapshot transitions. There is no ImageReader/AImage relay,
- * Bubble native consumer, extra output SurfaceControl, TextureView, or page bitmap in
- * steady-state direct browsing.
+ * This host only places Mozilla's original GeckoView/SurfaceView inside Bubble's existing floating
+ * ViewRoot, keeps Bubble's refresh-rate request, and exposes one-shot compositor capture for the
+ * short fullscreen/floating snapshot transitions. There is no ImageReader/AImage relay, Bubble
+ * native consumer, extra output SurfaceControl, TextureView, or page bitmap in steady-state direct
+ * browsing.
  */
 @SuppressLint("NewApi")
 internal class DirectGeckoWindow(private val context: Context) : FloatingPageHost {
     override val transport = RendererArena.Transport.DIRECT_GECKO_SURFACE
 
     override val view: LiveGeckoView = LiveGeckoView(context).apply {
-        // GeckoView already defaults to SurfaceView, but make the performance contract
-        // explicit so a future GeckoView default change cannot silently alter Bubble.
-        setViewBackend(GeckoView.BACKEND_SURFACE_VIEW)
+        // GeckoView's constructor already created and wired the direct SurfaceView backend.
+        // Do not call setViewBackend(SURFACE_VIEW) here: the pinned implementation would replace
+        // that wired SurfaceView with a fresh holder that has no registered display listener.
         setBackgroundColor(Color.TRANSPARENT)
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
