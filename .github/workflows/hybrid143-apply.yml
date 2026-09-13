@@ -1,0 +1,30 @@
+name: Apply Bubble 143 hybrid source
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hybrid-direct143
+    paths:
+      - 'tools/apply_hybrid143.py'
+      - '.github/workflows/hybrid143-apply.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply hybrid source transform
+        run: |
+          set -euo pipefail
+          python3 tools/apply_hybrid143.py
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt app/src/main/java/com/mekromn/bubble/FloatingWindow.kt app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt app/build.gradle.kts app/src/main/AndroidManifest.xml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat(hybrid): direct Gecko steady state with snapshot-only window morphs'
+            git push origin HEAD:hybrid-direct143
+          fi
