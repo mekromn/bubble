@@ -77,7 +77,7 @@ internal object InputBenchmark {
         val uiDeadlineMissPct: Double,
         val displayHz: Double,
         val processCpuPct: Double,
-        val pssDeltaKb: Int,
+        val pssDeltaKb: Long,
         val thermalStart: Int,
         val thermalEnd: Int,
         val batteryCurrentUa: Int,
@@ -147,7 +147,7 @@ internal object InputBenchmark {
 
     private var startedAtMs = 0L
     private var cpuStartMs = 0L
-    private var pssStartKb = 0
+    private var pssStartKb = 0L
     private var thermalStart = -1
     private var currentStartUa = Int.MIN_VALUE
     private var energyStartNwh = Long.MIN_VALUE
@@ -475,7 +475,7 @@ internal object InputBenchmark {
     }
 
     private fun bootstrapMeanCi(values: List<Double>, reps: Int, seed: Long): Pair<Double, Double> {
-        val random = Random(seed)
+        val random = Random(seed.toInt())
         val out = DoubleArray(reps)
         repeat(reps) { r ->
             var sum = 0.0
