@@ -33,10 +33,10 @@ jobs:
       - name: Existing regressions plus hybrid source invariants
         run: |
           set -euo pipefail
-          node tools/test-foreground.cjs
+          # Production/source guards only here. Runtime-test assertions live in the
+          # runtime gate so a diagnostic androidTest can never block the ARM64 build.
           node tools/test-fast-build.cjs
           node tools/test-hardware-policy.cjs
-          node tools/test-embedded-page.cjs
           bash tools/test-relay-native.sh
           python3 - <<'PY'
           from pathlib import Path
