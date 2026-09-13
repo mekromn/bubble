@@ -12,6 +12,17 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+      - name: Fix diagnostic-only Gecko view lookup thread
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/androidTest/java/com/mekromn/bubble/HybridDirectRuntimeTest.kt')
+          s=p.read_text()
+          old='''        val host=requireNotNull(inputHost()) as LiveGeckoView\n'''
+          new='''        var hostValue: LiveGeckoView?=null\n        main { hostValue=inputHost() as? LiveGeckoView }\n        val host=requireNotNull(hostValue)\n'''
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          PY
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
