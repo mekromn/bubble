@@ -1,0 +1,50 @@
+name: Fix Bubble 141 benchmark types and rerun
+on:
+  workflow_dispatch:
+  push:
+    branches: [input-ab-benchmark141]
+    paths: ['.github/workflows/input-ab-fix141.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply compiler-correct numeric types without changing benchmark semantics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/InputBenchmark.kt')
+          s=p.read_text()
+          changes={
+            'val pssDeltaKb: Int,':'val pssDeltaKb: Long,',
+            'private var pssStartKb = 0\n':'private var pssStartKb = 0L\n',
+            'val random = Random(seed)':'val random = Random(seed.toInt())',
+          }
+          for old,new in changes.items():
+              if old in s:
+                  assert s.count(old)==1,(old,s.count(old))
+                  s=s.replace(old,new)
+              else:
+                  assert new in s,new
+          p.write_text(s)
+          PY
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/InputBenchmark.kt
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(benchmark): use Long PSS delta and deterministic Int bootstrap seed'
+            git push origin HEAD:input-ab-benchmark141
+          fi
+          gh workflow run 357194963 --ref input-ab-benchmark141
+          git rev-parse HEAD
