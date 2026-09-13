@@ -1,0 +1,167 @@
+name: Bubble 140 page input delivery
+on:
+  workflow_dispatch:
+  push:
+    branches: [relay-latest-bp-fast140]
+    paths: ['app/**', 'tools/**', '.staging/build140.patch.xz', '.github/workflows/bubble-fast140.yml', 'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties']
+permissions:
+  contents: write
+concurrency:
+  group: bubble-fast140
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed patch as normal source and pin unchanged rendering
+        run: |
+          set -euo pipefail
+          if [ -f .staging/build140.patch.xz ]; then
+            echo '8f4e44e1429506784475f68a2028ca41d124d16023f8995e606412607cd6083d  .staging/build140.patch.xz' | sha256sum -c -
+            xz -dc .staging/build140.patch.xz > /tmp/build140.patch
+            git apply --check /tmp/build140.patch
+            git apply /tmp/build140.patch
+            git rm .staging/build140.patch.xz
+            git add app tools docs
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'perf(input): request gesture-scoped unbuffered dispatch in both page hosts'
+            git push origin HEAD:relay-latest-bp-fast140
+          fi
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git diff --exit-code 67d409fe817593b398142dc3c4c7b4d9dadca1fe HEAD -- app/src/main/cpp app/src/main/assets app/src/main/AndroidManifest.xml app/src/performance app/proguard-performance.pro app/signing app/src/main/java/com/mekromn/bubble/FloatingWindow.kt
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Correctness, sanitizers and embedded-host invariants
+        env:
+          CXX: clang++
+        run: |
+          set -euo pipefail
+          node tools/test-foreground.cjs | tee foreground-tests.txt
+          node tools/test-page-input.cjs | tee page-input-source-checks.txt
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          bash tools/test-relay-native.sh | tee native-unit-tests.txt
+          node tools/test-embedded-page.cjs | tee embedded-source-checks.txt
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+          cache-read-only: false
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Build optimized signed ARM64 browser
+        id: build
+        run: |
+          set -euo pipefail
+          echo '4a907a5d115b37e1ea77bc2d744c165e6c3afa4d1aa2faa4762f7d6e1f8d3151  app/signing/bubble-debug.jks' | sha256sum -c -
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance 2>&1 | tee fast-build.txt
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-140-relay-latest-bp-INPUT-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk > dist/signature.txt
+          grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/*.apk > dist/AndroidManifest.xml
+          python3 - <<'PY'
+          import json, xml.etree.ElementTree as ET
+          from pathlib import Path
+          root=ET.parse('dist/AndroidManifest.xml').getroot();ns='{http://schemas.android.com/apk/res/android}'
+          assert root.attrib['package']=='com.mekromn.bubble.debug'
+          assert root.attrib[ns+'versionCode']=='140'
+          app=root.find('application');assert app.attrib.get(ns+'debuggable','false')=='false'
+          assert app.find('profileable').attrib[ns+'shell']=='true'
+          assert app.attrib.get(ns+'hardwareAccelerated')=='true'
+          flags=[]
+          for path in Path('app/.cxx').rglob('compile_commands.json'):
+              for entry in json.loads(path.read_text()):
+                  if entry['file'].endswith('bubble_ahb.cpp'):
+                      command=entry.get('command',' '.join(entry.get('arguments',[])))
+                      if '-O3' in command and '-flto=thin' in command: flags.append(command)
+          assert flags,'Native optimized compile flags missing'
+          Path('dist/NATIVE_FLAGS.txt').write_text('\n'.join(flags))
+          PY
+          python3 tools/audit-hardware-apk.py dist/Bubble-140-relay-latest-bp-INPUT-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" dex code --class com.mekromn.bubble.PageTouchDispatch dist/*.apk > dist/PageTouchDispatch.smali
+          grep -q requestUnbufferedDispatch dist/PageTouchDispatch.smali
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" dex code --class com.mekromn.bubble.LiveGeckoView dist/*.apk > dist/LiveGeckoView.smali
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" dex code --class 'com.mekromn.bubble.FloatingGeckoWindow$NativeBufferHost' dist/*.apk > dist/NativeBufferHost.smali
+          grep -q onTouchEvent dist/LiveGeckoView.smali
+          grep -q onTouchEvent dist/NativeBufferHost.smali
+          cp docs/BUILD140_PAGE_INPUT.md native-unit-tests.txt embedded-source-checks.txt page-input-source-checks.txt dist/
+          cp -r app/build/outputs/mapping/performance dist/r8-mapping
+          sha256sum dist/*.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+          git archive HEAD -- . ':!app/signing' | gzip > dist/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-fast140-arm64
+          path: dist/
+          retention-days: 7
+      - name: Build the same optimized type for x86_64 instrumentation
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest 2>&1 | tee fast-emulator-build.txt
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Both page input paths, cancellation, stylus and retained browser integration
+        id: runtime
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 300s adb shell am instrument -w -e class com.mekromn.bubble.RelayLatestBpRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > fast-runtime.txt 2>&1 || true
+            adb logcat -d > fast-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat fast-runtime.txt
+            grep -q 'OK (1 test)' fast-runtime.txt
+      - name: Preserve exact verification result
+        if: always() && !cancelled()
+        env:
+          RUNTIME: ${{ steps.runtime.outcome }}
+        run: |
+          mkdir -p evidence
+          printf 'Android 16 optimized browser test: %s\nSource: %s\nSoftware-emulated x86_64 correctness test, not Pixel performance. No Chromium engine port in this APK.\n' "$RUNTIME" "$SOURCE_COMMIT" > evidence/STATUS.txt
+          cp fast-*.txt native-unit-tests.txt embedded-source-checks.txt page-input-source-checks.txt foreground-tests.txt evidence/ 2>/dev/null || true
+          cp -r runtime-evidence app/build/reports evidence/ 2>/dev/null || true
+          tar -czf fast140-verification.tar.gz evidence
+      - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
+        with:
+          name: bubble-fast140-verification
+          path: evidence/
+          retention-days: 7
+      - name: Publish only after actual optimized Android test passes
+        if: success() && steps.runtime.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="bubble-fast-140-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cat > dist/NOTES.md <<EOF
+          Bubble 140 — gesture-scoped page input delivery
+          Same identity/non-debuggable optimized build and selected relay as user-confirmed 139.
+          Requests unbuffered Android touch delivery for active page touchscreen/stylus gestures in fullscreen and floating; forwards unchanged events to the same Gecko/APZ handling.
+          No persistent unbuffered sources, new input queue, copied events, page scripts, logging or engine changes.
+          JVM/source/native/build/packaged bytecode checks and the extended optimized Android runtime passed. Tests preserve all prior window/IME/Back/renderer assertions and add real finger drag, CANCEL, two pointers, restart, stylus and visible input responses in both hosts.
+          This is a scheduling-policy candidate, not a demonstrated Pixel latency/FPS/CPU improvement. More frequent callbacks may increase CPU work. Chromium fling/scrolling source port and engine-owned targets are not shipped here.
+          Source: ${SOURCE_COMMIT}
+          EOF
+          gh release create "$TAG" dist/*.apk dist/SHA256SUMS dist/SOURCE.txt dist/signature.txt dist/HARDWARE_AUDIT.json dist/embedded-source-checks.txt fast140-verification.tar.gz --target "$SOURCE_COMMIT" --title 'Bubble 140 — page input delivery' --notes-file dist/NOTES.md --prerelease
