@@ -64,6 +64,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     var mode=FloatingMode.BUBBLE
         private set
     val geckoView: GeckoView? get()=gecko
+    internal val pageHost: FloatingPageHost? get()=geckoWindow
     val transitionView: View get()=root
     val box: WindowBox get()=rectangle
     val isTransitioning: Boolean get()=motion.busy || hiding

@@ -47,7 +47,7 @@ class BubbleService : Service() {
     override fun startActivity(intent: Intent) {
         val source = window?.takeIf { it.mode == FloatingMode.CHAT }?.geckoView
         if (source != null && intent.component?.className == BrowserActivity::class.java.name) {
-            try { FullscreenHandoff.launchFromFloating(this, source, intent); return }
+            try { FullscreenHandoff.launchFromFloating(this, source, window?.pageHost, intent); return }
             catch (_: RuntimeException) { }
         }
         super.startActivity(intent)
