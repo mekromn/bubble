@@ -271,7 +271,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         if(next==FloatingMode.BUBBLE) {
             val mark=GlassBubble(context); bubble=mark
             mark.setOnClickListener { showChooser() }; mark.setOnLongClickListener { openChat(workspace.selectedId); true }
-            mark.setOnTouchListener { _,event -> drag(event,false,true) }
+            mark.setOnTouchListener { v,event -> drag(v,event,false,true) }
             root.addView(mark,FrameLayout.LayoutParams(-1,-1)); accessibilityMoves(mark); return
         }
         val column=LinearLayout(context).apply { orientation=LinearLayout.VERTICAL }
@@ -283,7 +283,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         val labels=LinearLayout(context).apply {
             orientation=LinearLayout.VERTICAL; gravity=Gravity.CENTER_VERTICAL; setPadding(d(8),0,0,0)
-            contentDescription="Drag floating window"; isClickable=true; setOnTouchListener { _,event -> drag(event,false,false) }
+            contentDescription="Drag floating window"; isClickable=true; setOnTouchListener { v,event -> drag(v,event,false,false) }
         }
         heading=Ui.text(context,if(next==FloatingMode.CHOOSER)"Your chats" else "ChatGPT",14f,Ui.TEXT,true).apply { maxLines=1; ellipsize=android.text.TextUtils.TruncateAt.END }
         subtitle=Ui.text(context,"",10f,Ui.MUTED).apply { maxLines=1; setPadding(0,d(3),0,0) }
@@ -307,7 +307,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             }
             utility.addView(MinimizeStrip(false),LinearLayout.LayoutParams(0,d(48),1f))
             val resize=control("resize","Resize conversation chooser") { }
-            resize.setOnTouchListener { _,event -> drag(event,true,false) }
+            resize.setOnTouchListener { v,event -> drag(v,event,true,false) }
             utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
             column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
         } else {
@@ -326,7 +326,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             utility.addView(control("share","Share floating page") { sharePage() },LinearLayout.LayoutParams(d(48),d(48)))
             utility.addView(MinimizeStrip(false),LinearLayout.LayoutParams(0,d(48),1f))
             val resize=control("resize","Resize floating chat") { }
-            resize.setOnTouchListener { _,event -> drag(event,true,false) }
+            resize.setOnTouchListener { v,event -> drag(v,event,true,false) }
             utility.addView(resize,LinearLayout.LayoutParams(d(48),d(48)))
             column.addView(utility,LinearLayout.LayoutParams(-1,d(48)))
             val edge=AccessPreferences.get(context).options
@@ -405,6 +405,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         override fun onTouchEvent(event:MotionEvent):Boolean {
             if(hiding)return true
+            PageTouchDispatch.requestChrome(this,event)
             when(event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     active=true; armed=false; gesture=ToolbarSwipe.NONE; startX=event.rawX; startY=event.rawY
@@ -568,53 +569,61 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             // moves with the parent; no second WindowManager operation is needed.
         } catch(_:RuntimeException) { service.stopSelf() }
     }
-    private fun drag(event: MotionEvent,resize: Boolean,isHead: Boolean): Boolean {
+    private fun drag(source: View,event: MotionEvent,resize: Boolean,isHead: Boolean): Boolean {
         if(hiding)return true
-        when(event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                QuickPanel.dismissFor(root); main.removeCallbacks(hold); motion.cancel(); root.animate().cancel(); root.animate().withEndAction(null)
-                root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
-                gestureInitial=rectangle; gestureX=event.rawX; gestureY=event.rawY; dragging=false; held=false
-                if(isHead)main.postDelayed(hold,ViewConfiguration.getLongPressTimeout().toLong()); return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if(held)return true
-                val dx=event.rawX-gestureX; val dy=event.rawY-gestureY
-                if(!dragging && (abs(dx)>slop || abs(dy)>slop)) { dragging=true; main.removeCallbacks(hold); if(isHead && service.canPark())dismiss.show(safeArea()) }
-                if(dragging) {
-                    val raw=if(resize)gestureInitial.copy(width=(gestureInitial.width+dx).toInt().coerceAtLeast(d(280)),height=(gestureInitial.height+dy).toInt().coerceAtLeast(d(260)))
-                        else gestureInitial.copy(x=(gestureInitial.x+dx).toInt(),y=(gestureInitial.y+dy).toInt())
-                    var projected=raw
-                    if(isHead && dismiss.attached) {
-                        val before=dismiss.armed; val armed=dismiss.track(raw.x+raw.width/2f,raw.y+raw.height/2f)
-                        if(armed && !before)root.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        if(armed)projected=raw.copy(x=(dismiss.centerX-raw.width/2).toInt(),y=(dismiss.centerY-raw.height/2).toInt())
+        PageTouchDispatch.requestChrome(root,event)
+        val benchmark=WindowedBenchmark.beforeChrome(event)
+        return try {
+            when(event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    QuickPanel.dismissFor(root); main.removeCallbacks(hold); motion.cancel(); root.animate().cancel(); root.animate().withEndAction(null)
+                    root.alpha=1f; root.scaleX=1f; root.scaleY=1f; root.translationY=0f
+                    gestureInitial=rectangle; gestureX=event.rawX; gestureY=event.rawY; dragging=false; held=false
+                    if(isHead)main.postDelayed(hold,ViewConfiguration.getLongPressTimeout().toLong()); true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if(held) true else {
+                        val dx=event.rawX-gestureX; val dy=event.rawY-gestureY
+                        if(!dragging && (abs(dx)>slop || abs(dy)>slop)) { dragging=true; main.removeCallbacks(hold); if(isHead && service.canPark())dismiss.show(safeArea()) }
+                        if(dragging) {
+                            val raw=if(resize)gestureInitial.copy(width=(gestureInitial.width+dx).toInt().coerceAtLeast(d(280)),height=(gestureInitial.height+dy).toInt().coerceAtLeast(d(260)))
+                                else gestureInitial.copy(x=(gestureInitial.x+dx).toInt(),y=(gestureInitial.y+dy).toInt())
+                            var projected=raw
+                            if(isHead && dismiss.attached) {
+                                val before=dismiss.armed; val armed=dismiss.track(raw.x+raw.width/2f,raw.y+raw.height/2f)
+                                if(armed && !before)root.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                if(armed)projected=raw.copy(x=(dismiss.centerX-raw.width/2).toInt(),y=(dismiss.centerY-raw.height/2).toInt())
+                            }
+                            target=WindowGeometry.fit(projected,safeArea())
+                            if(!frameQueued) { frameQueued=true; root.postOnAnimation {
+                                frameQueued=false
+                                if(!destroyed && dragging) { WindowedBenchmark.noteChromePlacement(); place(target,false) }
+                            } }
+                        }
+                        true
                     }
-                    target=WindowGeometry.fit(projected,safeArea())
-                    if(!frameQueued) { frameQueued=true; root.postOnAnimation { frameQueued=false; if(!destroyed && dragging)place(target,false) } }
                 }
-                return true
-            }
-            MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> {
-                main.removeCallbacks(hold)
-                val completed=event.actionMasked==MotionEvent.ACTION_UP; val wasDragging=dragging
-                if(completed && wasDragging && isHead && dismiss.attached) dismiss.track(gestureInitial.x+(event.rawX-gestureX)+gestureInitial.width/2f,gestureInitial.y+(event.rawY-gestureY)+gestureInitial.height/2f)
-                val shouldHide=completed && wasDragging && isHead && dismiss.armed
-                if(wasDragging)place(target,false)
-                dragging=false
-                if(shouldHide) {
-                    hiding=true; dismiss.hide(); geckoWindow?.hide(); root.pivotX=root.width/2f; root.pivotY=root.height/2f
-                    root.animate().scaleX(.35f).scaleY(.35f).alpha(0f).setDuration(130).setInterpolator(Ui.ease).withEndAction {
-                        if(!destroyed && !service.park()) { hiding=false; root.alpha=1f; root.scaleX=1f; root.scaleY=1f; place(headBox(),false) }
-                    }.start()
-                } else {
-                    dismiss.hide()
-                    if(!completed)place(gestureInitial,false) else if(wasDragging)savePosition(resize) else if(!held && isHead)bubble?.performClick()
+                MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> {
+                    main.removeCallbacks(hold)
+                    val completed=event.actionMasked==MotionEvent.ACTION_UP; val wasDragging=dragging
+                    if(completed && wasDragging && isHead && dismiss.attached) dismiss.track(gestureInitial.x+(event.rawX-gestureX)+gestureInitial.width/2f,gestureInitial.y+(event.rawY-gestureY)+gestureInitial.height/2f)
+                    val shouldHide=completed && wasDragging && isHead && dismiss.armed
+                    if(wasDragging)place(target,false)
+                    dragging=false
+                    if(shouldHide) {
+                        hiding=true; dismiss.hide(); geckoWindow?.hide(); root.pivotX=root.width/2f; root.pivotY=root.height/2f
+                        root.animate().scaleX(.35f).scaleY(.35f).alpha(0f).setDuration(130).setInterpolator(Ui.ease).withEndAction {
+                            if(!destroyed && !service.park()) { hiding=false; root.alpha=1f; root.scaleX=1f; root.scaleY=1f; place(headBox(),false) }
+                        }.start()
+                    } else {
+                        dismiss.hide()
+                        if(!completed)place(gestureInitial,false) else if(wasDragging)savePosition(resize) else if(!held && isHead)bubble?.performClick()
+                    }
+                    true
                 }
-                return true
+                else -> true
             }
-        }
-        return true
+        } finally { WindowedBenchmark.afterChrome(benchmark) }
     }
     private fun savePosition(resized: Boolean) {
         if(mode!=FloatingMode.BUBBLE && imeBottom>0)return

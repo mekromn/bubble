@@ -28,8 +28,11 @@ internal open class LiveGeckoView(context: Context) : GeckoView(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        PageTouchDispatch.request(this, event, session != null)
-        return super.onTouchEvent(event)
+        val benchmark = WindowedBenchmark.beforePage(event)
+        return try {
+            PageTouchDispatch.requestPage(this, event, session != null)
+            super.onTouchEvent(event)
+        } finally { WindowedBenchmark.afterPage(benchmark) }
     }
 
     override fun hasWindowFocus(): Boolean {

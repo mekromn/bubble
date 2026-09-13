@@ -27,8 +27,10 @@ struct AImageReader {
     AImageReader_ImageListener listener{};
 };
 using Callback=void(*)(void*,int);
+struct ASurfaceTransactionStats { int64_t latchTime = 1; };
+using CompleteCallback=void(*)(void*,ASurfaceTransactionStats*);
 struct Pending { void* context; Callback callback; int bufferId,acquireFence; };
-struct ASurfaceTransaction { std::vector<Pending> buffers; };
+struct ASurfaceTransaction { std::vector<Pending> buffers; void* completeContext=nullptr; CompleteCallback complete=nullptr; };
 inline std::mutex presentedMutex;
 inline std::deque<Pending> presented;
 inline std::atomic<int> transactionCreates{0},transactionDeletes{0}, acquireCalls{0}, spaceWrites{0}, opacityWrites{0}, readerDeletes{0};
@@ -80,10 +82,17 @@ inline void ASurfaceTransaction_setBufferWithRelease(ASurfaceTransaction* t,ASur
     t->buffers.push_back({c,cb,b->id,f});
 }
 inline void ASurfaceTransaction_apply(ASurfaceTransaction* t) {
-    std::lock_guard<std::mutex> lock(presentedMutex);
-    for(auto& b:t->buffers)presented.push_back(b);
+    { std::lock_guard<std::mutex> lock(presentedMutex);
+      for(auto& b:t->buffers)presented.push_back(b); }
     t->buffers.clear(); // Models AOSP Transaction::apply state reset, not physical rendering.
+    auto callback=t->complete; auto* context=t->completeContext;
+    t->complete=nullptr; t->completeContext=nullptr;
+    if(callback) { ASurfaceTransactionStats stats; callback(context,&stats); }
 }
+inline void ASurfaceTransaction_setOnComplete(ASurfaceTransaction* t,void* context,CompleteCallback callback) {
+    t->completeContext=context;t->complete=callback;
+}
+inline int64_t ASurfaceTransactionStats_getLatchTime(ASurfaceTransactionStats* stats) { return stats?stats->latchTime:0; }
 inline void ASurfaceTransaction_setBufferDataSpace(ASurfaceTransaction*,ASurfaceControl*,ADataSpace) { spaceWrites++; }
 inline void ASurfaceTransaction_setBufferTransparency(ASurfaceTransaction*,ASurfaceControl*,int) { opacityWrites++; }
 inline void ASurfaceTransaction_setFrameRateWithChangeStrategy(ASurfaceTransaction*,ASurfaceControl*,float,int,int) {}

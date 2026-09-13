@@ -85,7 +85,8 @@ internal object QuickMenus {
             Action("Tab name, pin and alerts", tab != null) { tab?.let { tabOptions(anchor, ws, it.id, choose) } },
             Action("Duplicate current tab", tab != null) { tab?.let { ws.duplicate(it.id)?.let { copy -> choose(copy.id) } } },
             Action("Recently closed tabs", ws.closedTabs.isNotEmpty()) { recentlyClosed(anchor, ws, choose) },
-            Action("Live-tab status") { status(anchor, ws) }
+            Action("Live-tab status") { status(anchor, ws) },
+            Action("Windowed speed arena · 139 vs 140") { WindowedBenchmark.show(anchor, ws) }
         )
         actions(anchor, ws, "Chat tools", list)
     }

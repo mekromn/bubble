@@ -2,6 +2,8 @@
 #include "relay_wake.h"
 #include "relay_capacity.h"
 #include <array>
+#include <algorithm>
+#include <cstdint>
 #include <android/data_space.h>
 #include <android/hardware_buffer.h>
 #include "relay_logging.h"
@@ -19,6 +21,8 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <vector>
+#include <time.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
@@ -40,12 +44,58 @@ struct Lease {
     std::atomic<bool> occupied{false};
     std::shared_ptr<State> state;
     AImage* image = nullptr;
+    // Benchmark-only timestamps. The slot cannot be reused until releaseFrame,
+    // while transaction completion occurs when this submitted frame is presented.
+    uint64_t benchmarkEpoch = 0;
+    int64_t benchmarkSubmitNs = 0;
 };
 void maybeCleanup(const std::shared_ptr<State>& state);
 std::mutex registryMutex;
 std::unordered_map<jlong, std::shared_ptr<State>> active, retiring;
 std::atomic<jlong> nextId{1};
 std::atomic<int64_t> totalSubmitted{0}, totalReleased{0}, totalOutstanding{0}, totalErrors{0}, workers{0};
+
+// Physical-test telemetry is off during normal browsing. It records timestamps into
+// fixed lock-free arrays only inside explicit benchmark blocks: no files, strings,
+// heap allocations, polling loop or CPU pixel access in the frame path.
+constexpr size_t kBenchmarkSamples = 8192;
+int64_t nowNs() {
+    timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+}
+template <size_t N>
+void benchmarkRecord(std::array<std::atomic<int64_t>, N>& data,
+                     std::atomic<uint32_t>& index, int64_t value) {
+    if (value <= 0) return;
+    const uint32_t i = index.fetch_add(1, std::memory_order_relaxed);
+    if (i < N) data[i].store(value, std::memory_order_relaxed);
+}
+struct BenchmarkTelemetry {
+    std::atomic<bool> active{false};
+    std::atomic<uint64_t> epoch{1};
+    std::atomic<int64_t> callbacks{0}, acquireCalls{0}, acquireOk{0}, noBuffer{0}, maxImages{0};
+    std::atomic<int64_t> staleDrops{0}, submits{0}, releases{0}, completes{0};
+    std::atomic<int64_t> fenceReady{0}, fencePending{0}, errors{0};
+    std::atomic<int64_t> lastSubmitNs{0}, lastCompleteNs{0}, lastLatchNs{0};
+    std::atomic<uint32_t> submitSamples{0}, completeSamples{0}, latchSamples{0}, acquireSamples{0}, releaseSamples{0};
+    std::array<std::atomic<int64_t>, kBenchmarkSamples> submitIntervals{};
+    std::array<std::atomic<int64_t>, kBenchmarkSamples> completeIntervals{};
+    std::array<std::atomic<int64_t>, kBenchmarkSamples> latchIntervals{};
+    std::array<std::atomic<int64_t>, kBenchmarkSamples> acquireDurations{};
+    std::array<std::atomic<int64_t>, kBenchmarkSamples> releaseLatencies{};
+    void reset() {
+        active.store(false, std::memory_order_release); epoch.fetch_add(1, std::memory_order_acq_rel);
+        callbacks=0;acquireCalls=0;acquireOk=0;noBuffer=0;maxImages=0;staleDrops=0;submits=0;releases=0;completes=0;
+        fenceReady=0;fencePending=0;errors=0;lastSubmitNs=0;lastCompleteNs=0;lastLatchNs=0;
+        submitSamples=0;completeSamples=0;latchSamples=0;acquireSamples=0;releaseSamples=0;
+        for (auto& v: submitIntervals) v.store(0, std::memory_order_relaxed);
+        for (auto& v: completeIntervals) v.store(0, std::memory_order_relaxed);
+        for (auto& v: latchIntervals) v.store(0, std::memory_order_relaxed);
+        for (auto& v: acquireDurations) v.store(0, std::memory_order_relaxed);
+        for (auto& v: releaseLatencies) v.store(0, std::memory_order_relaxed);
+    }
+};
+BenchmarkTelemetry benchmark;
 struct State {
     jlong id = 0;
     std::mutex resourceMutex;
@@ -123,11 +173,31 @@ void maybeCleanup(const std::shared_ptr<State>& s) {
     if (s->workerFinished.load() && s->leases.load() == 0 && !s->cleanupQueued.exchange(true))
         cleanupQueue().push(s);
 }
+void benchmarkComplete(void* context, ASurfaceTransactionStats* stats) {
+    auto* lease = static_cast<Lease*>(context);
+    const uint64_t epoch = lease->benchmarkEpoch;
+    if (!epoch || epoch != benchmark.epoch.load(std::memory_order_acquire)) return;
+    const int64_t now = nowNs();
+    benchmark.completes++;
+    const int64_t previous = benchmark.lastCompleteNs.exchange(now, std::memory_order_relaxed);
+    if (previous > 0) benchmarkRecord(benchmark.completeIntervals, benchmark.completeSamples, now - previous);
+    const int64_t latch = ASurfaceTransactionStats_getLatchTime(stats);
+    if (latch > 0) {
+        const int64_t priorLatch = benchmark.lastLatchNs.exchange(latch, std::memory_order_relaxed);
+        if (priorLatch > 0) benchmarkRecord(benchmark.latchIntervals, benchmark.latchSamples, latch - priorLatch);
+    }
+}
 void releaseFrame(void* context, int releaseFenceFd) {
     auto* lease = static_cast<Lease*>(context);
+    const uint64_t benchmarkEpoch = lease->benchmarkEpoch;
+    const int64_t benchmarkSubmitNs = lease->benchmarkSubmitNs;
     auto s = std::move(lease->state);
     AImage* image = lease->image;
-    lease->image = nullptr;
+    lease->image = nullptr; lease->benchmarkEpoch = 0; lease->benchmarkSubmitNs = 0;
+    if (benchmarkEpoch && benchmarkEpoch == benchmark.epoch.load(std::memory_order_acquire)) {
+        benchmark.releases++;
+        benchmarkRecord(benchmark.releaseLatencies, benchmark.releaseSamples, nowNs() - benchmarkSubmitNs);
+    }
     // Publish the empty bookkeeping slot before returning image capacity. From
     // here onward this callback accesses only locals, never that slot again.
     lease->occupied.store(false, std::memory_order_release);
@@ -151,6 +221,7 @@ Lease* reserveLease(const std::shared_ptr<State>& s, AImage* image) {
 }
 void imageAvailable(void* context, AImageReader*) {
     auto* s = static_cast<State*>(context);
+    if (benchmark.active.load(std::memory_order_relaxed)) benchmark.callbacks++;
     if (!s->stopping.load()) s->wake(); // No acquisition or GPU waits on the reader callback thread.
 }
 void discard(AImage* image, int fence) {
@@ -159,6 +230,7 @@ void discard(AImage* image, int fence) {
 }
 void error(const char* stage, int status) {
     ++totalErrors; // Retain error/lifetime verification; no text or IO in the release path.
+    if (benchmark.active.load(std::memory_order_relaxed)) benchmark.errors++;
 #if BUBBLE_RELAY_LOGGING
     const auto count = totalErrors.load();
     if (count < 8 || (count & (count - 1)) == 0)
@@ -185,7 +257,16 @@ void consume(const std::shared_ptr<State>& s) {
     for (int i = 0; i < kDrainLimit && !s->stopping.load(); ++i) {
         AImage* image = nullptr; int fence = -1;
         const uint64_t before = s->capacity.beforeAcquire();
+        const bool measureAcquire = benchmark.active.load(std::memory_order_relaxed);
+        const int64_t acquireStart = measureAcquire ? nowNs() : 0;
         const media_status_t status = AImageReader_acquireNextImageAsync(s->reader, &image, &fence);
+        if (measureAcquire) {
+            benchmark.acquireCalls++;
+            benchmarkRecord(benchmark.acquireDurations, benchmark.acquireSamples, nowNs() - acquireStart);
+            if (status == AMEDIA_OK && image) benchmark.acquireOk++;
+            else if (status == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) benchmark.noBuffer++;
+            else if (status == AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) benchmark.maxImages++;
+        }
         // Classify status FIRST. A null image must not conceal MAX_IMAGES/errors.
         if (status == AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED) {
             reachedDrainLimit = false; discard(image, fence);
@@ -205,6 +286,7 @@ void consume(const std::shared_ptr<State>& s) {
             if (s->capacity.waitAfterBlockedAcquire(before)) s->wake();
             break;
         }
+        if (latest && benchmark.active.load(std::memory_order_relaxed)) benchmark.staleDrops++;
         if (latest) discard(latest, latestFence);
         latest = image; latestFence = fence;
     }
@@ -238,6 +320,21 @@ void consume(const std::shared_ptr<State>& s) {
         // buffer. No polling/JNI readiness callback and no per-frame fill layer.
         ASurfaceTransaction_setColor(tx, s->output, 0, 0, 0, 0, ADATASPACE_SRGB);
         s->hasSubmittedBuffer = true;
+    }
+    if (benchmark.active.load(std::memory_order_acquire)) {
+        lease->benchmarkEpoch = benchmark.epoch.load(std::memory_order_acquire);
+        lease->benchmarkSubmitNs = nowNs();
+        benchmark.submits++;
+        const int64_t previous = benchmark.lastSubmitNs.exchange(lease->benchmarkSubmitNs, std::memory_order_relaxed);
+        if (previous > 0) benchmarkRecord(benchmark.submitIntervals, benchmark.submitSamples, lease->benchmarkSubmitNs - previous);
+        if (latestFence >= 0) {
+            pollfd fencePoll{latestFence, POLLIN, 0};
+            const int signaled = poll(&fencePoll, 1, 0);
+            if (signaled > 0) benchmark.fenceReady++; else benchmark.fencePending++;
+        }
+        ASurfaceTransaction_setOnComplete(tx, lease, benchmarkComplete);
+    } else {
+        lease->benchmarkEpoch = 0; lease->benchmarkSubmitNs = 0;
     }
     ASurfaceTransaction_setBufferWithRelease(tx, s->output, buffer, latestFence, lease, releaseFrame);
     int32_t space = ADATASPACE_UNKNOWN;
@@ -350,6 +447,33 @@ extern "C" JNIEXPORT void JNICALL Java_com_mekromn_bubble_NativeAhbBridge_native
     }
     // Nonblocking: no worker join, image acquisition, fence wait, or reader destruction on UI.
     s->stopping = true; s->wake();
+}
+extern "C" JNIEXPORT void JNICALL Java_com_mekromn_bubble_NativeAhbBridge_nativeBenchmarkReset(JNIEnv*, jobject) {
+    benchmark.reset();
+}
+extern "C" JNIEXPORT void JNICALL Java_com_mekromn_bubble_NativeAhbBridge_nativeBenchmarkSetEnabled(JNIEnv*, jobject, jboolean enabled) {
+    benchmark.active.store(enabled == JNI_TRUE, std::memory_order_release);
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_com_mekromn_bubble_NativeAhbBridge_nativeBenchmarkSnapshot(JNIEnv* env, jobject) {
+    constexpr size_t header = 20;
+    constexpr size_t groups = 5;
+    std::vector<jlong> values(header + groups * kBenchmarkSamples, 0);
+    const auto clampSamples = [](uint32_t n) -> jlong { return static_cast<jlong>(std::min<size_t>(n, kBenchmarkSamples)); };
+    values[0]=1; values[1]=static_cast<jlong>(benchmark.epoch.load()); values[2]=benchmark.callbacks.load(); values[3]=benchmark.acquireCalls.load();
+    values[4]=benchmark.acquireOk.load(); values[5]=benchmark.noBuffer.load(); values[6]=benchmark.maxImages.load(); values[7]=benchmark.staleDrops.load();
+    values[8]=benchmark.submits.load(); values[9]=benchmark.releases.load(); values[10]=benchmark.completes.load(); values[11]=benchmark.fenceReady.load();
+    values[12]=benchmark.fencePending.load(); values[13]=clampSamples(benchmark.submitSamples.load()); values[14]=clampSamples(benchmark.completeSamples.load());
+    values[15]=clampSamples(benchmark.latchSamples.load()); values[16]=clampSamples(benchmark.acquireSamples.load()); values[17]=clampSamples(benchmark.releaseSamples.load());
+    values[18]=totalOutstanding.load(); values[19]=benchmark.errors.load();
+    auto copy = [&](size_t group, const auto& source) {
+        const size_t base=header + group*kBenchmarkSamples;
+        for(size_t i=0;i<kBenchmarkSamples;++i) values[base+i]=source[i].load(std::memory_order_relaxed);
+    };
+    copy(0, benchmark.submitIntervals); copy(1, benchmark.completeIntervals); copy(2, benchmark.latchIntervals);
+    copy(3, benchmark.acquireDurations); copy(4, benchmark.releaseLatencies);
+    jlongArray result=env->NewLongArray(static_cast<jsize>(values.size()));
+    if(result) env->SetLongArrayRegion(result,0,static_cast<jsize>(values.size()),values.data());
+    return result;
 }
 extern "C" JNIEXPORT jlongArray JNICALL Java_com_mekromn_bubble_NativeAhbBridge_nativeDebugStats(JNIEnv* env, jobject) {
     jlong a, r;

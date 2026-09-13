@@ -10,7 +10,7 @@ assert(!/post\(|postDelayed\(|postOnAnimation\(|MotionEvent.obtain|setAction\(|s
 for(const file of ['LiveGeckoView.kt','FloatingGeckoWindow.kt']) {
  const text=read(dir+file);
  const touch=text.split('override fun onTouchEvent(event: MotionEvent): Boolean {')[1].split('\n        }')[0];
- assert.match(touch,/PageTouchDispatch.request\(this, event, (session != null|true)\)/,file);
+ assert.match(touch,/PageTouchDispatch.requestPage\(this, event, (session != null|true)\)/,file);
  assert(touch.includes('onTouchEvent(event)'),file+' must forward the same event');
  assert(!/MotionEvent.obtain|post\(|postDelayed\(/.test(touch),file+' must not create an input relay');
 }

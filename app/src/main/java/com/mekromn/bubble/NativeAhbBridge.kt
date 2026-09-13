@@ -13,6 +13,10 @@ internal object NativeAhbBridge {
     external fun nativeSetFrameRate(handle: Long, frameRate: Float)
     /** Invalidates the handle and wakes async cleanup. Does not join/wait/acquire on the UI thread. */
     external fun nativeDestroy(handle: Long)
+    /** Physical-test telemetry is explicitly enabled only during timed benchmark blocks. */
+    external fun nativeBenchmarkReset()
+    external fun nativeBenchmarkSetEnabled(enabled: Boolean)
+    external fun nativeBenchmarkSnapshot(): LongArray
     /** On-demand integration diagnostics only; never polled by the production rendering loop. */
     external fun nativeDebugStats(): LongArray
 }
