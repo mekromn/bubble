@@ -26,4 +26,12 @@ class PageTouchDispatchTest {
             assertFalse("Do not change unrelated source=$source", PageTouchDispatch.eligible(MotionEvent.ACTION_DOWN, source, true))
         }
     }
+    @Test fun exactArmSemantics() {
+        assertFalse(PageTouchDispatch.shouldUnbuffer(PageTouchDispatch.Arm.BUFFERED_139, InputDevice.SOURCE_TOUCHSCREEN))
+        assertFalse(PageTouchDispatch.shouldUnbuffer(PageTouchDispatch.Arm.BUFFERED_139, InputDevice.SOURCE_STYLUS))
+        assertTrue(PageTouchDispatch.shouldUnbuffer(PageTouchDispatch.Arm.UNBUFFERED_140, InputDevice.SOURCE_TOUCHSCREEN))
+        assertTrue(PageTouchDispatch.shouldUnbuffer(PageTouchDispatch.Arm.UNBUFFERED_140, InputDevice.SOURCE_STYLUS))
+        assertFalse(PageTouchDispatch.shouldUnbuffer(PageTouchDispatch.Arm.STYLUS_ONLY, InputDevice.SOURCE_TOUCHSCREEN))
+        assertTrue(PageTouchDispatch.shouldUnbuffer(PageTouchDispatch.Arm.STYLUS_ONLY, InputDevice.SOURCE_STYLUS))
+    }
 }
