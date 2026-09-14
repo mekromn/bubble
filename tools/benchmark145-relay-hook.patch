@@ -1,0 +1,22 @@
+diff --git a/app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt b/app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+--- a/app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
++++ b/app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+@@ -489,8 +489,16 @@
+         override fun onTouchEvent(event: MotionEvent): Boolean {
+             val current = session ?: return false
+-            PageTouchDispatch.request(this, event, true)
+-            if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
+-            current.panZoomController.onTouchEvent(event)
+-            return true
++            // Dormant outside an active RendererBenchmark; the production event object and
++            // Gecko/APZ call remain unchanged.
++            val benchmark = RendererBenchmark.beforePage(this, event)
++            return try {
++                PageTouchDispatch.request(this, event, true)
++                if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
++                current.panZoomController.onTouchEvent(event)
++                true
++            } finally {
++                RendererBenchmark.afterPage(benchmark, event)
++            }
+         }
