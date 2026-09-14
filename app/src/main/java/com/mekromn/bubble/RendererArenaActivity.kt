@@ -62,7 +62,7 @@ class RendererArenaActivity : Activity() {
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         column.addView(label(
-            "The report compares paired input age, Java handler cost, Bubble process/main-thread CPU, Bubble Choreographer cadence/jank, memory/GC, thermal/battery context and native relay counters. App-frame timing is not webpage presentation FPS, and input-to-app-frame is not touch-to-photon. True contact-to-photon still requires an external high-speed camera/photodiode; Perfetto/FrameTimeline is the preferred software follow-up for compositor scheduling."
+            "The report compares paired input age, the identical pre-Gecko input-policy preamble, Bubble process/main-thread CPU, Bubble Choreographer cadence/jank, memory/GC, thermal/battery context and native relay counters. App-frame timing is not webpage presentation FPS, and input-to-app-frame is not touch-to-photon. True contact-to-photon still requires an external high-speed camera/photodiode; Perfetto/FrameTimeline is the preferred software follow-up for compositor scheduling."
         ))
         column.addView(Button(this).apply {
             text = "Close controller"
