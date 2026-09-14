@@ -29,7 +29,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     override val transport = RendererArena.Transport.DIRECT_GECKO_SURFACE
 
     override val view: LiveGeckoView = LiveGeckoView(context).apply {
-        // GeckoView's constructor already created and wired the direct SurfaceView backend.
+        // Preserve the constructor-wired direct SurfaceView for the lifetime of this host.
         // Do not replace that backend here: the pinned implementation would install a fresh holder
         // that has no registered display listener.
         setBackgroundColor(Color.TRANSPARENT)
