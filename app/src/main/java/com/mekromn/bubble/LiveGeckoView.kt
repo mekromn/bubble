@@ -28,15 +28,8 @@ internal open class LiveGeckoView(context: Context) : GeckoView(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // RendererBenchmark returns immediately when no measured run is active.
-        // The original MotionEvent still enters Gecko through the exact production path.
-        val benchmark = RendererBenchmark.beforePage(this, event)
-        return try {
-            PageTouchDispatch.request(this, event, session != null)
-            super.onTouchEvent(event)
-        } finally {
-            RendererBenchmark.afterPage(benchmark, event)
-        }
+        PageTouchDispatch.request(this, event, session != null)
+        return super.onTouchEvent(event)
     }
 
     override fun hasWindowFocus(): Boolean {
