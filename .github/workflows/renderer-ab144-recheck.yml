@@ -1,0 +1,138 @@
+name: Bubble 144 renderer A-B final recheck
+on:
+  workflow_dispatch:
+  push:
+    branches: [renderer-ab144]
+    paths: ['.github/workflows/renderer-ab144-recheck.yml']
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Correct transport-specific runtime proof and commit it
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/androidTest/java/com/mekromn/bubble/RendererABRuntimeTest.kt')
+          s=p.read_text()
+          old='''    private fun floating(transport: RendererArena.Transport): Boolean = checkMain {
+        val w=BubbleService.active?.window ?: return@checkMain false
+        val host=Workspace.peek()?.selected?.session?.textInput?.view
+        w.mode==FloatingMode.CHAT && Workspace.peek()?.floatingVisible==true &&
+            w.pageHost?.transport==transport && host is LiveGeckoView &&
+            host.isAttachedToWindow && host.session===Workspace.peek()?.selected?.session
+    }
+'''
+          new='''    private fun floating(transport: RendererArena.Transport): Boolean = checkMain {
+        val w=BubbleService.active?.window ?: return@checkMain false
+        val tab=Workspace.peek()?.selected ?: return@checkMain false
+        val session=tab.session ?: return@checkMain false
+        val pageHost=w.pageHost ?: return@checkMain false
+        val input=session.textInput.view ?: return@checkMain false
+        if (w.mode!=FloatingMode.CHAT || Workspace.peek()?.floatingVisible!=true ||
+            pageHost.transport!=transport || pageHost.view.session!==session || !input.isAttachedToWindow) {
+            return@checkMain false
+        }
+        when (transport) {
+            RendererArena.Transport.DIRECT_GECKO_SURFACE ->
+                input === pageHost.view && input is LiveGeckoView && input.session===session
+            RendererArena.Transport.RELAY_LATEST_BP ->
+                input !== pageHost.view && input is android.view.SurfaceView
+        }
+    }
+'''
+          if old in s:
+              assert s.count(old)==1
+              p.write_text(s.replace(old,new))
+          else:
+              assert new in s
+          PY
+          git diff --check
+          git add app/src/androidTest/java/com/mekromn/bubble/RendererABRuntimeTest.kt
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'test(renderer): validate direct and relay hosts by their real input topology'
+            git push origin HEAD:renderer-ab144
+          fi
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Source and native guards
+        run: |
+          set -euo pipefail
+          node tools/test-foreground.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          node tools/test-embedded-page.cjs
+          bash tools/test-relay-native.sh
+          grep -q 'input !== pageHost.view && input is android.view.SurfaceView' app/src/androidTest/java/com/mekromn/bubble/RendererABRuntimeTest.kt
+          grep -q 'input === pageHost.view && input is LiveGeckoView' app/src/androidTest/java/com/mekromn/bubble/RendererABRuntimeTest.kt
+      - name: Build optimized ARM64 comparison APK
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-144-RENDERER-AB-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-144-RENDERER-AB-ARM64.apk > dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-144-RENDERER-AB-ARM64.apk > dist/AndroidManifest.xml
+          python3 tools/audit-hardware-apk.py dist/Bubble-144-RENDERER-AB-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          sha256sum dist/Bubble-144-RENDERER-AB-ARM64.apk > dist/SHA256SUMS
+          printf '%s\n' "$SOURCE_COMMIT" > dist/SOURCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-renderer-ab144-final-arm64
+          path: dist/
+          retention-days: 7
+      - name: Build optimized x86_64 app and instrumentation
+        run: gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Direct-relay-direct same-session proof
+        id: runtime
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 300s adb shell am instrument -w -e class com.mekromn.bubble.RendererABRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > renderer-ab-runtime.txt 2>&1 || true
+            adb logcat -d > renderer-ab-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat renderer-ab-runtime.txt
+            cat runtime-evidence/renderer-ab.txt 2>/dev/null || true
+            grep -q 'OK (1 test)' renderer-ab-runtime.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bubble-renderer-ab144-final-runtime
+          path: |
+            renderer-ab-runtime.txt
+            renderer-ab-logcat.txt
+            runtime-evidence/
+          retention-days: 7
