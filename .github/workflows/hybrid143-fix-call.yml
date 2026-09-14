@@ -1,4 +1,4 @@
-name: Apply Bubble 143 fullscreen-entry race fix
+name: Apply Bubble 143 expand-watchdog hardening
 on:
   workflow_dispatch:
   push:
@@ -14,71 +14,39 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Make fullscreen entry lifecycle-order independent and fail-safe
+      - name: Keep fullscreen expand failsafe active through the morph
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt')
+          s=p.read_text()
+          def one(old,new):
+              global s
+              assert s.count(old)==1, ('matches',s.count(old),old[:120])
+              s=s.replace(old,new,1)
 
-          def replace_once(path, old, new):
-              p=Path(path); s=p.read_text()
-              assert s.count(old)==1, (path, 'matches', s.count(old), old[:100])
-              p.write_text(s.replace(old,new,1))
+          one('''    fun finishIntoFullscreen(activity: Activity, root: View) {\n        val overlay=expandOverlay ?: run { root.alpha=1f; return }\n        clearExpandWatchdog()\n        pendingExpandFrame=null\n''',
+              '''    fun finishIntoFullscreen(activity: Activity, root: View) {\n        val overlay=expandOverlay ?: run { root.alpha=1f; return }\n        // Stage two: once a live destination exists, keep a fresh watchdog through the actual morph.\n        // If that destination disappears mid-animation, recovery restores it to opaque before the\n        // frozen frame is removed, so we cannot strand either an overlay or a near-transparent root.\n        scheduleExpandWatchdog(overlay, root)\n        pendingExpandFrame=null\n''')
 
-          browser='app/src/main/java/com/mekromn/bubble/BrowserActivity.kt'
-          replace_once(browser,
-          '''    private var tabSwipeAnimating = false\n    private var currentUrl = ""\n''',
-          '''    private var tabSwipeAnimating = false\n    private var fullscreenEntryScheduled = false\n    private var currentUrl = ""\n''')
+          one('''            if(activity.isFinishing) {\n                root.alpha=1f\n                if(expandOverlay===overlay)expandOverlay=null\n                overlay.detach(); return\n            }\n''',
+              '''            if(activity.isFinishing) {\n                clearExpandWatchdog()\n                root.alpha=1f\n                if(expandOverlay===overlay)expandOverlay=null\n                overlay.detach(); return\n            }\n''')
 
-          replace_once(browser,
-          '''    override fun onStart() {\n        super.onStart(); FullscreenHandoff.reset(root); started = true; handoff = false\n        val matchedEntry = FullscreenHandoff.isEnteringFullscreen(intent)\n        BubbleService.active?.releaseForActivity(); stopService(Intent(this, BubbleService::class.java))\n        workspace.host = WeakReference(this); workspace.visible = true\n        workspace.listen(changed); workspace.applyPolicy(); Refresh.request(this)\n        if (measuring) meter.start(this)\n        if (matchedEntry) {\n            // The full-screen morph frame is still above this Activity. Render/attach the existing\n            // GeckoSession behind it, then let FullscreenHandoff PixelCopy the real destination and\n            // dissolve the held frame only when both occupy identical full-screen bounds.\n            root.post {\n                if (started && !isFinishing) {\n                    render()\n                    FullscreenHandoff.finishIntoFullscreen(this, root)\n                }\n            }\n        }\n    }\n''',
-          '''    override fun onStart() {\n        super.onStart(); FullscreenHandoff.reset(root); started = true; handoff = false\n        BubbleService.active?.releaseForActivity(); stopService(Intent(this, BubbleService::class.java))\n        workspace.host = WeakReference(this); workspace.visible = true\n        workspace.listen(changed); workspace.applyPolicy(); Refresh.request(this)\n        if (measuring) meter.start(this)\n        continueFullscreenEntryIfNeeded()\n    }\n''')
+          one('''                else { root.alpha=1f; if(expandOverlay===overlay)expandOverlay=null; overlay.detach() }\n''',
+              '''                else { clearExpandWatchdog(); root.alpha=1f; if(expandOverlay===overlay)expandOverlay=null; overlay.detach() }\n''')
 
-          replace_once(browser,
-          '''    override fun onStop() {\n        started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed); tray?.closeNow()\n''',
-          '''    override fun onStop() {\n        started = false; fullscreenEntryScheduled = false\n        QuickPanel.dismissFor(root); workspace.unlisten(changed); tray?.closeNow()\n''')
+          one('''                overlay.morphInto(root,durationMs=300L,crossfadeStart=.72f) {\n                    root.alpha=1f\n                    if(expandOverlay===overlay)expandOverlay=null\n                    overlay.detach()\n                    activity.intent?.removeExtra(EXTRA_FROM_FLOATING)\n                }\n''',
+              '''                overlay.morphInto(root,durationMs=300L,crossfadeStart=.72f) {\n                    clearExpandWatchdog()\n                    root.alpha=1f\n                    if(expandOverlay===overlay)expandOverlay=null\n                    overlay.detach()\n                    activity.intent?.removeExtra(EXTRA_FROM_FLOATING)\n                }\n''')
 
-          replace_once(browser,
-          '''    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); pendingIntent = intent; render() }\n''',
-          '''    override fun onNewIntent(intent: Intent) {\n        super.onNewIntent(intent)\n        setIntent(intent)\n        pendingIntent = intent\n        render()\n        continueFullscreenEntryIfNeeded()\n    }\n\n    /**\n     * A stopped SINGLE_TOP Activity may receive its new intent before or after onStart(). Whichever\n     * callback observes the floating->fullscreen token first owns the handoff. Keep the ownership\n     * latched until onStop so duplicate lifecycle delivery cannot start a second morph.\n     */\n    private fun continueFullscreenEntryIfNeeded() {\n        if (!started || isFinishing || fullscreenEntryScheduled || !FullscreenHandoff.isEnteringFullscreen(intent)) return\n        fullscreenEntryScheduled = true\n        root.post {\n            if (!started || isFinishing || !FullscreenHandoff.isEnteringFullscreen(intent)) {\n                fullscreenEntryScheduled = false\n                return@post\n            }\n            // Remove the interactive floating source only after its frozen frame is already above it.\n            BubbleService.active?.releaseForActivity()\n            stopService(Intent(this, BubbleService::class.java))\n            render()\n            FullscreenHandoff.finishIntoFullscreen(this, root)\n        }\n    }\n''')
-
-          handoff='app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt'
-          replace_once(handoff,
-          '''    private const val SHRINK_WATCHDOG_MS = 1400L\n    private const val LIVE_DESTINATION_WARM_ALPHA = 0.002f\n''',
-          '''    private const val SHRINK_WATCHDOG_MS = 1400L\n    private const val EXPAND_WATCHDOG_MS = 2200L\n    private const val LIVE_DESTINATION_WARM_ALPHA = 0.002f\n''')
-
-          replace_once(handoff,
-          '''    private var shrinkWatchdog: Runnable? = null\n    private var expandOverlay: FullscreenShrinkOverlay? = null\n''',
-          '''    private var shrinkWatchdog: Runnable? = null\n    private var expandWatchdog: Runnable? = null\n    private var expandOverlay: FullscreenShrinkOverlay? = null\n''')
-
-          replace_once(handoff,
-          '''        intent.putExtra(EXTRA_FROM_FLOATING, true)\n        cancelPendingExpandFrame()\n''',
-          '''        intent.putExtra(EXTRA_FROM_FLOATING, true)\n        clearExpandWatchdog()\n        cancelPendingExpandFrame()\n''')
-
-          replace_once(handoff,
-          '''            try {\n                overlay.attach { context.startActivity(intent) }\n            } catch (_: RuntimeException) {\n                if (expandOverlay === overlay) expandOverlay = null\n''',
-          '''            try {\n                overlay.attach {\n                    scheduleExpandWatchdog(overlay)\n                    context.startActivity(intent)\n                }\n            } catch (_: RuntimeException) {\n                clearExpandWatchdog()\n                if (expandOverlay === overlay) expandOverlay = null\n''')
-
-          replace_once(handoff,
-          '''    fun finishIntoFullscreen(activity: Activity, root: View) {\n        val overlay=expandOverlay ?: run { root.alpha=1f; return }\n        pendingExpandFrame=null\n''',
-          '''    fun finishIntoFullscreen(activity: Activity, root: View) {\n        val overlay=expandOverlay ?: run { root.alpha=1f; return }\n        clearExpandWatchdog()\n        pendingExpandFrame=null\n''')
-
-          replace_once(handoff,
-          '''    fun cancelAll() {\n        cancelPendingFullscreenFrame()\n        cancelPendingExpandFrame()\n        clearShrinkWatchdog()\n''',
-          '''    fun cancelAll() {\n        cancelPendingFullscreenFrame()\n        cancelPendingExpandFrame()\n        clearShrinkWatchdog()\n        clearExpandWatchdog()\n''')
-
-          marker='''    private fun clearShrinkWatchdog() {\n        shrinkWatchdog?.let(main::removeCallbacks)\n        shrinkWatchdog = null\n    }\n\n'''
-          addition='''    private fun clearShrinkWatchdog() {\n        shrinkWatchdog?.let(main::removeCallbacks)\n        shrinkWatchdog = null\n    }\n\n    /** Recovery only: a lifecycle-order bug must never leave a frozen overlay above live fullscreen. */\n    private fun scheduleExpandWatchdog(overlay: FullscreenShrinkOverlay) {\n        clearExpandWatchdog()\n        val watchdog = Runnable {\n            if (expandOverlay === overlay) {\n                expandOverlay = null\n                pendingExpandFrame = null\n                overlay.detach()\n            }\n        }\n        expandWatchdog = watchdog\n        main.postDelayed(watchdog, EXPAND_WATCHDOG_MS)\n    }\n\n    private fun clearExpandWatchdog() {\n        expandWatchdog?.let(main::removeCallbacks)\n        expandWatchdog = null\n    }\n\n'''
-          replace_once(handoff, marker, addition)
+          one('''    private fun scheduleExpandWatchdog(overlay: FullscreenShrinkOverlay) {\n        clearExpandWatchdog()\n        val watchdog = Runnable {\n            if (expandOverlay === overlay) {\n                expandOverlay = null\n                pendingExpandFrame = null\n                overlay.detach()\n            }\n        }\n''',
+              '''    private fun scheduleExpandWatchdog(overlay: FullscreenShrinkOverlay, liveDestination: View? = null) {\n        clearExpandWatchdog()\n        val watchdog = Runnable {\n            if (expandOverlay === overlay) {\n                // A stage-two timeout can happen after the live root was intentionally warmed at a\n                // tiny alpha. Restore its normal transform/opacity before removing the frozen frame.\n                liveDestination?.let(::reset)\n                expandWatchdog = null\n                expandOverlay = null\n                pendingExpandFrame = null\n                overlay.detach()\n            }\n        }\n''')
+          p.write_text(s)
           PY
-
           git diff --check
-          grep -q 'continueFullscreenEntryIfNeeded' app/src/main/java/com/mekromn/bubble/BrowserActivity.kt
-          grep -q 'fullscreenEntryScheduled' app/src/main/java/com/mekromn/bubble/BrowserActivity.kt
-          grep -q 'EXPAND_WATCHDOG_MS = 2200L' app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt
-          grep -q 'scheduleExpandWatchdog(overlay)' app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt
-          git add app/src/main/java/com/mekromn/bubble/BrowserActivity.kt app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt
+          grep -q 'scheduleExpandWatchdog(overlay, root)' app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt
+          grep -q 'liveDestination?.let(::reset)' app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt
+          git add app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix(handoff): make fullscreen return lifecycle-order independent'
+          git commit -m 'fix(handoff): keep expand watchdog active through morph completion'
           git push origin HEAD:hybrid-direct143
