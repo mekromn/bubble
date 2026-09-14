@@ -29,7 +29,7 @@ assert.match(relay,/capturePagePixels/);
 assert.match(selector,/var transport: Transport = Transport.DIRECT_GECKO_SURFACE/);
 assert.match(direct,/LiveGeckoView\(context\)/);
 assert(!/setViewBackend\(/.test(direct));
-assert.match(direct,/original SurfaceView|constructor already created and wired the direct SurfaceView backend/);
+assert.match(direct,/original SurfaceView|constructor already created and wired the direct SurfaceView backend|constructor-wired direct SurfaceView/);
 assert.match(direct,/RendererArena\.Transport\.DIRECT_GECKO_SURFACE/);
 assert.match(direct,/view\.capturePixels\(\)/);
 assert(!/NativeAhbBridge|AImageReader|nativeCreate|nativeGetProducerSurface|GeckoDisplay\.SurfaceInfo|panZoomController\.onTouchEvent|textInput\.setView|accessibility\.setView/.test(direct));
