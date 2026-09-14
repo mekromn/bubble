@@ -4,6 +4,7 @@ const read=p=>fs.readFileSync(p,'utf8');
 const relay=read('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt');
 const direct=read('app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt');
 const chrome=read('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt');
+const browser=read('app/src/main/java/com/mekromn/bubble/BrowserActivity.kt');
 const mask=read('app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt');
 const geometry=read('app/src/main/java/com/mekromn/bubble/EmbeddedSurfacePlacement.kt');
 const selector=read('app/src/main/java/com/mekromn/bubble/RendererArena.kt');
@@ -47,6 +48,17 @@ assert.match(handoff,/captureFloatingFrame/);
 assert.match(handoff,/finishIntoFullscreen/);
 assert(!/makeClipRevealAnimation/.test(handoff));
 
+// Floating->fullscreen must survive either Android lifecycle ordering for a reused SINGLE_TOP
+// Activity, and a frozen transition frame may never remain above a live fullscreen browser.
+assert.match(browser,/private var fullscreenEntryScheduled = false/);
+assert.match(browser,/private fun continueFullscreenEntryIfNeeded\(\)/);
+assert.match(browser,/override fun onNewIntent[\s\S]*continueFullscreenEntryIfNeeded\(\)/);
+assert.match(browser,/override fun onStart[\s\S]*continueFullscreenEntryIfNeeded\(\)/);
+assert.match(handoff,/EXPAND_WATCHDOG_MS = 2200L/);
+assert.match(handoff,/scheduleExpandWatchdog\(overlay\)/);
+assert.match(handoff,/private fun clearExpandWatchdog\(\)/);
+assert.match(handoff,/fun cancelAll\(\)[\s\S]*clearExpandWatchdog\(\)/);
+
 assert.match(mask,/canvas.clipOutRect\(cutout\)/);
 assert(!/canvas.saveLayer|Bitmap\.createBitmap|LAYER_TYPE_HARDWARE|PorterDuff/.test(mask+relay+direct));
 assert(!/getLocationInSurface|transformMatrixToGlobal/.test(geometry));
@@ -58,4 +70,4 @@ const runtime=read('app/src/androidTest/java/com/mekromn/bubble/RelayLatestBpRun
 for(const requirement of ['same-window','dragged-page','resized-cyan','scrolled-B','ime-visible','native-control-over-page','geometry-alpha-hidden'])assert(runtime.includes(requirement));
 const hybrid=read('app/src/androidTest/java/com/mekromn/bubble/HybridDirectRuntimeTest.kt');
 for(const requirement of ['direct-floating-live','fullscreen-return','direct-floating-return','relayIdle','same GeckoSession','fullscreen-source-hidden'])assert(hybrid.includes(requirement));
-console.log('Hybrid page guards: original Mozilla GeckoView SurfaceView wiring preserved, relay fallback preserved, one floating ViewRoot, snapshot-only fullscreen morphs.');
+console.log('Hybrid page guards: original Mozilla GeckoView SurfaceView wiring, lifecycle-order-independent fullscreen return, overlay watchdog, relay fallback, one floating ViewRoot, and snapshot-only morphs are preserved.');
