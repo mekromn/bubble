@@ -289,17 +289,21 @@ internal object FullscreenHandoff {
 
     fun finishIntoFullscreen(activity: Activity, root: View) {
         val overlay=expandOverlay ?: run { root.alpha=1f; return }
-        clearExpandWatchdog()
+        // Stage two: once a live destination exists, keep a fresh watchdog through the actual morph.
+        // If that destination disappears mid-animation, recovery restores it to opaque before the
+        // frozen frame is removed, so we cannot strand either an overlay or a near-transparent root.
+        scheduleExpandWatchdog(overlay, root)
         pendingExpandFrame=null
         fun begin(attempt:Int) {
             if(activity.isFinishing) {
+                clearExpandWatchdog()
                 root.alpha=1f
                 if(expandOverlay===overlay)expandOverlay=null
                 overlay.detach(); return
             }
             if(!root.isAttachedToWindow || !root.isLaidOut || root.width<=0 || root.height<=0) {
                 if(attempt<30)main.postDelayed({begin(attempt+1)},8L)
-                else { root.alpha=1f; if(expandOverlay===overlay)expandOverlay=null; overlay.detach() }
+                else { clearExpandWatchdog(); root.alpha=1f; if(expandOverlay===overlay)expandOverlay=null; overlay.detach() }
                 return
             }
             // The direct fullscreen Gecko surface is already attached under the opaque frozen frame.
@@ -308,6 +312,7 @@ internal object FullscreenHandoff {
             root.postOnAnimation { root.postOnAnimation {
                 if(expandOverlay!==overlay)return@postOnAnimation
                 overlay.morphInto(root,durationMs=300L,crossfadeStart=.72f) {
+                    clearExpandWatchdog()
                     root.alpha=1f
                     if(expandOverlay===overlay)expandOverlay=null
                     overlay.detach()
@@ -637,10 +642,14 @@ internal object FullscreenHandoff {
     }
 
     /** Recovery only: a lifecycle-order bug must never leave a frozen overlay above live fullscreen. */
-    private fun scheduleExpandWatchdog(overlay: FullscreenShrinkOverlay) {
+    private fun scheduleExpandWatchdog(overlay: FullscreenShrinkOverlay, liveDestination: View? = null) {
         clearExpandWatchdog()
         val watchdog = Runnable {
             if (expandOverlay === overlay) {
+                // A stage-two timeout can happen after the live root was intentionally warmed at a
+                // tiny alpha. Restore its normal transform/opacity before removing the frozen frame.
+                liveDestination?.let(::reset)
+                expandWatchdog = null
                 expandOverlay = null
                 pendingExpandFrame = null
                 overlay.detach()
