@@ -1,0 +1,59 @@
+name: Apply Bubble 145 relay benchmark hook
+on:
+  workflow_dispatch:
+  push:
+    branches: [renderer-benchmark145]
+    paths: ['.github/workflows/apply-renderer-benchmark145-relay-hook.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Wrap only the real relay page-input handler
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt')
+          s=p.read_text()
+          old='''        override fun onTouchEvent(event: MotionEvent): Boolean {
+            val current = session ?: return false
+            PageTouchDispatch.request(this, event, true)
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
+            current.panZoomController.onTouchEvent(event)
+            return true
+        }
+'''
+          new='''        override fun onTouchEvent(event: MotionEvent): Boolean {
+            val current = session ?: return false
+            // Dormant outside an active RendererBenchmark; the production event object and
+            // Gecko/APZ call remain unchanged.
+            val benchmark = RendererBenchmark.beforePage(this, event)
+            return try {
+                PageTouchDispatch.request(this, event, true)
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
+                current.panZoomController.onTouchEvent(event)
+                true
+            } finally {
+                RendererBenchmark.afterPage(benchmark, event)
+            }
+        }
+'''
+          if old in s:
+              assert s.count(old)==1
+              p.write_text(s.replace(old,new))
+          else:
+              assert new in s, 'Expected relay input block not found and replacement absent'
+          PY
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'bench(renderer): instrument relay page handler only during measured runs'
+            git push origin HEAD:renderer-benchmark145
+          fi
