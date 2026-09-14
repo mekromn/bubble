@@ -11,8 +11,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 143
-        versionName = "0.7.15-direct-hybrid"
+        versionCode = 144
+        versionName = "0.7.16-renderer-ab"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += geckoAbi }
         externalNativeBuild {
