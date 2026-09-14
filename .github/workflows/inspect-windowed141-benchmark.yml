@@ -1,0 +1,39 @@
+name: Inspect Build 141 benchmark source
+on:
+  workflow_dispatch:
+  push:
+    branches: [renderer-ab144]
+    paths: ['.github/workflows/inspect-windowed141-benchmark.yml']
+permissions:
+  contents: read
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Extract exact prior arena implementation
+        run: |
+          set -euo pipefail
+          ref=9045a3c0589905bab9346555af5802227cccff6b
+          mkdir -p prior
+          git grep -n 'WindowedBenchmark' "$ref" -- app tools docs > prior/grep.txt || true
+          git grep -l 'WindowedBenchmark' "$ref" -- app tools docs | sed "s#^${ref}:##" > prior/paths.txt || true
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            mkdir -p "prior/$(dirname "$path")"
+            git show "$ref:$path" > "prior/$path"
+          done < prior/paths.txt
+          for path in app/src/main/java/com/mekromn/bubble/FrameMeter.kt app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt app/src/main/java/com/mekromn/bubble/NativeAhbBridge.kt app/src/main/cpp/bubble_ahb.cpp tools/test-windowed-benchmark.cjs docs/BUILD141_WINDOWED_ARENA.md; do
+            if git cat-file -e "$ref:$path" 2>/dev/null; then
+              mkdir -p "prior/$(dirname "$path")"
+              git show "$ref:$path" > "prior/$path"
+            fi
+          done
+          cat prior/grep.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build141-benchmark-source-extract
+          path: prior/
+          retention-days: 7
