@@ -35,6 +35,7 @@ internal object FullscreenHandoff {
     private const val GECKO_CAPTURE_TIMEOUT_MS = 280L
     private const val SURFACE_COPY_RETRIES = 3
     private const val SHRINK_WATCHDOG_MS = 1400L
+    private const val EXPAND_WATCHDOG_MS = 2200L
     private const val LIVE_DESTINATION_WARM_ALPHA = 0.002f
     private val main = Handler(Looper.getMainLooper())
     private val capturePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
@@ -43,6 +44,7 @@ internal object FullscreenHandoff {
     private var pendingFullscreenFrame: MorphFrame? = null
     private var shrinkOverlay: FullscreenShrinkOverlay? = null
     private var shrinkWatchdog: Runnable? = null
+    private var expandWatchdog: Runnable? = null
     private var expandOverlay: FullscreenShrinkOverlay? = null
     private var pendingExpandFrame: MorphFrame? = null
 
@@ -208,6 +210,7 @@ internal object FullscreenHandoff {
     fun launchFromFloating(context: Context, source: View, host: FloatingPageHost?, intent: Intent) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         intent.putExtra(EXTRA_FROM_FLOATING, true)
+        clearExpandWatchdog()
         cancelPendingExpandFrame()
         captureFloatingFrame(source, host) { frame ->
             if (frame == null) {
@@ -225,8 +228,12 @@ internal object FullscreenHandoff {
             expandOverlay?.detach()
             expandOverlay = overlay
             try {
-                overlay.attach { context.startActivity(intent) }
+                overlay.attach {
+                    scheduleExpandWatchdog(overlay)
+                    context.startActivity(intent)
+                }
             } catch (_: RuntimeException) {
+                clearExpandWatchdog()
                 if (expandOverlay === overlay) expandOverlay = null
                 pendingExpandFrame = null
                 overlay.detach()
@@ -282,6 +289,7 @@ internal object FullscreenHandoff {
 
     fun finishIntoFullscreen(activity: Activity, root: View) {
         val overlay=expandOverlay ?: run { root.alpha=1f; return }
+        clearExpandWatchdog()
         pendingExpandFrame=null
         fun begin(attempt:Int) {
             if(activity.isFinishing) {
@@ -314,6 +322,7 @@ internal object FullscreenHandoff {
         cancelPendingFullscreenFrame()
         cancelPendingExpandFrame()
         clearShrinkWatchdog()
+        clearExpandWatchdog()
         shrinkOverlay?.detach(); shrinkOverlay = null
         expandOverlay?.detach(); expandOverlay = null
     }
@@ -625,6 +634,25 @@ internal object FullscreenHandoff {
     private fun clearShrinkWatchdog() {
         shrinkWatchdog?.let(main::removeCallbacks)
         shrinkWatchdog = null
+    }
+
+    /** Recovery only: a lifecycle-order bug must never leave a frozen overlay above live fullscreen. */
+    private fun scheduleExpandWatchdog(overlay: FullscreenShrinkOverlay) {
+        clearExpandWatchdog()
+        val watchdog = Runnable {
+            if (expandOverlay === overlay) {
+                expandOverlay = null
+                pendingExpandFrame = null
+                overlay.detach()
+            }
+        }
+        expandWatchdog = watchdog
+        main.postDelayed(watchdog, EXPAND_WATCHDOG_MS)
+    }
+
+    private fun clearExpandWatchdog() {
+        expandWatchdog?.let(main::removeCallbacks)
+        expandWatchdog = null
     }
 
     private fun showFloatingCard(card: View) {

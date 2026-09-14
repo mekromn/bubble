@@ -53,6 +53,7 @@ class BrowserActivity : Activity() {
     private var externalFlow = false
     private var enteringPip = false
     private var tabSwipeAnimating = false
+    private var fullscreenEntryScheduled = false
     private var currentUrl = ""
     private var notice: String? = null
     private val meter = FrameMeter()
@@ -69,22 +70,11 @@ class BrowserActivity : Activity() {
     }
     override fun onStart() {
         super.onStart(); FullscreenHandoff.reset(root); started = true; handoff = false
-        val matchedEntry = FullscreenHandoff.isEnteringFullscreen(intent)
         BubbleService.active?.releaseForActivity(); stopService(Intent(this, BubbleService::class.java))
         workspace.host = WeakReference(this); workspace.visible = true
         workspace.listen(changed); workspace.applyPolicy(); Refresh.request(this)
         if (measuring) meter.start(this)
-        if (matchedEntry) {
-            // The full-screen morph frame is still above this Activity. Render/attach the existing
-            // GeckoSession behind it, then let FullscreenHandoff PixelCopy the real destination and
-            // dissolve the held frame only when both occupy identical full-screen bounds.
-            root.post {
-                if (started && !isFinishing) {
-                    render()
-                    FullscreenHandoff.finishIntoFullscreen(this, root)
-                }
-            }
-        }
+        continueFullscreenEntryIfNeeded()
     }
     override fun onResume() {
         super.onResume(); externalFlow = false; enteringPip = false
@@ -98,7 +88,8 @@ class BrowserActivity : Activity() {
         if (started && workspace.ready && !FileUi.busy && !externalFlow && !handoff && !enteringPip && !isInPictureInPictureMode && Settings.canDrawOverlays(this)) collapse(FloatingMode.BUBBLE, alreadyLeaving = true)
     }
     override fun onStop() {
-        started = false; QuickPanel.dismissFor(root); workspace.unlisten(changed); tray?.closeNow()
+        started = false; fullscreenEntryScheduled = false
+        QuickPanel.dismissFor(root); workspace.unlisten(changed); tray?.closeNow()
         if (workspace.host.get() === this) { workspace.visible = false; workspace.covered = false; workspace.detachSurface(geckoView); workspace.flush() }
         meter.stop(); FullscreenHandoff.reset(root); super.onStop()
     }
@@ -107,7 +98,34 @@ class BrowserActivity : Activity() {
         if (::workspace.isInitialized) { workspace.detachSurface(geckoView); if (workspace.host.get() === this) workspace.host.clear() }
         super.onDestroy()
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); pendingIntent = intent; render() }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingIntent = intent
+        render()
+        continueFullscreenEntryIfNeeded()
+    }
+
+    /**
+     * A stopped SINGLE_TOP Activity may receive its new intent before or after onStart(). Whichever
+     * callback observes the floating->fullscreen token first owns the handoff. Keep the ownership
+     * latched until onStop so duplicate lifecycle delivery cannot start a second morph.
+     */
+    private fun continueFullscreenEntryIfNeeded() {
+        if (!started || isFinishing || fullscreenEntryScheduled || !FullscreenHandoff.isEnteringFullscreen(intent)) return
+        fullscreenEntryScheduled = true
+        root.post {
+            if (!started || isFinishing || !FullscreenHandoff.isEnteringFullscreen(intent)) {
+                fullscreenEntryScheduled = false
+                return@post
+            }
+            // Remove the interactive floating source only after its frozen frame is already above it.
+            BubbleService.active?.releaseForActivity()
+            stopService(Intent(this, BubbleService::class.java))
+            render()
+            FullscreenHandoff.finishIntoFullscreen(this, root)
+        }
+    }
     @Deprecated("API 26-32 back compatibility") override fun onBackPressed() = handleBack()
     private fun handleBack() {
         when {
