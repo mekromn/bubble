@@ -1,0 +1,31 @@
+name: Apply Bubble 145 relay benchmark hook v2
+on:
+  workflow_dispatch:
+  push:
+    branches: [renderer-benchmark145]
+    paths:
+      - 'tools/benchmark145-relay-hook.patch'
+      - '.github/workflows/apply-renderer-benchmark145-relay-hook-v2.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply exact reviewed relay hook
+        run: |
+          set -euo pipefail
+          if grep -q 'RendererBenchmark.beforePage(this, event)' app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt; then
+            exit 0
+          fi
+          git apply --check tools/benchmark145-relay-hook.patch
+          git apply tools/benchmark145-relay-hook.patch
+          git diff --check
+          git add app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'bench(renderer): instrument relay page handler only during measured runs'
+          git push origin HEAD:renderer-benchmark145
