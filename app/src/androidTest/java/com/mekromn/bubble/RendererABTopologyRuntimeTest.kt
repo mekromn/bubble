@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceView
+import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -54,7 +55,7 @@ class RendererABTopologyRuntimeTest {
             val session=tab?.session
             val input=session?.textInput?.view
             val host=w?.pageHost
-            value="mode=${w?.mode} visible=${Workspace.peek()?.floatingVisible} requested=${RendererArena.transport} active=${host?.transport} hostView=${host?.view?.javaClass?.simpleName} hostSession=${host?.view?.session===session} input=${input?.javaClass?.simpleName} inputAttached=${input?.isAttachedToWindow} inputIsHost=${input===host?.view}"
+            value="mode=${w?.mode} visible=${Workspace.peek()?.floatingVisible} requested=${RendererArena.transport} active=${host?.transport} hostView=${host?.view?.javaClass?.simpleName} hostSession=${host?.view?.session===session} input=${input?.javaClass?.simpleName} inputAttached=${input?.isAttachedToWindow} inputIsHost=${input===host?.view} rootWindowFocus=${w?.transitionView?.hasWindowFocus()} inputWindowFocus=${input?.hasWindowFocus()} inputShown=${input?.isShown} inputVisibility=${input?.windowVisibility}"
         }
         return value
     }
@@ -71,6 +72,18 @@ class RendererABTopologyRuntimeTest {
             RendererArena.Transport.DIRECT_GECKO_SURFACE -> input===pageHost.view && input is LiveGeckoView && input.session===session
             RendererArena.Transport.RELAY_LATEST_BP -> input!==pageHost.view && input is SurfaceView
         }
+    }
+
+    private fun focusedForInput():Boolean=checkMain {
+        val w=BubbleService.active?.window ?: return@checkMain false
+        val input=Workspace.peek()?.selected?.session?.textInput?.view ?: return@checkMain false
+        w.transitionView.hasWindowFocus() && input.hasWindowFocus() && input.isShown && input.windowVisibility==View.VISIBLE
+    }
+
+    private fun awaitStableInputFocus(label:String) {
+        await("$label-window-focus",30_000) { focusedForInput() }
+        Thread.sleep(250)
+        assertTrue("$label focus must remain stable before input; ${mainState()}", focusedForInput())
     }
 
     private fun pageIs(magenta:Boolean):Boolean {
@@ -149,6 +162,7 @@ class RendererABTopologyRuntimeTest {
                 scenario.onActivity { it.collapse(FloatingMode.CHAT) }
                 await("fullscreen-source-hidden",30_000) { fullscreenSourceGone() }
                 await("direct-start",90_000) { floating(RendererArena.Transport.DIRECT_GECKO_SURFACE) && pageIs(true) && relayFullyIdle() }
+                awaitStableInputFocus("direct-start")
                 assertTrue("direct preserves exact GeckoSession",checkMain { Workspace.peek()?.selected?.session===original })
                 assertEquals(PageTouchDispatch.Arm.UNBUFFERED_140,PageTouchDispatch.arm)
                 val directSubmitted=stats()[2]
@@ -164,6 +178,7 @@ class RendererABTopologyRuntimeTest {
                 }
                 await("relay-host",90_000) { floating(RendererArena.Transport.RELAY_LATEST_BP) && pageIs(false) }
                 await("relay-native-active",30_000) { stats()[0]>0L && stats()[5]>0L }
+                awaitStableInputFocus("relay")
                 assertTrue("relay preserves exact GeckoSession",checkMain { Workspace.peek()?.selected?.session===original })
                 assertEquals(PageTouchDispatch.Arm.UNBUFFERED_140,PageTouchDispatch.arm)
                 val relayBefore=stats()[2]
@@ -179,6 +194,7 @@ class RendererABTopologyRuntimeTest {
                 }
                 await("direct-return",90_000) { floating(RendererArena.Transport.DIRECT_GECKO_SURFACE) && pageIs(true) }
                 await("relay-retired",30_000) { relayFullyIdle() }
+                awaitStableInputFocus("direct-return")
                 assertTrue("direct return preserves exact GeckoSession",checkMain { Workspace.peek()?.selected?.session===original })
                 assertEquals(PageTouchDispatch.Arm.UNBUFFERED_140,PageTouchDispatch.arm)
                 val submittedAfterRetire=stats()[2]
@@ -189,7 +205,7 @@ class RendererABTopologyRuntimeTest {
                 save("direct-return")
 
                 evidence().resolve("renderer-ab-final.txt").writeText(
-                    "PASS: same process/profile/GeckoSession; UNBUFFERED_140 fixed for both arms; actual direct LiveGeckoView -> relay NativeBufferHost SurfaceView -> direct LiveGeckoView; relay generated new submissions only during relay arm and fully retired after return. relay=${relayStats.joinToString()} final=${stats().joinToString()}\n"
+                    "PASS: same process/profile/GeckoSession; UNBUFFERED_140 fixed for both arms; stable floating window focus before input; actual direct LiveGeckoView -> relay NativeBufferHost SurfaceView -> direct LiveGeckoView; relay generated new submissions only during relay arm and fully retired after return. relay=${relayStats.joinToString()} final=${stats().joinToString()}\n"
                 )
             }
         } finally {
