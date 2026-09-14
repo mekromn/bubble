@@ -1,0 +1,103 @@
+name: Bubble 143 final direct-hybrid validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [hybrid-direct143]
+    paths:
+      - 'app/**'
+      - 'tools/**'
+      - '.github/workflows/hybrid143-final-validation.yml'
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+      - name: Source and native invariants
+        run: |
+          set -euo pipefail
+          node tools/test-foreground.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          node tools/test-embedded-page.cjs
+          bash tools/test-relay-native.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          direct=Path('app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt').read_text()
+          assert 'LiveGeckoView(context)' in direct
+          assert 'setViewBackend(' not in direct
+          assert ('constructor-wired direct SurfaceView' in direct or
+                  'constructor already created and wired the direct SurfaceView backend' in direct)
+          for forbidden in ('NativeAhbBridge','GeckoDisplay.SurfaceInfo','panZoomController.onTouchEvent','textInput.setView','accessibility.setView'):
+              assert forbidden not in direct, forbidden
+          handoff=Path('app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt').read_text()
+          browser=Path('app/src/main/java/com/mekromn/bubble/BrowserActivity.kt').read_text()
+          assert 'EXPAND_WATCHDOG_MS = 2200L' in handoff
+          assert 'scheduleExpandWatchdog(overlay, root)' in handoff
+          assert 'continueFullscreenEntryIfNeeded()' in browser
+          PY
+      - name: Build optimized ARM64 APK
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-143-DIRECT-HYBRID-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-143-DIRECT-HYBRID-ARM64.apk > dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-143-DIRECT-HYBRID-ARM64.apk > dist/AndroidManifest.xml
+          python3 tools/audit-hardware-apk.py dist/Bubble-143-DIRECT-HYBRID-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          sha256sum dist/Bubble-143-DIRECT-HYBRID-ARM64.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-hybrid143-final-arm64
+          path: dist/
+          retention-days: 7
+      - name: Build optimized x86_64 browser and instrumentation
+        run: gradle --no-daemon -PgeckoAbi=x86_64 :app:assemblePerformance :app:assemblePerformanceAndroidTest
+      - run: sudo chmod a+rw /dev/kvm
+      - name: Real direct steady state and two-way hybrid handoff
+        id: runtime
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          ram-size: 3072M
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: |
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            sleep 20
+            adb install -r app/build/outputs/apk/performance/app-performance.apk
+            adb install -r app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
+            adb logcat -c
+            timeout 300s adb shell am instrument -w -e class com.mekromn.bubble.HybridDirectRuntimeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > hybrid-runtime.txt 2>&1 || true
+            adb logcat -d > hybrid-logcat.txt
+            adb pull /sdcard/Android/data/com.mekromn.bubble.debug/files/evidence runtime-evidence || true
+            cat hybrid-runtime.txt
+            grep -q 'OK (1 test)' hybrid-runtime.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bubble-hybrid143-final-runtime
+          path: |
+            hybrid-runtime.txt
+            hybrid-logcat.txt
+            runtime-evidence/
+          retention-days: 7
