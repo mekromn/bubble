@@ -11,6 +11,9 @@ import android.view.View
  * retained as an additional conservative candidate.
  *
  * The existing Gecko/APZ handler remains sole owner of the original MotionEvent.
+ * Build 145's physical renderer benchmark surrounds only this identical pre-Gecko
+ * input-policy preamble in both Direct and Relay. Outside a measured run the
+ * recorder immediately returns and changes no event or renderer state.
  */
 internal object PageTouchDispatch {
     enum class Arm(val shortLabel: String) {
@@ -33,7 +36,12 @@ internal object PageTouchDispatch {
     }
 
     fun request(view: View, event: MotionEvent, hasSession: Boolean) {
-        if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
-        if (shouldUnbuffer(arm, event.source)) view.requestUnbufferedDispatch(event)
+        val benchmark = RendererBenchmark.beforePage(view, event)
+        try {
+            if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
+            if (shouldUnbuffer(arm, event.source)) view.requestUnbufferedDispatch(event)
+        } finally {
+            RendererBenchmark.afterPage(benchmark, event)
+        }
     }
 }
