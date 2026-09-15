@@ -19,11 +19,11 @@ Status legend: **DONE** = implemented and source-guardable, **VERIFY** = archite
 
 ## 50-item ledger
 
-1. **VERIFY** — Audit global opaque mode across every Bubble-owned panel/dialog/popup; Build 149 covers persistent chrome, blur backdrops, controls-sheet dimming and resting bubble.
+1. **VERIFY (151)** — Global opaque mode now covers persistent chrome, floating blur backdrops, controls-sheet dimming, resting bubble, chooser-row state fills and the full-screen tab tray. Continue auditing less-common dialogs/popups.
 2. **DONE** — Transparency OFF destroys Bubble blur-only windows/listener instead of setting radius to zero.
 3. **NEXT** — Lazy-create blur windows only when a blurred region first becomes visible while transparency is ON.
 4. **NEXT** — Retire blur resources when no currently visible Bubble region needs them, without breaking same-type overlay Z ordering.
-5. **NEXT** — Use opaque window/surface formats wherever the visible result is fully opaque.
+5. **VERIFY (151)** — Full-screen tab tray now becomes `PixelFormat.OPAQUE` with blur/listener removed when transparency is OFF. Audit other windows that can safely advertise opaque composition.
 6. **LATER** — Safely change window composition format by mode where Android permits it without relayout regressions.
 7. **VERIFY** — Audit invisible native overdraw. Chat already clips its background around the embedded page.
 8. **DONE** — Floating Gecko lives only in the middle page container between native top/bottom chrome; it is not intentionally rendered beneath those bars.
@@ -38,12 +38,12 @@ Status legend: **DONE** = implemented and source-guardable, **VERIFY** = archite
 17. **LATER** — Evaluate content-motion-aware refresh policy only if Gecko exposes a reliable signal; no frame-quality downgrade.
 18. **DONE** — Efficiency work does not reduce page fidelity/resolution to save refresh/render cost.
 19. **DONE** — Workspace listener notifications are already coalesced to at most one callback fan-out per Choreographer frame.
-20. **NEXT** — Separate model changes that affect visible pixels from persistence/notification-only changes.
+20. **VERIFY (151)** — Foreground notification summaries are now separated from frame-rate Workspace churn by a 250 ms deduplicating debounce; broader model-vs-visible-pixel scoping remains.
 21. **NEXT** — Replace broad Workspace listeners with scoped subscriptions/revisions for selected tab, tab list, unread/generating state and chrome.
-22. **NEXT** — Stop reconstructing the whole floating mode tree when only labels/status change.
+22. **VERIFY (151)** — Conversation chooser reuses unchanged row models and skips DiffUtil submission when row identity/order is unchanged; floating mode-tree reuse remains.
 23. **NEXT** — Cache/reuse stable Bubble/chooser/chat view trees when lifecycle correctness is proven.
 24. **NEXT** — Reuse stable drawables/ripples/gradients instead of recreating them on repeated mode builds.
-25. **NEXT** — Cache density-derived dimensions used in drag/layout hot paths.
+25. **NEXT** — Cache density-derived dimensions used in drag/layout hot paths. Build 151 separately caches normalized floating-panel preference state in-process.
 26. **NEXT** — Remove avoidable short-lived arrays/Rects/Points/data objects from hot drawing/gesture paths.
 27. **NEXT** — Reduce WindowBox/geometry allocations during high-rate drag/resize without changing geometry precision.
 28. **VERIFY** — WindowMotion already coordinates major floating geometry transitions; audit remaining independent ViewPropertyAnimators for overlap.
@@ -68,7 +68,7 @@ Status legend: **DONE** = implemented and source-guardable, **VERIFY** = archite
 47. **LATER** — Stop invisible Gecko presentation only if Gecko exposes a safe mechanism that preserves the retained live-session contract.
 48. **DONE (policy)** — Never substitute a lower-quality visible page/frame as an efficiency fallback.
 49. **NEXT** — Continue replacing polling/repeated discovery with event-driven cached state (blur availability already converted).
-50. **NEXT** — Build a user-triggered, normally dormant efficiency ledger measuring CPU, frame callbacks, WM relayouts, SurfaceControl work, allocations/GC, layer/window count, blur area, thermal/battery and Gecko presentation behavior.
+50. **VERIFY (151)** — The explicit Local frame measurements tool remains dormant until invoked and now adds process CPU time, Java heap/PSS, ART allocation/GC deltas, thermal status and raw battery-current context to native frame timing. WM/SF/Gecko-specific counters remain next.
 
 ## Build 150 — Phase A: redundant-work removal
 
@@ -82,8 +82,19 @@ The first audit build intentionally starts with changes that should be output-id
 - Direct attachment staging allocates one 64 KiB transfer buffer per request, not per file.
 - ZIP progress callbacks are capped at 20 Hz plus forced file-completion updates, preventing thousands of main-thread progress posts on large archives while leaving ZIP bytes/compression settings unchanged.
 
+## Build 151 — Phase B: visible-state and compositor work
+
+Build 151 continues with changes that preserve the same browser/page fidelity but attack work that scales with UI updates:
+
+- ConversationList no longer allocates/sorts a fresh complete row model set and invokes DiffUtil on every visible Workspace callback. It keeps stable per-tab row objects, performs stable pin-first grouping with two passes, and submits only when visible row identity/order/content changes.
+- Transparency OFF pre-composites chooser status fills/edges into opaque colors instead of retaining persistent alpha blending in those rows.
+- The full-screen Your chats tray now uses an actually opaque window format in opaque mode, explicitly sets background blur radius to zero and owns no cross-window-blur listener. Transparency ON keeps the existing glass appearance.
+- Floating panel geometry keeps a process-local sanitized state cache and a cached SharedPreferences handle, removing repeated four-key preference decoding during panel open/resize paths.
+- Bubble's foreground-service summary is no longer recomputed on every coalesced Workspace frame. Non-urgent summary work is deduplicated to at most one update per 250 ms; mode/park/access transitions still force immediate notification state.
+- Local frame measurements remain strictly user-triggered but now form the first real efficiency ledger: native frame p95/misses plus process CPU, heap/PSS, ART allocation/GC deltas, thermal status and raw battery-current context.
+
 ## Next phase
 
-Phase B should attack the larger structural costs: scoped Workspace revisions/listeners, selected-tab lookup/indexing,
-chooser-row rebuild avoidance, floating view-tree reuse, cached safe-area/density geometry, and a dormant measurement ledger.
-Those changes are more invasive, so they should land behind dedicated source/runtime checks rather than being mixed blindly into Phase A.
+Phase C should tackle the highest-payoff remaining structural work: scoped Workspace revisions/listeners, selected-tab indexing,
+stable floating mode-tree reuse, density/safe-area caches, hot-path geometry allocation reduction, transition snapshot lifetime,
+and deeper dormant WM/SurfaceFlinger/Gecko counters. Those are intentionally not mixed into 151 until this intermediate build is physically exercised.
