@@ -11,8 +11,8 @@ android {
         applicationId = "com.mekromn.bubble"
         minSdk = 26
         targetSdk = 36
-        versionCode = 146
-        versionName = "0.7.18-pinch-blur-lab"
+        versionCode = 147
+        versionName = "0.7.19-stock-picker-compress"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += geckoAbi }
         externalNativeBuild {
