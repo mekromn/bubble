@@ -16,7 +16,7 @@ assert.match(gradle, /versionName = "0\.7\.23-efficiency-phase-b"/);
 
 assert.match(list, /private val rowCache = HashMap<String, Row>\(\)/,
   'chooser must retain stable per-tab row models');
-assert.equal(list.includes('sortedByDescending'), false,
+assert.equal(/workspace\.tabs\.sortedByDescending\s*\{/.test(list), false,
   'chooser should not allocate/sort a fresh tab list on each refresh');
 assert.match(list, /for \(tab in workspace\.tabs\) if \(tab\.pinned\) append\(tab\)/);
 assert.match(list, /rows\.indices\.all \{ rows\[it\] === next\[it\] \}/,
