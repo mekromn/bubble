@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(bubble_ahb LANGUAGES C CXX)
 
-add_library(bubble-ahb SHARED bubble_ahb.cpp)
+add_library(bubble-ahb SHARED bubble_ahb.cpp floating_perf.cpp)
 target_compile_features(bubble-ahb PRIVATE cxx_std_17)
 target_compile_options(bubble-ahb PRIVATE -fvisibility=hidden)
 
