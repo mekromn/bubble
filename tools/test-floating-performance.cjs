@@ -7,6 +7,7 @@ const native=read('app/src/main/cpp/bubble_ahb.cpp');
 const live=read('app/src/main/java/com/mekromn/bubble/LiveGeckoView.kt');
 const render=read('app/src/main/java/com/mekromn/bubble/RenderPolicy.kt');
 const glass=read('app/src/main/java/com/mekromn/bubble/OverlayGlass.kt');
+const floating=read('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt');
 const ws=read('app/src/main/java/com/mekromn/bubble/Workspace.kt');
 assert.match(native,/kMaxImages = 6;/);assert.match(native,/kDrainLimit = 4;/);
 assert.match(native,/kOutputBackpressure = true;/);
@@ -34,8 +35,24 @@ assert(!/setViewBackend/.test(live));
 assert.match(live,/override fun hasWindowFocus/);
 assert.match(render,/preferredRefreshRate = rate/);
 assert.match(render,/Surface.FRAME_RATE_COMPATIBILITY_AT_LEAST/);
+
+// Blur is platform compositor blur only: no screen-wide blur-behind, screenshot cache, or software blur.
 assert(!/FLAG_BLUR_BEHIND|setBlurBehindRadius/.test(glass));
-assert.match(glass,/private var backdrop: Dialog\? = null/);
+assert.match(glass,/private var primary: BlurWindow\? = null/);
+assert.match(glass,/private var secondary: BlurWindow\? = null/);
+assert.match(glass,/FloatingMode\.CHAT -> updateChat/);
+assert.match(glass,/Ui\.dp\(context, 52f\)/);
+assert.match(glass,/Ui\.dp\(context, 48f\)/);
+assert.match(glass,/Shape\.TOP/); assert.match(glass,/Shape\.BOTTOM/);
+assert.match(glass,/source\.y \+ height - bottom/);
+assert(!/ChromeMaskDrawable/.test(glass), 'A transparent drawable hole must not masquerade as a split SF blur region');
+assert(!/RenderPolicy\.vote\(context, window\.decorView/.test(glass), 'Blur-only windows must not cast high-refresh votes');
+assert.match(glass,/if \(state\.x == x && state\.y == y && state\.width == width && state\.height == height\) return/,
+  'Identical blur geometry must not cause a WindowManager relayout');
+assert.match(floating,/internal fun crossWindowBlurChanged\(enabled:Boolean\)/);
+assert(!/val nowBlur=OverlayGlass\.available\(manager\)/.test(floating),
+  'Normal Workspace renders must not poll cross-window blur state');
+
 assert.match(ws,/session.setActive\(true\); session.setPriorityHint\(GeckoSession.PRIORITY_HIGH\)/);
 assert.match(read('app/src/main/java/com/mekromn/bubble/DiagnosticLog.kt'),/const val ENABLED = false/);
-console.log('Chosen relay_latest_bp source/ownership invariants passed (not physical runtime proof).');
+console.log('Relay fallback ownership and bounded, listener-driven compositor blur invariants passed (not physical runtime proof).');
