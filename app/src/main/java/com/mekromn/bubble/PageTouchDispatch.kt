@@ -14,6 +14,9 @@ import android.view.View
  * Build 145's physical renderer benchmark surrounds only this identical pre-Gecko
  * input-policy preamble in both Direct and Relay. Outside a measured run the
  * recorder immediately returns and changes no event or renderer state.
+ *
+ * Android 16 floating direct mode also sends one ADPF workload-increase hint on
+ * ACTION_DOWN. There is no hint/JNI traffic for MOVE events or rendered frames.
  */
 internal object PageTouchDispatch {
     enum class Arm(val shortLabel: String) {
@@ -40,6 +43,7 @@ internal object PageTouchDispatch {
         val pinchBenchmark = PinchBenchmark.beforePage(view, event)
         try {
             if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
+            if (Workspace.peek()?.floatingVisible == true) FloatingPerformancePolicy.interactionStart()
             if (shouldUnbuffer(arm, event.source)) view.requestUnbufferedDispatch(event)
         } finally {
             RendererBenchmark.afterPage(rendererBenchmark, event)
