@@ -128,6 +128,34 @@ class BubbleService : Service() {
         pendingMode = if (selected) FloatingMode.CHAT else FloatingMode.CHOOSER
         fulfillPending()
     }
+
+    /**
+     * A global transparency-mode change must retire the currently composed material immediately.
+     * Recreate only Bubble's overlay View/Window ownership; Workspace, GeckoRuntime and every
+     * GeckoSession remain alive and are rebound to the replacement host. This guarantees that
+     * turning transparency OFF also destroys the blur-only windows/listener right away.
+     */
+    internal fun visualEffectsChanged() {
+        if (stopping || isParked || !workspace.ready || !access.ready) return
+        val currentMode = window?.mode
+        if (currentMode == null) {
+            // Edge mode has essentially no visible glass, but rebuilding keeps any resting access
+            // material consistent with the new process-wide policy.
+            if (edge != null) showMinimized()
+            return
+        }
+        try {
+            removeSurfaces()
+            val replacement = FloatingWindow(this, workspace)
+            window = replacement
+            replacement.attach(currentMode)
+            updateNotification(force = true)
+        } catch (_: RuntimeException) {
+            removeSurfaces()
+            if (canPark()) { isParked = true; updateNotification(force = true) } else stopSelf()
+        }
+    }
+
     internal fun canPark(): Boolean {
         createChannel()
         val manager = getSystemService(NotificationManager::class.java)
