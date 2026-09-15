@@ -16,7 +16,10 @@ import android.view.View
  * recorder immediately returns and changes no event or renderer state.
  *
  * Android 16 floating direct mode also sends one ADPF workload-increase hint on
- * ACTION_DOWN. There is no hint/JNI traffic for MOVE events or rendered frames.
+ * ACTION_DOWN. The 158 scheduler probe additionally ensures a 1x1 transparent
+ * application Activity is resident before subsequent floating gestures so we can
+ * isolate Android top-app scheduling from renderer/UI costs. There is no probe,
+ * hint or JNI traffic for MOVE events or rendered frames.
  */
 internal object PageTouchDispatch {
     enum class Arm(val shortLabel: String) {
@@ -43,7 +46,10 @@ internal object PageTouchDispatch {
         val pinchBenchmark = PinchBenchmark.beforePage(view, event)
         try {
             if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
-            if (Workspace.peek()?.floatingVisible == true) FloatingPerformancePolicy.interactionStart()
+            if (Workspace.peek()?.floatingVisible == true) {
+                FloatingTopAppAnchorActivity.ensure(view.context)
+                FloatingPerformancePolicy.interactionStart()
+            }
             if (shouldUnbuffer(arm, event.source)) view.requestUnbufferedDispatch(event)
         } finally {
             RendererBenchmark.afterPage(rendererBenchmark, event)
