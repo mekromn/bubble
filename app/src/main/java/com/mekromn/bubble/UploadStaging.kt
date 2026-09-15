@@ -48,7 +48,10 @@ internal object UploadStaging {
         val base = requestRoot(context, tabId, id)
         try {
             check(base.mkdirs() || base.isDirectory)
-            val result = ArrayList<Uri>()
+            val result = ArrayList<Uri>(selected.size)
+            // The request is serialized on one IO lane, so one bounded buffer can serve every source
+            // without retaining whole files or allocating another 64 KiB array for each selection.
+            val buffer = ByteArray(64 * 1024)
             for ((index, uri) in selected.withIndex()) {
                 if (job.cancelled.get()) throw IOException("Attachment selection cancelled")
                 require(uri.scheme == "content") { "Only user-selected content is accepted" }
@@ -70,7 +73,6 @@ internal object UploadStaging {
                 val input = context.contentResolver.openInputStream(uri) ?: throw IOException("Provider returned no file")
                 job.source = input
                 input.use { source -> file.outputStream().use { destination ->
-                    val buffer = ByteArray(64 * 1024)
                     while (true) {
                         if (job.cancelled.get()) throw IOException("Attachment selection cancelled")
                         val count = source.read(buffer)
