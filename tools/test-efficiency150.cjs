@@ -11,8 +11,9 @@ const archive = read('app/src/main/java/com/mekromn/bubble/ArchiveEngine.kt');
 const service = read('app/src/main/java/com/mekromn/bubble/BubbleService.kt');
 const audit = read('docs/EFFICIENCY_AUDIT.md');
 
-assert.match(gradle, /versionCode = 150/);
-assert.match(gradle, /versionName = "0\.7\.22-efficiency-audit"/);
+const version = Number((gradle.match(/versionCode = (\d+)/) || [])[1]);
+assert.ok(Number.isFinite(version) && version >= 150,
+  `Phase-A efficiency invariants require Bubble versionCode >= 150, got ${version}`);
 
 assert.match(render, /data class RateKey/);
 assert.match(render, /rateCache/);
@@ -60,4 +61,4 @@ assert.match(audit, /Hard invariants/);
 assert.match(audit, /Never lower Gecko\/WebRender page resolution/);
 assert.match(audit, /Build 150 — Phase A/);
 
-console.log('Bubble 150 Phase-A efficiency invariants passed: output-identical render/service/file-path work reductions.');
+console.log(`Bubble ${version} retains Build-150 Phase-A efficiency invariants.`);
