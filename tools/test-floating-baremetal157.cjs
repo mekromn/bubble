@@ -30,7 +30,9 @@ assert.match(background, /cutout\.inset\(SEAM_GUARD_PX, SEAM_GUARD_PX\)/, 'Seam 
 assert.match(direct, /surfaceView\(root\).*FloatingPerformancePolicy\.bind/s, 'ADPF must bind Mozilla real SurfaceView');
 assert.match(direct, /FloatingPerformancePolicy\.unbind\(\)/, 'ADPF session must follow Surface lifetime');
 assert.match(policy, /SurfaceHolder\.Callback/, 'Performance session must track the producer Surface lifetime');
-assert.match(policy, /NativePerformanceBridge\.nativeStart\(target\.holder\.surface/, 'Native ADPF must receive the actual SurfaceView Surface');
+assert.match(policy, /Thread\(\{[\s\S]*NativePerformanceBridge\.nativeStart\(surface, rate, mainTid\)/, 'Native ADPF setup/thread discovery must run off main');
+assert.match(policy, /generation == ticket/, 'An in-flight ADPF setup must be rejected after Surface replacement');
+assert.match(policy, /Bubble-floating-ADPF-setup/, 'ADPF setup worker must be explicit and short-lived');
 assert.match(bridge, /nativeNotifyInteraction/, 'Gesture workload hint bridge must exist');
 assert.match(touch, /ACTION_DOWN/, 'Touch path remains gesture-start scoped');
 assert.match(touch, /FloatingPerformancePolicy\.interactionStart\(\)/, 'Floating touch-down must pre-announce scroll workload');
@@ -47,10 +49,11 @@ assert.match(cmake, /bubble_ahb\.cpp floating_perf\.cpp/, 'ADPF bridge must ship
 assert.match(meter, /FloatingPerformancePolicy\.diagnostics\(\)/, 'User-triggered local meter must expose ADPF result');
 
 // Fidelity/per-frame safety. This build may change scheduling/geometry, never page quality.
-assert.ok(!/TextureView/.test(direct.replace(/TextureView/g, '')), 'placeholder'); // Direct source documentation mentions forbidden TextureView only.
+assert.ok(!/TextureView\s*\(/.test(direct), 'Do not introduce a TextureView renderer');
 assert.ok(!/setFixedSize\(/.test(direct), 'Do not force a reduced page buffer size');
 assert.ok(!/postDelayed[\s\S]*interactionStart/.test(policy), 'No periodic workload-hint loop');
 assert.ok(!/ACTION_MOVE[\s\S]*interactionStart/.test(touch), 'Never send ADPF hints for each move event');
+assert.ok(!/getMyMemoryState[\s\S]*nativeNotifyInteraction/.test(policy.split('fun interactionStart()')[1]?.split('fun diagnostics()')[0] || ''), 'Gesture hot path must not query ActivityManager');
 assert.ok(!/-ffast-math/.test(cmake), 'Do not trade numerical fidelity for speed');
 
-console.log('Bubble 157 guards passed: seam hardening, no WMS move animation, Surface-bound Android 16 ADPF auto timing, gesture-only boost, fidelity preserved.');
+console.log('Bubble 157 guards passed: seam hardening, no WMS move animation, off-main Surface-bound Android 16 ADPF auto timing, gesture-only boost, fidelity preserved.');
