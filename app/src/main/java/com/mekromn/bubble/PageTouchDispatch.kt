@@ -36,12 +36,14 @@ internal object PageTouchDispatch {
     }
 
     fun request(view: View, event: MotionEvent, hasSession: Boolean) {
-        val benchmark = RendererBenchmark.beforePage(view, event)
+        val rendererBenchmark = RendererBenchmark.beforePage(view, event)
+        val pinchBenchmark = PinchBenchmark.beforePage(view, event)
         try {
             if (!eligible(event.actionMasked, event.source, hasSession) || !view.isAttachedToWindow) return
             if (shouldUnbuffer(arm, event.source)) view.requestUnbufferedDispatch(event)
         } finally {
-            RendererBenchmark.afterPage(benchmark, event)
+            RendererBenchmark.afterPage(rendererBenchmark, event)
+            PinchBenchmark.afterPage(pinchBenchmark, event)
         }
     }
 }

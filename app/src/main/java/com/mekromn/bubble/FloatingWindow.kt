@@ -46,7 +46,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
     private var gestureY=0f
     private var dragging=false
     private var held=false
-    private var glassBlur=OverlayGlass.available(manager)
+    private var glassBlur=false
     private val slop=ViewConfiguration.get(context).scaledTouchSlop
     private val hold=Runnable { if(!dragging && mode==FloatingMode.BUBBLE) { held=true; openChat(workspace.selectedId) } }
     private var list: ConversationList?=null
@@ -123,7 +123,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             gravity=Gravity.TOP or Gravity.LEFT; x=rectangle.x; y=rectangle.y
             title="Bubble floating workspace"; softInputMode=WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
-        OverlayGlass.apply(context,manager,params,directPanel)
+        glassBlur=OverlayGlass.apply(context,manager,params,directPanel)
         build(initialMode)
         if(directPanel) {
             if(matchedEntrance) {
@@ -465,14 +465,16 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         }
         override fun performClick():Boolean { collapse(); return super.performClick() }
     }
+    internal fun crossWindowBlurChanged(enabled:Boolean) {
+        if(destroyed || glassBlur==enabled)return
+        glassBlur=enabled
+        if(mode!=FloatingMode.BUBBLE)setPanelBackground(mode)
+        // The platform listener is the source of truth; applying here changes only the
+        // tiny compositor blur regions and does not fan out through Workspace listeners.
+        OverlayGlass.apply(context,manager,params,mode!=FloatingMode.BUBBLE)
+    }
     private fun render() {
         if(destroyed)return
-        val nowBlur=OverlayGlass.available(manager)
-        if(nowBlur!=glassBlur) {
-            glassBlur=nowBlur
-            if(mode!=FloatingMode.BUBBLE)setPanelBackground(mode)
-            place(rectangle,true)
-        }
         bubble?.update(workspace.tabs.size,workspace.tabs.count { it.unread },workspace.tabs.any { it.generating }); list?.refresh(workspace)
         if(mode==FloatingMode.CHOOSER) { val text="${workspace.tabs.size} conversations · drag tab icons to reorder"; if(subtitle?.text!=text)subtitle?.text=text; return }
         if(mode!=FloatingMode.CHAT)return

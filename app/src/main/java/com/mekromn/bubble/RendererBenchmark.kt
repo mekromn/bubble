@@ -302,7 +302,7 @@ internal object RendererBenchmark {
 
     fun start(context: Context, pairs: Int): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (run != null) return false
+        if (run != null || PinchBenchmark.status(context).running) return false
         if (Build.VERSION.SDK_INT < 36) {
             Toast.makeText(context, "The measured renderer arena requires Android 16.", Toast.LENGTH_LONG).show()
             return false

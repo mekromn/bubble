@@ -366,7 +366,7 @@ internal object PinchBenchmark {
             return false
         }
         val count = pairs.coerceIn(2, 10)
-        val seed = SystemClock.elapsedRealtimeNanos() xor BuildFingerprint.seed()
+        val seed = SystemClock.elapsedRealtimeNanos() xor buildFingerprintSeed()
         val order = ArrayList<RendererArena.Transport>(count * 2)
         val firstDirect = (seed and 1L) == 0L
         repeat(count) { pair ->
@@ -855,6 +855,12 @@ internal object PinchBenchmark {
         return sorted[lo] + (sorted[hi] - sorted[lo]) * f
     }
     private fun median(values: List<Double>): Double = percentile(values, .5)
+    private fun buildFingerprintSeed(): Long {
+        var value = 0xcbf29ce484222325UL.toLong()
+        for (c in android.os.Build.FINGERPRINT) value = (value xor c.code.toLong()) * 0x100000001b3L
+        return value
+    }
+
     private fun bootstrapMedianCi(values: List<Double>, seed: Long): Pair<Double, Double> {
         if (values.size < 2) return values.firstOrNull()?.let { it to it } ?: (Double.NaN to Double.NaN)
         val random = Random(seed)

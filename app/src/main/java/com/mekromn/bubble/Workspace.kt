@@ -571,6 +571,7 @@ internal class Workspace private constructor(private val app: Context, initialUr
     }
     private fun installMonitor(tab: ChatTab, session: GeckoSession, addon: WebExtension) {
         val blobRuntime = engine()
+        PinchBridge.install(session, addon)
         PageAppearance.bind(app, tab.id, session, addon)
         session.webExtensionController.setMessageDelegate(addon, object : WebExtension.MessageDelegate {
             override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
