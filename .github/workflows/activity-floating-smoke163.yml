@@ -62,7 +62,7 @@ jobs:
           disable-animations: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            set -euo pipefail
+            set -eu
             mkdir -p smoke-evidence
             APP=app/build/outputs/apk/performance/app-performance.apk
             TEST=app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
@@ -70,8 +70,8 @@ jobs:
             adb install -r -t "$TEST"
             adb logcat -c
             set +e
-            adb shell am instrument -w -r -e class com.mekromn.bubble.ActivityFloatingTransitionSmokeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner | tee smoke-evidence/instrumentation.txt
-            TEST_RC=${PIPESTATUS[0]}
+            adb shell am instrument -w -r -e class com.mekromn.bubble.ActivityFloatingTransitionSmokeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner > smoke-evidence/instrumentation.txt 2>&1
+            TEST_RC=$?
             set -e
             adb logcat -d -v threadtime > smoke-evidence/logcat.txt || true
             adb shell dumpsys activity activities > smoke-evidence/activities.txt || true
