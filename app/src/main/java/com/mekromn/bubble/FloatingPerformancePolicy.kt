@@ -2,6 +2,7 @@ package com.mekromn.bubble
 
 import android.app.ActivityManager
 import android.os.Build
+import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.view.SurfaceHolder
@@ -14,6 +15,10 @@ import java.util.Locale
  * real Gecko SurfaceView producer with an ADPF graphics-pipeline session and let the system perform
  * automatic CPU/GPU timing. The policy is created once per Surface lifetime and is completely
  * callback-free for normal frame production.
+ *
+ * Native session setup enumerates /proc thread names to identify the graphics critical path, so that
+ * setup runs on a short-lived worker rather than Android's main thread. A generation token closes a
+ * session immediately if its Surface is replaced while setup is in flight.
  */
 internal object FloatingPerformancePolicy {
     private const val BIT_SESSIONS = 1 shl 0
@@ -23,9 +28,12 @@ internal object FloatingPerformancePolicy {
     private const val BIT_AUTO_GPU = 1 shl 4
     private const val BIT_CREATED = 1 shl 5
 
+    private val main = Handler(Looper.getMainLooper())
     private var bound: SurfaceView? = null
     private var callback: SurfaceHolder.Callback? = null
     private var requestedRate = 0f
+    private var generation = 0
+    private var startPending = false
     @Volatile private var handle = 0L
     @Volatile private var lastFeatureBits = 0
     @Volatile private var lastCreateStatus = 0
@@ -40,7 +48,7 @@ internal object FloatingPerformancePolicy {
         if (bound === target && callback != null) {
             requestedRate = rate
             lastDisplayRate = target.display?.refreshRate ?: lastDisplayRate
-            if (handle == 0L && target.holder.surface.isValid) start(target)
+            if (handle == 0L && !startPending && target.holder.surface.isValid) start(target)
             return
         }
         unbind()
@@ -53,7 +61,7 @@ internal object FloatingPerformancePolicy {
                 if (bound === target && holder.surface.isValid) start(target)
             }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                if (bound === target && handle == 0L && holder.surface.isValid) start(target)
+                if (bound === target && handle == 0L && !startPending && holder.surface.isValid) start(target)
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 if (bound === target) stopHandle()
@@ -81,7 +89,7 @@ internal object FloatingPerformancePolicy {
         if (current == 0L) return
         interactionHints++
         lastDisplayRate = bound?.display?.refreshRate ?: lastDisplayRate
-        captureImportance()
+        // Do not query ActivityManager here: this is the page ACTION_DOWN hot path.
         runCatching { NativePerformanceBridge.nativeNotifyInteraction(current) }
     }
 
@@ -103,33 +111,55 @@ internal object FloatingPerformancePolicy {
     }
 
     private fun start(target: SurfaceView) {
+        check(Looper.myLooper() == Looper.getMainLooper())
         stopHandle()
-        if (!target.holder.surface.isValid || requestedRate <= 0f) return
+        if (!target.holder.surface.isValid || requestedRate <= 0f || bound !== target) return
         lastDisplayRate = target.display?.refreshRate ?: lastDisplayRate
         captureImportance()
-        val created = runCatching {
-            NativePerformanceBridge.nativeStart(target.holder.surface, requestedRate, Process.myTid())
-        }.getOrDefault(0L)
-        handle = created
-        refreshNativeStatus(created)
+        val rate = requestedRate
+        val mainTid = Process.myTid()
+        val surface = target.holder.surface
+        val ticket = ++generation
+        startPending = true
+        Thread({
+            val created = runCatching {
+                NativePerformanceBridge.nativeStart(surface, rate, mainTid)
+            }.getOrDefault(0L)
+            val state = runCatching { NativePerformanceBridge.nativeStatus(created) }.getOrNull()
+            main.post {
+                if (generation == ticket && bound === target && target.holder.surface.isValid) {
+                    startPending = false
+                    handle = created
+                    applyNativeStatus(state)
+                } else {
+                    if (created != 0L) Thread({
+                        runCatching { NativePerformanceBridge.nativeStop(created) }
+                    }, "Bubble-floating-ADPF-retire").start()
+                }
+            }
+        }, "Bubble-floating-ADPF-setup").start()
     }
 
     private fun stopHandle() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        generation++
+        startPending = false
         val current = handle
-        if (current == 0L) return
-        refreshNativeStatus(current)
-        runCatching { NativePerformanceBridge.nativeStop(current) }
         handle = 0L
+        if (current == 0L) return
+        Thread({
+            val state = runCatching { NativePerformanceBridge.nativeStatus(current) }.getOrNull()
+            runCatching { NativePerformanceBridge.nativeStop(current) }
+            main.post { applyNativeStatus(state) }
+        }, "Bubble-floating-ADPF-stop").start()
     }
 
-    private fun refreshNativeStatus(current: Long) {
-        val state = runCatching { NativePerformanceBridge.nativeStatus(current) }.getOrNull() ?: return
-        if (state.size >= 4) {
-            lastFeatureBits = state[0]
-            lastCreateStatus = state[1]
-            lastThreadCount = state[2]
-            interactionHints = maxOf(interactionHints, state[3])
-        }
+    private fun applyNativeStatus(state: IntArray?) {
+        if (state == null || state.size < 4) return
+        lastFeatureBits = state[0]
+        lastCreateStatus = state[1]
+        lastThreadCount = state[2]
+        interactionHints = maxOf(interactionHints, state[3])
     }
 
     private fun captureImportance() {
