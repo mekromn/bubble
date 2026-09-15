@@ -85,10 +85,11 @@ internal class FrameMeter {
         val currentText = if (currentUa == Long.MIN_VALUE) "unavailable" else "$currentUa µA raw"
         val gcText = gcDelta?.toString() ?: "unavailable"
         val allocText = allocatedMb?.let { String.format(Locale.US, "%.1f MB", it) } ?: "unavailable"
-        String.format(Locale.US,
+        val base = String.format(Locale.US,
             "Display now: %.1f Hz\nNative frames sampled: %d\nRecent native p95: %.2f ms\nDeadline misses: %d / %d\nLost callbacks: %d\n\nMeasurement wall time: %.1f s\nProcess CPU time: %d ms (%.1f%% of wall; multicore may exceed 100%%)\nJava heap used now: %.1f MB\nProcess PSS now: %.1f MB\nGC count delta: %s\nART allocated bytes delta: %s\nThermal status now: %d\nBattery current now: %s\n\nThese are Bubble/native-process diagnostics, not the webpage compositor's FPS or calibrated power consumption. Current sign/availability is device-defined. Android may lower refresh for heat, battery or system settings. No data leaves the device.",
             Refresh.actual(activity), count, p95, misses, count, lost,
             elapsedMs / 1000.0, cpuMs, cpuWallPercent, javaUsedMb, pssMb, gcText, allocText, thermal, currentText)
+        base + "\n\n" + FloatingPerformancePolicy.diagnostics()
     }
 
     private fun runtimeStat(name: String): Long? = runCatching {
