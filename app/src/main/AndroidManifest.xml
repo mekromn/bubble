@@ -17,6 +17,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".FloatingPriorityAnchorActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.priority_anchor"
+            android:theme="@style/Theme.Bubble.PriorityAnchor" />
         <activity android:name=".FloatingFileActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.file_prompts" android:theme="@style/Theme.Bubble.Prompt" />
         <activity android:name=".ArchivePickerActivity" android:exported="true" android:label="Select and Compress" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.archive_picker" android:theme="@style/Theme.Bubble.Prompt">
             <intent-filter>
