@@ -1,0 +1,103 @@
+name: Bubble 158 single floating ViewRoot validation
+
+on:
+  push:
+    branches: [single-viewroot158]
+    paths:
+      - 'app/**'
+      - 'tools/**'
+      - 'docs/SINGLE_VIEWROOT_158.md'
+      - '.github/workflows/single-viewroot158-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Inject installable 158 metadata only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/build.gradle.kts')
+          s=p.read_text()
+          s=s.replace('versionCode = 157', 'versionCode = 158', 1)
+          s=s.replace('versionName = "0.7.29-opaque-floating-page-baremetal"', 'versionName = "0.7.30-single-viewroot"', 1)
+          p.write_text(s)
+          PY
+          grep -q 'versionCode = 158' app/build.gradle.kts
+          grep -q 'versionName = "0.7.30-single-viewroot"' app/build.gradle.kts
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+
+      - name: Prove production change is renderer architecture only
+        run: |
+          set -euo pipefail
+          git diff --exit-code 114e53333c16cf6f029bd6ba41b1aa742566c6d5 HEAD -- \
+            app/src/main/java/com/mekromn/bubble \
+            ':!app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt' \
+            ':!app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt'
+
+      - name: Single-ViewRoot and retained production invariants
+        run: |
+          set -euo pipefail
+          node tools/test-stock-picker-compress147.cjs
+          node tools/test-direct-attach148.cjs
+          node tools/test-global-opacity149.cjs
+          node tools/test-efficiency150.cjs
+          node tools/test-efficiency151.cjs
+          node tools/test-single-viewroot158.cjs
+          node tools/test-foreground.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          node tools/test-embedded-page.cjs
+          bash tools/test-relay-native.sh
+
+      - name: Build optimized ARM64 candidate
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance -PgeckoAbi=arm64-v8a
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-158-SINGLE-VIEWROOT-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-158-SINGLE-VIEWROOT-ARM64.apk > dist/signature.txt
+          grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-158-SINGLE-VIEWROOT-ARM64.apk > dist/AndroidManifest.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
+          assert root.attrib['package']=='com.mekromn.bubble.debug'
+          assert root.attrib[ns+'versionCode']=='158'
+          assert root.attrib[ns+'versionName']=='0.7.30-single-viewroot'
+          app=root.find('application')
+          assert app.attrib.get(ns+'debuggable','false')=='false'
+          assert app.attrib.get(ns+'hardwareAccelerated')=='true'
+          PY
+          python3 tools/audit-hardware-apk.py dist/Bubble-158-SINGLE-VIEWROOT-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          sha256sum dist/Bubble-158-SINGLE-VIEWROOT-ARM64.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+          cp docs/SINGLE_VIEWROOT_158.md dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-158-single-viewroot-arm64
+          path: dist/
+          retention-days: 7
