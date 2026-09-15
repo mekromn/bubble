@@ -181,8 +181,6 @@ class RendererArenaActivity : Activity() {
             if (FloatingPriorityAnchorActivity.lastImportance != Int.MIN_VALUE) {
                 append("Last zero-work anchor process importance: ")
                     .append(FloatingPriorityAnchorActivity.lastImportance).append('\n')
-                append("Last anchor Display.refreshRate: ")
-                    .append(String.format(java.util.Locale.US, "%.1f Hz", FloatingPriorityAnchorActivity.lastRefreshRate)).append('\n')
             }
             if (scrolling.running) {
                 append("Scrolling run: block ").append(scrolling.block).append('/').append(scrolling.totalBlocks)
