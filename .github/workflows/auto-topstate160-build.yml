@@ -29,11 +29,11 @@ jobs:
           p=Path('app/build.gradle.kts')
           s=p.read_text()
           s=s.replace('versionCode = 157', 'versionCode = 160', 1)
-          s=s.replace('versionName = "0.7.29-opaque-floating-page-baremetal"', 'versionName = "0.7.32-auto-topstate"', 1)
+          s=s.replace('versionName = "0.7.29-opaque-floating-page-baremetal"', 'versionName = "0.7.32-single-viewroot-auto-topstate"', 1)
           p.write_text(s)
           PY
           grep -q 'versionCode = 160' app/build.gradle.kts
-          grep -q 'versionName = "0.7.32-auto-topstate"' app/build.gradle.kts
+          grep -q 'versionName = "0.7.32-single-viewroot-auto-topstate"' app/build.gradle.kts
 
       - uses: actions/setup-java@v5
         with:
@@ -101,7 +101,7 @@ jobs:
           root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
           assert root.attrib['package']=='com.mekromn.bubble.debug'
           assert root.attrib[ns+'versionCode']=='160'
-          assert root.attrib[ns+'versionName']=='0.7.32-auto-topstate'
+          assert root.attrib[ns+'versionName']=='0.7.32-single-viewroot-auto-topstate'
           app=root.find('application')
           assert app.attrib.get(ns+'debuggable','false')=='false'
           assert app.attrib.get(ns+'hardwareAccelerated')=='true'
