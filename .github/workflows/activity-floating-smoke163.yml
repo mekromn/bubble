@@ -5,6 +5,7 @@ on:
     branches: [activity-smoketest163]
     paths:
       - 'app/**'
+      - 'tools/apply-smoke-root-fix.py'
       - '.github/workflows/activity-floating-smoke163.yml'
   workflow_dispatch:
 
@@ -21,29 +22,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply candidate Activity-construction fix in smoke workspace only
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
-          s = p.read_text()
-          start_token = '    private val root = object : FrameLayout(this) {'
-          end_token = '\n\n    override fun onCreate(state: Bundle?) {'
-          start = s.index(start_token)
-          end = s.index(end_token, start)
-          block = s[start:end]
-          block = block.replace(start_token, '    private lateinit var root: FrameLayout\n\n    private fun createRoot(): FrameLayout = object : FrameLayout(this) {', 1)
-          s = s[:start] + block + s[end:]
-          marker = '    override fun onCreate(state: Bundle?) {\n        super.onCreate(state)\n'
-          replacement = marker + '        // Views need the Activity base context/theme, which exists only after attach/onCreate.\n        root = createRoot()\n'
-          if marker not in s:
-              raise SystemExit('onCreate marker not found')
-          s = s.replace(marker, replacement, 1)
-          p.write_text(s)
-          PY
-          grep -q 'private lateinit var root: FrameLayout' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
-          ! grep -q 'private val root = object : FrameLayout(this)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
-          grep -q 'root = createRoot()' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+        run: python3 tools/apply-smoke-root-fix.py
 
       - uses: actions/setup-java@v5
         with:
@@ -65,7 +44,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Compile x86_64 performance app + instrumentation only
+      - name: Compile x86_64 performance app and instrumentation
         run: |
           set -euo pipefail
           sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
@@ -73,7 +52,7 @@ jobs:
           test -f app/build/outputs/apk/performance/app-performance.apk
           test -f app/build/outputs/apk/androidTest/performance/app-performance-androidTest.apk
 
-      - name: Android 16 fullscreen -> floating Activity smoke test
+      - name: Android 16 fullscreen to floating Activity smoke test
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -91,10 +70,7 @@ jobs:
             adb install -r -t "$TEST"
             adb logcat -c
             set +e
-            adb shell am instrument -w -r \
-              -e class com.mekromn.bubble.ActivityFloatingTransitionSmokeTest \
-              com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner \
-              | tee smoke-evidence/instrumentation.txt
+            adb shell am instrument -w -r -e class com.mekromn.bubble.ActivityFloatingTransitionSmokeTest com.mekromn.bubble.debug.test/androidx.test.runner.AndroidJUnitRunner | tee smoke-evidence/instrumentation.txt
             TEST_RC=${PIPESTATUS[0]}
             set -e
             adb logcat -d -v threadtime > smoke-evidence/logcat.txt || true
@@ -104,7 +80,7 @@ jobs:
             cat smoke-evidence/instrumentation.txt
             test "$TEST_RC" -eq 0
             grep -q 'OK (1 test)' smoke-evidence/instrumentation.txt
-            ! grep -E 'FATAL EXCEPTION:.*|Process: com\.mekromn\.bubble\.debug' smoke-evidence/logcat.txt
+            if grep -E 'FATAL EXCEPTION:|Process: com\.mekromn\.bubble\.debug' smoke-evidence/logcat.txt; then exit 1; fi
 
       - name: Upload smoke evidence
         if: always()
