@@ -45,7 +45,13 @@ internal object ControlsSheet {
         val max = (activity.resources.displayMetrics.heightPixels * .65f).toInt()
         content.addView(scroll, LinearLayout.LayoutParams(-1, minOf(max, actions.size * dp(activity, 50))))
         dialog.setContentView(content)
-        dialog.window?.apply { setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)); setGravity(Gravity.BOTTOM); setDimAmount(.32f) }
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setGravity(Gravity.BOTTOM)
+            val dim = if (VisualEffects.transparencyEnabled()) .32f else 0f
+            setDimAmount(dim)
+            if (dim == 0f) clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
         dialog.show(); dialog.window?.setLayout(-1, -2)
         if (ValueAnimator.areAnimatorsEnabled()) {
             content.alpha = 0f; content.translationY = dp(activity, 24).toFloat()
