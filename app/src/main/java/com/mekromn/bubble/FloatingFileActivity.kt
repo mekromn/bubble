@@ -17,7 +17,7 @@ import java.util.UUID
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 
-/** Gecko file prompts are owned by Bubble: native multi-picker -> one staged archive -> original tab. */
+/** Gecko file prompts are owned by Bubble: Android picker -> compression dialog -> one staged attachment. */
 class FloatingFileActivity : Activity() {
     private var token = ""
     override fun onCreate(state: Bundle?) {
@@ -29,7 +29,7 @@ class FloatingFileActivity : Activity() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(24, 24, 24, 24)
             background = Ui.shape(this@FloatingFileActivity, Ui.SURFACE, 20f)
-            addView(Ui.text(this@FloatingFileActivity, "Opening Bubble Archive Picker…", 16f))
+            addView(Ui.text(this@FloatingFileActivity, "Opening Android Files…", 16f))
             addView(ProgressBar(this@FloatingFileActivity))
             addView(Ui.text(this@FloatingFileActivity, "Cancel", 15f).apply {
                 gravity = Gravity.CENTER; minHeight = Ui.dp(context, 48f)
@@ -45,11 +45,11 @@ class FloatingFileActivity : Activity() {
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
             }
             try { startActivityForResult(pick, PICK) }
-            catch (_: RuntimeException) { finishRequest(request, emptyList(), "Bubble could not open Archive Picker.") }
+            catch (_: RuntimeException) { finishRequest(request, emptyList(), "Bubble could not open Android's document picker.") }
         }
     }
 
-    @Deprecated("Native archive picker result")
+    @Deprecated("Select-and-compress result")
     override fun onActivityResult(code: Int, result: Int, data: Intent?) {
         super.onActivityResult(code, result, data)
         if (code != PICK) return
@@ -58,7 +58,7 @@ class FloatingFileActivity : Activity() {
         val path = data?.getStringExtra(ArchivePickerActivity.RESULT_LOCAL_PATH).orEmpty()
         val file = File(path)
         if (path.isBlank() || !file.isFile || !file.canRead()) {
-            finishRequest(request, emptyList(), "Archive Picker did not return a readable attachment.")
+            finishRequest(request, emptyList(), "Select and Compress did not return a readable attachment.")
             return
         }
         finishRequest(request, listOf(Uri.fromFile(file)), null)
