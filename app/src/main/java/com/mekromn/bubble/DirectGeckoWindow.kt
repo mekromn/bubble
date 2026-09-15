@@ -9,6 +9,7 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Build
 import android.view.Gravity
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
@@ -35,6 +36,11 @@ import kotlin.math.floor
  * That gives SurfaceFlinger an honest opaque page layer which can fully occlude the underlying app
  * and the transparent middle of Bubble chrome, while keeping Mozilla's original SurfaceView direct
  * path and the exact same GeckoSession.
+ *
+ * Build 157 hardens that split: WindowManager move animation is disabled for the page window,
+ * Chrome owns IME resizing so the page cannot be independently double-resized, layout changes are
+ * synchronized in addition to pre-draw, and Android 16 ADPF is bound directly to Gecko's real
+ * SurfaceView producer when supported. None of this adds a page copy or frame pump.
  *
  * There is still no ImageReader/AImage relay, Bubble native consumer, TextureView, extra page blit or
  * steady-state page bitmap. If Android rejects the independent overlay window, this class falls back
@@ -70,7 +76,12 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
         y = 0
         alpha = 1f
         dimAmount = 0f
-        softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        // The containing chrome window owns keyboard/inset geometry. Letting this independent page
+        // window ADJUST_RESIZE as well can make WMS shorten it a second time and expose a bottom seam.
+        softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        // This window follows Bubble's own geometry/transition choreography. A second platform move
+        // animation introduces temporal separation between page and toolbar and is never desirable.
+        setCanPlayMoveAnimation(false)
         title = "Bubble opaque floating page"
     }
 
@@ -82,6 +93,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     private var coveredForReveal = false
     private var syncQueued = false
     private var lastGeometry: PageGeometry? = null
+    private var requestedRate = 0f
     private val transform = Matrix()
     private val bounds = RectF()
     private var backCallback: android.window.OnBackInvokedCallback? = null
@@ -97,6 +109,15 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
         true
     }
 
+    /**
+     * A layout callback closes the other synchronization hole: a page-slot size change is known at
+     * layout time, before a later pre-draw. This is event-driven and normally collapses to a no-op
+     * because syncPageWindow compares the exact integer geometry first.
+     */
+    private val layoutChange = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+        syncPageWindow(false)
+    }
+
     /** Attach the real Gecko page as a separate opaque overlay above Bubble's transparent page hole. */
     override fun show(parent: FrameLayout): Boolean {
         if (Build.VERSION.SDK_INT < 36) {
@@ -106,6 +127,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
 
         if (container !== parent) {
             detachContainerHooks()
+            FloatingPerformancePolicy.unbind()
             if (root.parent is ViewGroup) (root.parent as ViewGroup).removeView(root)
             container = parent
             installContainerHooks(parent)
@@ -130,12 +152,14 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     private fun installContainerHooks(parent: FrameLayout) {
         val observer = parent.viewTreeObserver
         if (observer.isAlive) observer.addOnPreDrawListener(preDraw)
+        parent.addOnLayoutChangeListener(layoutChange)
     }
 
     private fun detachContainerHooks() {
         val old = container ?: return
         val observer = old.viewTreeObserver
         if (observer.isAlive) runCatching { observer.removeOnPreDrawListener(preDraw) }
+        old.removeOnLayoutChangeListener(layoutChange)
     }
 
     private fun attachOverlay(geometry: PageGeometry): Boolean {
@@ -144,14 +168,18 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
             setOpaqueBacking(true)
             applyGeometry(geometry)
             pageParams.alpha = if (coveredForReveal) 0f else 1f
-            RenderPolicy.vote(context, root, pageParams)
+            requestedRate = RenderPolicy.vote(context, root, pageParams)
             manager.addView(root, pageParams)
             overlayAttached = true
             lastGeometry = geometry
-            root.post { registerBackCallback() }
+            root.post {
+                registerBackCallback()
+                bindPerformance()
+            }
             true
         } catch (failure: RuntimeException) {
             if (DiagnosticLog.ENABLED) DiagnosticLog.error("DIRECT_GECKO", "Opaque page overlay attach failed", failure)
+            FloatingPerformancePolicy.unbind()
             runCatching { if (overlayAttached) manager.removeViewImmediate(root) }
             overlayAttached = false
             lastGeometry = null
@@ -163,6 +191,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     /** Previous production direct path retained only as a reliability fallback. */
     private fun showEmbedded(parent: FrameLayout): Boolean {
         embeddedFallback = true
+        FloatingPerformancePolicy.unbind()
         if (overlayAttached) {
             unregisterBackCallback()
             runCatching { manager.removeViewImmediate(root) }
@@ -173,11 +202,13 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
             (root.parent as? ViewGroup)?.removeView(root)
             return try {
                 parent.addView(root, 0, FrameLayout.LayoutParams(-1, -1))
-                RenderPolicy.vote(context, root)
+                requestedRate = RenderPolicy.vote(context, root)
                 view.alpha = if (coveredForReveal) 0f else 1f
+                root.post { bindPerformance() }
                 true
             } catch (failure: RuntimeException) {
                 if (DiagnosticLog.ENABLED) DiagnosticLog.error("DIRECT_GECKO", "Embedded Gecko SurfaceView fallback failed", failure)
+                FloatingPerformancePolicy.unbind()
                 runCatching { view.releaseSession() }
                 (root.parent as? ViewGroup)?.removeView(root)
                 Toast.makeText(context, "Direct Gecko page failed: ${failure.javaClass.simpleName}", Toast.LENGTH_LONG).show()
@@ -185,6 +216,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
             }
         }
         view.alpha = if (coveredForReveal) 0f else 1f
+        bindPerformance()
         return true
     }
 
@@ -192,6 +224,20 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
         val color = if (opaque) Ui.BG else Color.TRANSPARENT
         root.setBackgroundColor(color)
         view.setBackgroundColor(color)
+    }
+
+    /** Find Mozilla's original real SurfaceView without replacing or reconfiguring its backend. */
+    private fun surfaceView(node: View): SurfaceView? {
+        if (node is SurfaceView) return node
+        if (node is ViewGroup) {
+            for (index in 0 until node.childCount) surfaceView(node.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
+    private fun bindPerformance() {
+        if (!root.isAttachedToWindow || requestedRate <= 0f) return
+        surfaceView(root)?.let { FloatingPerformancePolicy.bind(it, requestedRate) }
     }
 
     private fun geometryOf(parent: View): PageGeometry? {
@@ -253,6 +299,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
         } catch (failure: RuntimeException) {
             if (DiagnosticLog.ENABLED) DiagnosticLog.error("DIRECT_GECKO", "Opaque page overlay geometry update failed", failure)
             embeddedFallback = true
+            FloatingPerformancePolicy.unbind()
             unregisterBackCallback()
             runCatching { manager.removeViewImmediate(root) }
             overlayAttached = false
@@ -335,6 +382,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     }
 
     override fun hide() {
+        FloatingPerformancePolicy.unbind()
         runCatching { view.releaseSession() }
         unregisterBackCallback()
         detachContainerHooks()
@@ -343,6 +391,7 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
         overlayAttached = false
         lastGeometry = null
         syncQueued = false
+        requestedRate = 0f
         container = null
     }
 
