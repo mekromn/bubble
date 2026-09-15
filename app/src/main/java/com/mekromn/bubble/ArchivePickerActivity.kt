@@ -35,11 +35,16 @@ import java.text.DecimalFormat
  * Bubble immediately delegates selection to Android's stock ACTION_OPEN_DOCUMENT UI so the user gets
  * the system picker, every installed DocumentsProvider, its normal sorting/search UI and its normal
  * provider permissions. Only after Android returns the selected document URIs does Bubble appear and
- * show the existing archive/compression controls.
+ * show the attachment controls.
+ *
+ * The post-selection panel offers two distinct data paths:
+ *   - Attach: preserve every selected file byte-for-byte and attach the originals with no archive.
+ *   - Compress & Attach/Send/Share: stream the same sources directly into the existing ZIP pipeline.
  *
  * This keeps Bubble out of storage browsing entirely: no duplicate browser, no Providers button and
- * no All-files-access dependency in this flow. Selected documents are streamed from their provider
- * directly into the archive; they are never copied to a temporary input directory first.
+ * no All-files-access dependency in this flow. Direct Attach may copy provider bytes into Bubble's
+ * private Gecko staging area because Gecko FilePrompt needs stable local files, but it never compresses,
+ * transforms, recompresses or archives them.
  */
 class ArchivePickerActivity : Activity() {
     private val selected = LinkedHashSet<Uri>()
@@ -48,6 +53,7 @@ class ArchivePickerActivity : Activity() {
     private var uiBuilt = false
     private var busy = false
     private var archiveJob: ArchiveJob? = null
+    private var stagingJob: UploadStaging.Job? = null
 
     private lateinit var selectedState: TextView
     private lateinit var progressText: TextView
@@ -57,6 +63,7 @@ class ArchivePickerActivity : Activity() {
     private lateinit var preserve: CheckBox
     private lateinit var archiveSingle: CheckBox
     private lateinit var saveCopy: CheckBox
+    private lateinit var directAction: TextView
     private lateinit var action: TextView
 
     private val tabId get() = intent.getStringExtra(EXTRA_TAB_ID).orEmpty()
@@ -210,9 +217,12 @@ class ArchivePickerActivity : Activity() {
         panel.addView(Ui.text(this, actionLabel(), 18f, Ui.TEXT, true).apply {
             setPadding(d(4), d(2), d(4), d(4))
         }, LinearLayout.LayoutParams(-1, -2))
-        panel.addView(Ui.text(this,
-            "Android selected the files. Choose how Bubble should package them before returning the attachment.",
-            11f, Ui.MUTED).apply { setPadding(d(4), 0, d(4), d(8)) }, LinearLayout.LayoutParams(-1, -2))
+        panel.addView(Ui.text(
+            this,
+            "Attach sends the original files unchanged. Or choose archive options and compress them first.",
+            11f,
+            Ui.MUTED
+        ).apply { setPadding(d(4), 0, d(4), d(8)) }, LinearLayout.LayoutParams(-1, -2))
 
         selectedState = Ui.text(this, "", 12f, Ui.TEXT, true).apply {
             maxLines = 3
@@ -296,7 +306,9 @@ class ArchivePickerActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, d(8), 0, 0)
         }
-        bottom.addView(button("Cancel", "Cancel") { cancel() }, LinearLayout.LayoutParams(d(92), d(50)))
+        bottom.addView(button("Cancel", "Cancel") { cancel() }, LinearLayout.LayoutParams(d(82), d(50)))
+        directAction = button("Attach", "Attach original files without compression") { attachWithoutCompression() }
+        bottom.addView(directAction, LinearLayout.LayoutParams(d(82), d(50)).apply { marginStart = d(6) })
         action = button(actionLabel(), actionLabel()) { compressOrReturn() }
         bottom.addView(action, LinearLayout.LayoutParams(0, d(50), 1f).apply { marginStart = d(6) })
         panel.addView(bottom, LinearLayout.LayoutParams(-1, -2))
@@ -332,8 +344,134 @@ class ArchivePickerActivity : Activity() {
             if (knownBytes > 0L) append(" · ").append(human(knownBytes))
             if (names.isNotBlank()) append('\n').append(names).append(more)
         }
-        action.isEnabled = items.isNotEmpty() && !busy
-        action.alpha = if (action.isEnabled) 1f else .45f
+        val enabled = items.isNotEmpty() && !busy
+        directAction.isEnabled = enabled
+        directAction.alpha = if (enabled) 1f else .45f
+        action.isEnabled = enabled
+        action.alpha = if (enabled) 1f else .45f
+    }
+
+    /** Attach all selected originals with no ZIP/Deflater/ArchiveEngine path. */
+    private fun attachWithoutCompression() {
+        if (busy) return
+        val originals = selected.toList()
+        if (originals.isEmpty()) {
+            toast("No readable files selected.")
+            return
+        }
+        persistOptions()
+        busy = true
+        updateSelection()
+        setControlsBusy(true, direct = true)
+
+        if (internalUpload) {
+            progress.visibility = View.VISIBLE
+            progress.isIndeterminate = true
+            progressText.visibility = View.VISIBLE
+            progressText.text = if (originals.size == 1) {
+                "Preparing original file · no compression"
+            } else {
+                "Preparing ${originals.size} original files · no compression"
+            }
+
+            val job = UploadStaging.Job()
+            stagingJob = job
+            UploadStaging.io.execute {
+                try {
+                    // Stock ACTION_OPEN_DOCUMENT returns content:// URIs. UploadStaging copies bytes
+                    // verbatim only because Gecko FilePrompt needs stable local files.
+                    val staged = UploadStaging.prepare(this, tabId, requestId, originals, job)
+                    val paths = ArrayList<String>(staged.size)
+                    staged.forEach { uri ->
+                        val path = uri.path ?: throw IOException("Staged attachment has no path")
+                        val file = File(path)
+                        if (!file.isFile || !file.canRead()) throw IOException("Staged attachment is unreadable")
+                        paths += path
+                    }
+                    if (paths.size != originals.size) throw IOException("Attachment count changed while staging")
+                    runOnUiThread {
+                        stagingJob = null
+                        progress.isIndeterminate = false
+                        progress.progress = progress.max
+                        progressText.text = "Ready · ${paths.size} original${if (paths.size == 1) "" else "s"}"
+                        val result = Intent().putStringArrayListExtra(RESULT_LOCAL_PATHS, paths)
+                        if (paths.size == 1) result.putExtra(RESULT_LOCAL_PATH, paths.first())
+                        setResult(RESULT_OK, result)
+                        finish()
+                    }
+                } catch (_: Exception) {
+                    runOnUiThread {
+                        stagingJob = null
+                        busy = false
+                        progress.isIndeterminate = false
+                        progress.visibility = View.GONE
+                        progressText.visibility = View.GONE
+                        setControlsBusy(false)
+                        updateSelection()
+                        if (!job.cancelled.get()) toast("Could not read the selected file${if (originals.size == 1) "" else "s"}.")
+                    }
+                }
+            }
+            return
+        }
+
+        val shareable = originals.mapNotNull(::shareableUri)
+        if (shareable.size != originals.size) {
+            busy = false
+            setControlsBusy(false)
+            updateSelection()
+            toast("One or more selected files could not be returned without compression.")
+            return
+        }
+        if (shareMode) shareOriginals(shareable) else returnOriginals(shareable)
+    }
+
+    private fun shareableUri(uri: Uri): Uri? = when (uri.scheme) {
+        "content" -> uri
+        "file" -> runCatching {
+            FileProvider.getUriForFile(this, "$packageName.archives", File(uri.path.orEmpty()))
+        }.getOrNull()
+        else -> null
+    }
+
+    /** Return the original URI set to a non-Gecko GET_CONTENT caller. */
+    private fun returnOriginals(uris: List<Uri>) {
+        val result = Intent().apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            data = uris.first()
+            type = if (uris.size == 1) contentResolver.getType(uris.first()) ?: "*/*" else "*/*"
+            if (uris.size > 1) {
+                clipData = ClipData.newUri(contentResolver, "Selected files", uris.first()).also { clip ->
+                    for (i in 1 until uris.size) clip.addItem(ClipData.Item(uris[i]))
+                }
+            }
+        }
+        setResult(RESULT_OK, result)
+        finish()
+    }
+
+    /** Share selected originals directly; no temporary ZIP and no recompression. */
+    private fun shareOriginals(uris: List<Uri>) {
+        val send = if (uris.size == 1) Intent(Intent.ACTION_SEND) else Intent(Intent.ACTION_SEND_MULTIPLE)
+        send.type = if (uris.size == 1) contentResolver.getType(uris.first()) ?: "*/*" else "*/*"
+        if (uris.size == 1) {
+            send.putExtra(Intent.EXTRA_STREAM, uris.first())
+        } else {
+            send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        }
+        send.clipData = ClipData.newUri(contentResolver, "Selected files", uris.first()).also { clip ->
+            for (i in 1 until uris.size) clip.addItem(ClipData.Item(uris[i]))
+        }
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(Intent.createChooser(send, "Share files"))
+            finish()
+        } catch (_: RuntimeException) {
+            busy = false
+            setControlsBusy(false)
+            updateSelection()
+            toast("No app is available to share the selected files.")
+        }
     }
 
     private fun compressOrReturn() {
@@ -345,7 +483,7 @@ class ArchivePickerActivity : Activity() {
         }
         persistOptions()
         if (sources.size == 1 && !archiveSingle.isChecked) {
-            returnSingle(sources.first())
+            attachWithoutCompression()
             return
         }
 
@@ -424,61 +562,8 @@ class ArchivePickerActivity : Activity() {
         }
     }
 
-    private fun returnSingle(source: ArchiveSource) {
-        persistOptions()
-        busy = true
-        setControlsBusy(true)
-        if (internalUpload && source.uri.scheme == "file") {
-            setResult(RESULT_OK, Intent().putExtra(RESULT_LOCAL_PATH, source.uri.path))
-            finish()
-            return
-        }
-        if (internalUpload && source.uri.scheme == "content") {
-            UploadStaging.io.execute {
-                val staged = runCatching {
-                    UploadStaging.prepare(this, tabId, requestId, listOf(source.uri), UploadStaging.Job())
-                }.getOrElse { emptyList() }
-                runOnUiThread {
-                    val path = staged.firstOrNull()?.path
-                    if (path == null) {
-                        busy = false
-                        setControlsBusy(false)
-                        toast("Could not read that file.")
-                    } else {
-                        setResult(RESULT_OK, Intent().putExtra(RESULT_LOCAL_PATH, path))
-                        finish()
-                    }
-                }
-            }
-            return
-        }
-
-        val uri = when (source.uri.scheme) {
-            "content" -> source.uri
-            "file" -> runCatching {
-                FileProvider.getUriForFile(this, "$packageName.archives", File(source.uri.path.orEmpty()))
-            }.getOrNull()
-            else -> null
-        }
-        if (uri == null) {
-            busy = false
-            setControlsBusy(false)
-            toast("Could not share that file.")
-            return
-        }
-        if (shareMode) {
-            share(uri, contentResolver.getType(uri) ?: "application/octet-stream")
-        } else {
-            setResult(
-                RESULT_OK,
-                Intent().setDataAndType(uri, contentResolver.getType(uri) ?: "application/octet-stream")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            )
-            finish()
-        }
-    }
-
     private fun showProgress(p: ArchiveProgress) {
+        progress.isIndeterminate = false
         progress.visibility = View.VISIBLE
         progressText.visibility = View.VISIBLE
         progressText.text = "${p.fileIndex}/${p.fileCount} · ${p.currentName} · ${human(p.bytesProcessed)}"
@@ -489,6 +574,7 @@ class ArchivePickerActivity : Activity() {
 
     private fun completeArchive(file: File) {
         archiveJob = null
+        progress.isIndeterminate = false
         progress.progress = progress.max
         progressText.text = "Done · ${human(file.length())}"
         if (internalUpload) {
@@ -522,12 +608,14 @@ class ArchivePickerActivity : Activity() {
         } catch (_: RuntimeException) {
             busy = false
             setControlsBusy(false)
+            updateSelection()
             toast("No app is available to share the archive.")
         }
     }
 
     private fun cancel() {
         archiveJob?.cancel()
+        stagingJob?.cancel()
         if (internalUpload) UploadStaging.discard(this, tabId, requestId)
         setResult(RESULT_CANCELED)
         finish()
@@ -555,16 +643,20 @@ class ArchivePickerActivity : Activity() {
             .apply()
     }
 
-    private fun setControlsBusy(value: Boolean) {
+    private fun setControlsBusy(value: Boolean, direct: Boolean = false) {
         busy = value
         filename.isEnabled = !value
         compression.isEnabled = !value
         preserve.isEnabled = !value
         archiveSingle.isEnabled = !value
         saveCopy.isEnabled = !value
-        action.text = if (value) "Compressing…" else actionLabel()
-        action.isEnabled = !value && selected.isNotEmpty()
-        action.alpha = if (action.isEnabled) 1f else .45f
+        directAction.text = if (value && direct) "Attaching…" else "Attach"
+        action.text = if (value && !direct) "Compressing…" else actionLabel()
+        val enabled = !value && selected.isNotEmpty()
+        directAction.isEnabled = enabled
+        directAction.alpha = if (enabled) 1f else .45f
+        action.isEnabled = enabled
+        action.alpha = if (enabled) 1f else .45f
     }
 
     private fun button(text: String, description: String, click: () -> Unit) =
@@ -596,6 +688,7 @@ class ArchivePickerActivity : Activity() {
         const val EXTRA_TAB_ID = "bubble.archive.tab"
         const val EXTRA_REQUEST_ID = "bubble.archive.request"
         const val RESULT_LOCAL_PATH = "bubble.archive.local.path"
+        const val RESULT_LOCAL_PATHS = "bubble.archive.local.paths"
 
         private const val PICK_DOCUMENTS = 771
         private const val STATE_PICKER_LAUNCHED = "pickerLaunched"
