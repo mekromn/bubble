@@ -20,6 +20,7 @@ class BubbleService : Service() {
         private set
     private lateinit var workspace: Workspace
     private lateinit var access: AccessPreferences
+    private val main = Handler(Looper.getMainLooper())
     private var pendingMode: FloatingMode? = null
     private var pendingTab: String? = null
     private var pendingOrigin: WindowBox? = null
@@ -27,16 +28,26 @@ class BubbleService : Service() {
     private var acknowledgement: ResultReceiver? = null
     private var lastNotificationState: NotificationState? = null
     private var channelReady = false
+    private var notificationPending = false
     private var stopping = false
     private var foreground = false
-    private val changed: () -> Unit = { if (!stopping) { fulfillPending(); updateNotification() } }
+    private val notificationTask = Runnable {
+        notificationPending = false
+        if (!stopping) updateNotification()
+    }
+    private val changed: () -> Unit = {
+        if (!stopping) {
+            fulfillPending()
+            scheduleNotificationUpdate()
+        }
+    }
     private val accessChanged: () -> Unit = {
         if (!stopping) {
             val hadPending = pendingMode != null
             fulfillPending()
             // Loading preferences never creates UI. Only an already visible resting control is replaced.
             if (!hadPending && !isParked && (edge != null || window?.mode == FloatingMode.BUBBLE)) showMinimized()
-            updateNotification()
+            updateNotification(force = true)
         }
     }
 
@@ -107,7 +118,7 @@ class BubbleService : Service() {
                     created.attach(mode, pendingOrigin)
                 } else if (mode == FloatingMode.CHOOSER) current.showChooser() else current.openChat(workspace.selectedId)
             }
-            updateNotification(); acknowledgement?.send(1, null)
+            updateNotification(force = true); acknowledgement?.send(1, null)
         } catch (_: RuntimeException) {
             removeSurfaces(); acknowledgement?.send(0, null)
             if (canPark()) { isParked = true; updateNotification(force = true) } else stopSelf()
@@ -224,8 +235,20 @@ class BubbleService : Service() {
         return builder.addAction(Notification.Action.Builder(null, "Stop service", stop).build())
             .setOnlyAlertOnce(true).setOngoing(true).setVisibility(Notification.VISIBILITY_PRIVATE).setCategory(Notification.CATEGORY_SERVICE).build()
     }
+
+    /** Foreground summary is informational; page progress can update every frame, so cap summary scans. */
+    private fun scheduleNotificationUpdate() {
+        if (!foreground || notificationPending || stopping) return
+        notificationPending = true
+        main.postDelayed(notificationTask, NOTIFICATION_DEBOUNCE_MS)
+    }
+
     private fun updateNotification(force: Boolean = false) {
         if (stopping || !foreground || (!force && !workspace.ready)) return
+        if (force && notificationPending) {
+            main.removeCallbacks(notificationTask)
+            notificationPending = false
+        }
         val state = notificationState()
         if (!force && lastNotificationState == state) return
         createChannel()
@@ -238,6 +261,7 @@ class BubbleService : Service() {
     }
     override fun onDestroy() {
         stopping = true; workspace.unlisten(changed); access.unlisten(accessChanged)
+        main.removeCallbacksAndMessages(null); notificationPending = false
         acknowledgement?.send(0, null); acknowledgement = null
         removeSurfaces(); stopForeground(STOP_FOREGROUND_REMOVE)
         if (active === this) active = null
@@ -246,6 +270,7 @@ class BubbleService : Service() {
     companion object {
         internal var active: BubbleService? = null
             private set
+        private const val NOTIFICATION_DEBOUNCE_MS = 250L
         const val READY = "bubble.overlay.ready"
         const val MODE = "bubble.overlay.mode"
         const val FORCE_BUBBLE = "bubble.force.bubble"
