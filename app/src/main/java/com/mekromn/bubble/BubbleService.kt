@@ -31,6 +31,7 @@ class BubbleService : Service() {
     private var notificationPending = false
     private var stopping = false
     private var foreground = false
+    private var priorityAnchorRequested = false
     private val notificationTask = Runnable {
         notificationPending = false
         if (!stopping) updateNotification()
@@ -124,6 +125,33 @@ class BubbleService : Service() {
             if (canPark()) { isParked = true; updateNotification(force = true) } else stopSelf()
         } finally { acknowledgement = null; pendingOrigin = null }
     }
+
+    /**
+     * Build 160 scheduler handoff. Build 159 proved on-device that a zero-work resumed Activity
+     * closes the remaining floating-vs-fullscreen scrolling gap. The real floating browser remains
+     * the Build-158 overlay/render path; this only mirrors its CHAT visibility into Activity state.
+     */
+    internal fun onFloatingModeChanged(mode: FloatingMode?) {
+        setPriorityAnchor(mode == FloatingMode.CHAT)
+    }
+
+    private fun setPriorityAnchor(enabled: Boolean) {
+        val wanted = enabled && !stopping && !isParked
+        if (priorityAnchorRequested == wanted) return
+        priorityAnchorRequested = wanted
+        if (!wanted) {
+            FloatingPriorityAnchorActivity.finishIfPresent()
+            return
+        }
+        try {
+            super.startActivity(Intent(this, FloatingPriorityAnchorActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            })
+        } catch (_: RuntimeException) {
+            priorityAnchorRequested = false
+        }
+    }
+
     internal fun prefersEdge(): Boolean = access.ready && access.options.enabled && canPark()
     /** Called after an explicit minimize or the panel's completed exit animation. */
     internal fun showMinimized() {
@@ -194,7 +222,10 @@ class BubbleService : Service() {
         pendingMode = null; pendingOrigin = null
         removeSurfaces(); workspace.flush(); return true
     }
-    private fun removeSurfaces() { edge?.destroy(); edge = null; window?.destroy(); window = null }
+    private fun removeSurfaces() {
+        setPriorityAnchor(false)
+        edge?.destroy(); edge = null; window?.destroy(); window = null
+    }
     internal fun releaseForActivity() { stopping = true; pendingMode = null; removeSurfaces(); stopSelf() }
     private fun createChannel() {
         if (channelReady) return
