@@ -9,13 +9,26 @@ internal object AccessMenu {
     fun show(anchor: View, workspace: Workspace) {
         val preferences = AccessPreferences.get(anchor.context)
         if (!preferences.ready) { Toast.makeText(anchor.context, "Settings are loading. Try again.", Toast.LENGTH_SHORT).show(); return }
-        val panel = QuickPanel.open(anchor, workspace, "Bubble / edge access", 610) ?: return
+        val panel = QuickPanel.open(anchor, workspace, "Bubble / edge access", 650) ?: return
         val c = anchor.context
         val original = preferences.options
         fun d(n: Int) = Ui.dp(c, n.toFloat())
         val scroll = ScrollView(c)
         val form = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL; setPadding(d(12), 0, d(12), d(6)) }
         scroll.addView(form); panel.body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val transparency = Switch(c).apply {
+            text = "Transparency and blur"
+            textSize = 14f
+            setTextColor(Ui.TEXT)
+            isChecked = VisualEffects.transparencyEnabled()
+            minHeight = d(56)
+        }
+        form.addView(transparency)
+        form.addView(Ui.text(c,
+            "Turn OFF for the lowest compositor cost: Bubble uses fully opaque native chrome, removes its cross-window blur windows and avoids the controls-sheet background dim blend. Webpage rendering quality, Gecko resolution and refresh policy are unchanged.",
+            11f, Ui.MUTED).apply { setPadding(0, 0, 0, d(10)) })
+
         val enabled = Switch(c).apply { text = "Use edge gestures instead of bubble"; textSize = 14f; setTextColor(Ui.TEXT); isChecked = original.enabled; minHeight = d(56) }
         form.addView(enabled)
         form.addView(Ui.text(c, "Swipe inward from the short side zone to choose a chat. Hold it to open the selected chat. Long-press Minimize hides BOTH bubble and edge until restored from the notification.\n\nThe zone consumes touches and replaces Android Back only in that small area. Choose a location away from controls you use in other apps.", 12f, Ui.MUTED).apply { setPadding(0, d(6), 0, d(10)) })
@@ -35,7 +48,7 @@ internal object AccessMenu {
             form.addView(text); form.addView(seek, LinearLayout.LayoutParams(-1, d(48))); return seek
         }
         val bubbleOpacity = slider("Bubble opacity (%)", 12, 100, (original.bubbleOpacity * 100f).toInt().coerceIn(12, 100))
-        form.addView(Ui.text(c, "Lower opacity makes only the resting bubble more transparent. Its touch target stays full-size.", 11f, Ui.MUTED).apply { setPadding(0, 0, 0, d(6)) })
+        form.addView(Ui.text(c, "Lower opacity makes only the resting bubble more transparent. Global transparency OFF overrides this to 100% opaque so the bubble does not require cross-window blending.", 11f, Ui.MUTED).apply { setPadding(0, 0, 0, d(6)) })
         val position = slider("Vertical position (%)", 0, 100, (original.position * 100).toInt())
         val height = slider("Zone height (dp)", 64, 160, original.heightDp)
         val width = slider("Zone width (dp)", 12, 28, original.widthDp)
@@ -44,6 +57,8 @@ internal object AccessMenu {
         panel.body.addView(Ui.text(c, "Save access settings", 15f, Ui.TEXT, true).apply {
             gravity = Gravity.CENTER; background = Ui.ripple(c, Ui.SURFACE_HIGH, 18f)
             setOnClickListener {
+                val transparencyChanged = VisualEffects.transparencyEnabled() != transparency.isChecked
+                VisualEffects.setTransparency(c, transparency.isChecked)
                 preferences.update(EdgeOptions(
                     enabled = enabled.isChecked,
                     left = sides.checkedRadioButtonId == left.id,
@@ -52,7 +67,10 @@ internal object AccessMenu {
                     widthDp = 12 + width.progress,
                     indicator = indicator.isChecked,
                     bubbleOpacity = (12 + bubbleOpacity.progress) / 100f)) { saved ->
-                    Toast.makeText(c, if (saved) "Saved. Minimize to use ${if (enabled.isChecked) "the edge" else "the bubble"}." else preferences.error ?: "Settings could not be saved.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(c, if (saved) {
+                        "Saved. Transparency is ${if (transparency.isChecked) "ON" else "OFF"}."
+                    } else preferences.error ?: "Settings could not be saved.", Toast.LENGTH_LONG).show()
+                    if (transparencyChanged) (c as? android.app.Activity)?.recreate()
                 }
                 panel.dismiss()
             }
