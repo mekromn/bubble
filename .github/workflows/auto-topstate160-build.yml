@@ -110,7 +110,8 @@ jobs:
           anchor=anchors[0]
           assert anchor.attrib.get(ns+'exported')=='false'
           assert anchor.attrib.get(ns+'excludeFromRecents')=='true'
-          assert anchor.attrib.get(ns+'launchMode')=='singleTask'
+          launch=anchor.attrib.get(ns+'launchMode')
+          assert launch in {'singleTask','2'}, f'unexpected launchMode normalization: {launch!r}'
           PY
           python3 tools/audit-hardware-apk.py dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk --out dist/HARDWARE_AUDIT.json
           sha256sum dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk > dist/SHA256SUMS
