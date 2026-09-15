@@ -11,8 +11,8 @@ const tray = read('app/src/main/java/com/mekromn/bubble/TabTray.kt');
 const meter = read('app/src/main/java/com/mekromn/bubble/FrameMeter.kt');
 const audit = read('docs/EFFICIENCY_AUDIT.md');
 
-assert.match(gradle, /versionCode = 151/);
-assert.match(gradle, /versionName = "0\.7\.23-efficiency-phase-b"/);
+const version = Number((gradle.match(/versionCode\s*=\s*(\d+)/) || [])[1]);
+assert.ok(version >= 151, 'Build 151+ must retain Phase-B efficiency invariants');
 
 assert.match(list, /private val rowCache = HashMap<String, Row>\(\)/,
   'chooser must retain stable per-tab row models');
@@ -62,4 +62,4 @@ for (const forbidden of ['setResolution(', 'setFrameRate(60', 'setImageQuality',
     `Phase B must not introduce a quality-reducing shortcut: ${forbidden}`);
 }
 
-console.log('Bubble 151 Phase-B efficiency guards passed: chooser reuse/opaque composition, cached geometry, debounced service summary, dormant local ledger.');
+console.log('Bubble 151+ Phase-B efficiency guards passed: chooser reuse/opaque composition, cached geometry, debounced service summary, dormant local ledger.');
