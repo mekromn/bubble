@@ -14,14 +14,16 @@ assert.equal(script.all_frames, false, 'Voice UI enhancement must stay in the to
 assert.equal(source.includes("window !== window.top || location.origin !== 'https://voice.google.com'"), true,
   'Runtime must independently enforce exact Voice origin and top-frame scope');
 
-// ensureBuiltIn does not replace an installed package with the same version. Every shipped Voice UI
-// change therefore needs a real built-in extension version bump so existing Bubble profiles receive it.
+// ensureBuiltIn does not replace an installed package with the same package version. Build 146 adds
+// a separate dormant pinch-benchmark asset, so the PACKAGE version advances even though voice-ui.js
+// itself is byte-for-byte unchanged. Keep those two generations independent instead of forcing an
+// unrelated Voice script revision just to satisfy a test string.
 assert.match(workspace, /ensureBuiltIn\("resource:\/\/android\/assets\/chat-monitor\/", "chat-monitor@bubble\.local"\)/,
   'Bubble must continue installing the packaged monitor through ensureBuiltIn');
-assert.equal(manifest.version, '2.7',
-  'Built-in extension version must advance so existing Bubble profiles receive the hardened Voice UI');
+assert.equal(manifest.version, '2.8',
+  'Built-in package version must advance so existing Bubble profiles receive the new packaged assets');
 assert.match(source, /SCRIPT_VERSION = '2\.7'/,
-  'Voice UI execution marker must match the packaged extension generation');
+  'Unchanged Voice UI must retain its own 2.7 execution marker');
 
 assert.match(source, /bubble-voice-copy-number/, 'A stable one-copy-control id is required');
 assert.match(source, /actionRow\.insertBefore\(button, found\.call\)/,
@@ -55,4 +57,4 @@ assert.equal(/fetch\s*\(|XMLHttpRequest|sendNativeMessage|localStorage|sessionSt
 assert.equal(/\.click\(\)[\s\S]{0,80}(?:call|dial|phone)/iu.test(source), false,
   'The fallback must never synthesize a Voice call/dial action');
 
-console.log('Exact-origin Google Voice copy control, name-only header support, and local unread-thread fallback passed.');
+console.log('Exact-origin Google Voice copy control, name-only header support, local unread-thread fallback, and independent package generation passed.');
