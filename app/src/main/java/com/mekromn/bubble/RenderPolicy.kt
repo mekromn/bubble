@@ -55,6 +55,11 @@ internal object RenderPolicy {
             // preferredRefreshRate and can produce different arbitration for overlay vs Activity windows.
             it.preferredDisplayModeId = 0
             it.preferredRefreshRate = rate
+            if (Build.VERSION.SDK_INT >= 34 && it.type == WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) {
+                // Bubble already owns every overlay move/resize animation. Letting WMS animate those
+                // positions again adds latency and can separate the independent page and chrome windows.
+                it.setCanPlayMoveAnimation(false)
+            }
             if (Build.VERSION.SDK_INT >= 35) {
                 it.setFrameRateBoostOnTouchEnabled(true)
                 it.setFrameRatePowerSavingsBalanced(false)
