@@ -1,0 +1,123 @@
+name: Bubble 160 automatic TOP-state floating validation
+
+on:
+  push:
+    branches: [auto-topstate160]
+    paths:
+      - 'app/**'
+      - 'tools/**'
+      - '.github/workflows/auto-topstate160-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Inject installable 160 metadata only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/build.gradle.kts')
+          s=p.read_text()
+          s=s.replace('versionCode = 157', 'versionCode = 160', 1)
+          s=s.replace('versionName = "0.7.29-opaque-floating-page-baremetal"', 'versionName = "0.7.32-auto-topstate"', 1)
+          p.write_text(s)
+          PY
+          grep -q 'versionCode = 160' app/build.gradle.kts
+          grep -q 'versionName = "0.7.32-auto-topstate"' app/build.gradle.kts
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+
+      - name: Prove Build-158 renderer/UI implementation remains unchanged
+        run: |
+          set -euo pipefail
+          BASE=ec66f727be884aa80ba592ff9e3e1bb6815aff28
+          git diff --exit-code "$BASE" HEAD -- \
+            app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt \
+            app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt \
+            app/src/main/java/com/mekromn/bubble/RenderPolicy.kt \
+            app/src/main/java/com/mekromn/bubble/FloatingPerformancePolicy.kt \
+            app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt \
+            app/src/main/java/com/mekromn/bubble/Workspace.kt \
+            app/src/main/java/com/mekromn/bubble/RendererArenaActivity.kt \
+            app/src/main/java/com/mekromn/bubble/OverlayGlass.kt
+
+          git show "$BASE":app/src/main/java/com/mekromn/bubble/FloatingWindow.kt > /tmp/FloatingWindow-158.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt')
+          lines=[line for line in p.read_text().splitlines() if 'service.onFloatingModeChanged(' not in line]
+          Path('/tmp/FloatingWindow-160-normalized.kt').write_text('\n'.join(lines)+'\n')
+          PY
+          diff -u /tmp/FloatingWindow-158.kt /tmp/FloatingWindow-160-normalized.kt
+
+      - name: Automatic TOP-state and retained production invariants
+        run: |
+          set -euo pipefail
+          node tools/test-auto-topstate160.cjs
+          node tools/test-single-viewroot158.cjs
+          node tools/test-stock-picker-compress147.cjs
+          node tools/test-direct-attach148.cjs
+          node tools/test-global-opacity149.cjs
+          node tools/test-efficiency150.cjs
+          node tools/test-efficiency151.cjs
+          node tools/test-foreground.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          node tools/test-embedded-page.cjs
+          bash tools/test-relay-native.sh
+
+      - name: Build optimized ARM64 candidate
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance -PgeckoAbi=arm64-v8a
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk > dist/signature.txt
+          grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk > dist/AndroidManifest.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
+          assert root.attrib['package']=='com.mekromn.bubble.debug'
+          assert root.attrib[ns+'versionCode']=='160'
+          assert root.attrib[ns+'versionName']=='0.7.32-auto-topstate'
+          app=root.find('application')
+          assert app.attrib.get(ns+'debuggable','false')=='false'
+          assert app.attrib.get(ns+'hardwareAccelerated')=='true'
+          anchors=[a for a in app.findall('activity') if (a.attrib.get(ns+'name') or '').endswith('.FloatingPriorityAnchorActivity')]
+          assert len(anchors)==1
+          anchor=anchors[0]
+          assert anchor.attrib.get(ns+'exported')=='false'
+          assert anchor.attrib.get(ns+'excludeFromRecents')=='true'
+          assert anchor.attrib.get(ns+'launchMode')=='singleTask'
+          PY
+          python3 tools/audit-hardware-apk.py dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          sha256sum dist/Bubble-160-AUTO-TOPSTATE-ARM64.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-160-auto-topstate-arm64
+          path: dist/
+          retention-days: 7
