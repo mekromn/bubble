@@ -12,6 +12,9 @@ class BubbleApp : Application(), Application.ActivityLifecycleCallbacks {
 
     override fun onCreate() {
         super.onCreate()
+        // This is a tiny SharedPreferences read only. It must happen before any Activity/overlay
+        // creates material drawables so an opaque launch never first paints translucent chrome.
+        VisualEffects.initialize(this)
         // Install before GeckoRuntime/Workspace are ever created so startup/session-open failures and
         // the next-launch ApplicationExitInfo record are captured as early as Android allows.
         if (DiagnosticLog.ENABLED) DiagnosticLog.install(this)
