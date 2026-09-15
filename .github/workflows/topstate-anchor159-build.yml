@@ -94,7 +94,7 @@ jobs:
           assert app.attrib.get(ns+'debuggable','false')=='false'
           assert app.attrib.get(ns+'hardwareAccelerated')=='true'
           names={a.attrib.get(ns+'name') for a in app.findall('activity')}
-          assert '.FloatingPriorityAnchorActivity' in names
+          assert any((name or '').endswith('.FloatingPriorityAnchorActivity') for name in names)
           PY
           python3 tools/audit-hardware-apk.py dist/Bubble-159-TOPSTATE-ANCHOR-PROBE-ARM64.apk --out dist/HARDWARE_AUDIT.json
           sha256sum dist/Bubble-159-TOPSTATE-ANCHOR-PROBE-ARM64.apk > dist/SHA256SUMS
