@@ -50,6 +50,8 @@ internal class ArchiveJob {
 
 /** Streaming ZIP pipeline. Source files are never copied to a temporary directory first. */
 internal object ArchiveEngine {
+    private const val PROGRESS_INTERVAL_NS = 50_000_000L // 20 Hz UI progress ceiling.
+
     fun defaultName(now: Long = System.currentTimeMillis()): String =
         "Documents_${SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(Date(now))}.zip"
 
@@ -86,9 +88,18 @@ internal object ArchiveEngine {
     ): File {
         require(sources.isNotEmpty()) { "No archive sources" }
         output.parentFile?.let { check(it.mkdirs() || it.isDirectory) }
-        val total = sources.map { it.size.coerceAtLeast(0L) }.sum()
+        val total = sources.sumOf { it.size.coerceAtLeast(0L) }
         var processed = 0L
+        var lastProgressNs = Long.MIN_VALUE
         val usedNames = HashSet<String>()
+
+        fun report(index: Int, item: ArchiveSource, force: Boolean = false) {
+            val now = System.nanoTime()
+            if (!force && lastProgressNs != Long.MIN_VALUE && now - lastProgressNs < PROGRESS_INTERVAL_NS) return
+            lastProgressNs = now
+            progress(ArchiveProgress(index + 1, sources.size, item.displayName, processed, total))
+        }
+
         try {
             ZipOutputStream(BufferedOutputStream(output.outputStream(), 128 * 1024)).use { zip ->
                 zip.setLevel(compression.level)
@@ -112,12 +123,15 @@ internal object ArchiveEngine {
                             if (count == 0) continue
                             zip.write(buffer, 0, count)
                             processed += count
-                            progress(ArchiveProgress(index + 1, sources.size, item.displayName, processed, total))
+                            // Compression can process thousands of 128 KiB chunks per second. Posting
+                            // every chunk to the main thread only creates queue pressure; 20 Hz is already
+                            // smoother than the progress UI needs and does not touch archive bytes.
+                            report(index, item)
                         }
                     }
                     job.source = null
                     zip.closeEntry()
-                    progress(ArchiveProgress(index + 1, sources.size, item.displayName, processed, total))
+                    report(index, item, force = true)
                 }
                 zip.finish()
             }
