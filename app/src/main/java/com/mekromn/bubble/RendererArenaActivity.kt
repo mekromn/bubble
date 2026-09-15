@@ -12,11 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 
-/**
- * Production renderer A/B + physical benchmark controller.
- * The measured page stays in Bubble's real floating window. Both primary arms use 140's
- * UNBUFFERED_140 input policy so renderer transport is the intended A/B variable.
- */
+/** Production renderer + physical input benchmark controller. */
 class RendererArenaActivity : Activity() {
     private lateinit var status: TextView
     private val main = Handler(Looper.getMainLooper())
@@ -42,18 +38,18 @@ class RendererArenaActivity : Activity() {
         }
         column.addView(status, LinearLayout.LayoutParams(-1, -2))
         column.addView(label(
-            "Renderer A/B uses the same app process, profile/cache, Gecko engine, GeckoSession, floating window/chrome, hardware policy and Build-140 unbuffered touch policy. Only the steady-state floating renderer changes."
+            "Renderer A/B uses the same app process, profile/cache, Gecko engine, GeckoSession, real floating window/chrome, hardware policy and Build-140 unbuffered touch policy. Only the steady-state floating renderer changes."
         ))
         addArm(column, "A · relay_latest_bp baseline", RendererArena.Transport.RELAY_LATEST_BP)
         addArm(column, "B · direct Gecko SurfaceView", RendererArena.Transport.DIRECT_GECKO_SURFACE)
 
         column.addView(label(
-            "MEASURED PHYSICAL A/B\nOpen the real floating page you want to test, then start a run here. This controller closes. For every block, wait for the short instruction and vibration, then repeat the same natural up/down scrolling workload. A block begins only on your next fresh physical finger-down. Method order is counterbalanced; method names stay hidden while blocks run. Do not use a confirmation tap during a measured block."
+            "SCROLLING PHYSICAL A/B\nOpen the real floating page you want to test, then start a run here. This controller closes. For every block, wait for the instruction, then repeat the same natural up/down scrolling workload. Method order is counterbalanced and hidden."
         ))
-        addBenchmark(column, "Quick measured A/B · 4 pairs", 4)
-        addBenchmark(column, "Rigorous measured A/B · 8 pairs", 8)
+        addScrollBenchmark(column, "Quick scrolling A/B · 4 pairs", 4)
+        addScrollBenchmark(column, "Rigorous scrolling A/B · 8 pairs", 8)
         column.addView(Button(this).apply {
-            text = "Cancel measured run · restore direct"
+            text = "Cancel scrolling run · restore direct"
             isAllCaps = false
             setOnClickListener {
                 RendererBenchmark.cancel()
@@ -62,7 +58,21 @@ class RendererArenaActivity : Activity() {
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         column.addView(label(
-            "The report compares paired input age, the identical pre-Gecko input-policy preamble, Bubble process/main-thread CPU, Bubble Choreographer cadence/jank, memory/GC, thermal/battery context and native relay counters. App-frame timing is not webpage presentation FPS, and input-to-app-frame is not touch-to-photon. True contact-to-photon still requires an external high-speed camera/photodiode; Perfetto/FrameTimeline is the preferred software follow-up for compositor scheduling."
+            "HARDCORE PINCH / ZOOM A/B\nThis is a different test, not scroll callbacks renamed. Each hidden-renderer block starts only when your second physical finger touches the real Gecko page. Do five aggressive two-finger zoom gestures: large in/out travel, reversals, natural speed, lifting both fingers between gestures. Bubble records the actual finger-span trajectory and synchronizes it to VisualViewport.scale, so human gesture differences are measured instead of assumed equal. No page touch listener is installed by the sampler."
+        ))
+        addPinchBenchmark(column, "Quick hardcore pinch A/B · 3 pairs", 3)
+        addPinchBenchmark(column, "Rigorous hardcore pinch A/B · 6 pairs", 6)
+        column.addView(Button(this).apply {
+            text = "Cancel pinch run · restore direct"
+            isAllCaps = false
+            setOnClickListener {
+                PinchBenchmark.cancel()
+                refreshStatus()
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        column.addView(label(
+            "Pinch reports include actual input span/centroid travel, source-sample spacing/history, input event age, synchronized VisualViewport scale response, scale-tracking error, viewport rAF cadence, Bubble CPU/memory and relay route proof. The synchronized span→VisualViewport result is software zoom-response timing; it is still not OLED touch-to-photon."
         ))
         column.addView(Button(this).apply {
             text = "Close controller"
@@ -98,7 +108,10 @@ class RendererArenaActivity : Activity() {
             isAllCaps = false
             setOnClickListener {
                 if (RendererBenchmark.status(this@RendererArenaActivity).running) {
-                    RendererBenchmark.cancel("Measured run canceled before manual renderer switching.")
+                    RendererBenchmark.cancel("Scrolling run canceled before manual renderer switching.")
+                }
+                if (PinchBenchmark.status(this@RendererArenaActivity).running) {
+                    PinchBenchmark.cancel("Pinch run canceled before manual renderer switching.")
                 }
                 PageTouchDispatch.arm = PageTouchDispatch.Arm.UNBUFFERED_140
                 RendererArena.transport = transport
@@ -108,7 +121,7 @@ class RendererArenaActivity : Activity() {
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
-    private fun addBenchmark(root: LinearLayout, title: String, pairs: Int) {
+    private fun addScrollBenchmark(root: LinearLayout, title: String, pairs: Int) {
         root.addView(Button(this).apply {
             text = title
             isAllCaps = false
@@ -119,21 +132,38 @@ class RendererArenaActivity : Activity() {
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
+    private fun addPinchBenchmark(root: LinearLayout, title: String, pairs: Int) {
+        root.addView(Button(this).apply {
+            text = title
+            isAllCaps = false
+            setOnClickListener {
+                if (PinchBenchmark.start(this@RendererArenaActivity, pairs)) finish()
+                else refreshStatus()
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
     private fun refreshStatus() {
         if (!::status.isInitialized) return
         val window = BubbleService.active?.window
-        val active = window?.pageHost?.transport
-        val benchmark = RendererBenchmark.status(this)
+        val activeRenderer = window?.pageHost?.transport
+        val scrolling = RendererBenchmark.status(this)
+        val pinch = PinchBenchmark.status(this)
         status.text = buildString {
             append("Requested renderer: ").append(RendererArena.transport.name).append('\n')
-            append("Active floating renderer: ").append(active?.name ?: "none").append('\n')
+            append("Active floating renderer: ").append(activeRenderer?.name ?: "none").append('\n')
             append("Input: ").append(PageTouchDispatch.arm.shortLabel).append(" (fixed to 140 during renderer A/B)\n")
-            if (benchmark.running) {
-                append("Measured run: block ").append(benchmark.block).append('/').append(benchmark.totalBlocks)
-                    .append(" · ").append(benchmark.phase).append('\n')
-            } else append("Measured run: idle\n")
-            append(if (window != null) "Floating Bubble is live." else "Bubble is not floating; open a floating chat/page before a measured run.")
-            append("\n\nLatest measured result:\n").append(benchmark.latestSummary)
+            if (scrolling.running) {
+                append("Scrolling run: block ").append(scrolling.block).append('/').append(scrolling.totalBlocks)
+                    .append(" · ").append(scrolling.phase).append('\n')
+            } else append("Scrolling run: idle\n")
+            if (pinch.running) {
+                append("Pinch run: block ").append(pinch.block).append('/').append(pinch.totalBlocks)
+                    .append(" · ").append(pinch.phase).append('\n')
+            } else append("Pinch run: idle\n")
+            append(if (window != null) "Floating Bubble is live." else "Bubble is not floating; open a floating http/https page before a measured run.")
+            append("\n\nLatest scrolling result:\n").append(scrolling.latestSummary)
+            append("\n\nLatest pinch result:\n").append(pinch.latestSummary)
         }
     }
 }
