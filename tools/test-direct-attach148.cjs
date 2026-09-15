@@ -7,7 +7,9 @@ const picker = read('app/src/main/java/com/mekromn/bubble/ArchivePickerActivity.
 const floating = read('app/src/main/java/com/mekromn/bubble/FloatingFileActivity.kt');
 const gradle = read('app/build.gradle.kts');
 
-assert.match(gradle, /versionCode = 148/);
+const version = Number((gradle.match(/versionCode = (\d+)/) || [])[1]);
+assert.ok(Number.isFinite(version) && version >= 148,
+  `Direct Attach requires Bubble versionCode >= 148, got ${version}`);
 assert.match(picker, /button\("Attach", "Attach original files without compression"\)/,
   'The post-selection dialog must expose the third Attach button');
 assert.match(picker, /const val RESULT_LOCAL_PATHS = "bubble\.archive\.local\.paths"/,
@@ -30,4 +32,4 @@ assert.match(floating, /getStringArrayListExtra\(ArchivePickerActivity\.RESULT_L
 assert.match(floating, /finishRequest\(request, files\.map\(Uri::fromFile\), null\)/,
   'All staged originals must be confirmed back to the original Gecko FilePrompt');
 
-console.log('Bubble 148 direct Attach path: original multi-file bytes, zero compression, existing archive path retained.');
+console.log(`Bubble ${version} direct Attach path: original multi-file bytes, zero compression, existing archive path retained.`);
