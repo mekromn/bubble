@@ -160,6 +160,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
             initial==FloatingMode.CHAT -> openChat(workspace.selectedId)
             else -> if(ValueAnimator.areAnimatorsEnabled()) { root.alpha=0f; root.animate().alpha(1f).setDuration(160).setInterpolator(Ui.ease).start() }
         }
+        service.onFloatingModeChanged(mode)
     }
     private fun revealDirectPanel() {
         render()
@@ -264,6 +265,7 @@ internal class FloatingWindow(private val service: BubbleService, private val wo
         gecko?.let { workspace.detachSurface(it) }
         geckoWindow?.hide()
         mode=next; workspace.floatingVisible=next==FloatingMode.CHAT; build(next); workspace.applyPolicy()
+        service.onFloatingModeChanged(next)
     }
     private fun build(next: FloatingMode) {
         root.removeAllViews(); pageContainer=null; list=null; heading=null; subtitle=null; error=null; bubble=null; count=null; backControl=null
