@@ -1,0 +1,114 @@
+name: Bubble 163 Activity transition crash diagnostics
+
+on:
+  push:
+    branches: [activity-crashdiag163]
+    paths:
+      - 'app/**'
+      - 'tools/**'
+      - '.github/workflows/activity-crashdiag163-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Inject diagnostic instrumentation and 163 metadata only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Diagnostics are test-only in this build: no production logging policy change is committed.
+          p=Path('app/src/main/java/com/mekromn/bubble/DiagnosticLog.kt')
+          s=p.read_text()
+          s=s.replace('const val ENABLED = false', 'const val ENABLED = true', 1)
+          # Fix the existing diagnostic stack printer so the physical crash gives exact frames.
+          s=s.replace('error.stackTrace.forEach { append("  at ").append(error).append("\\\\n") }',
+                      'error.stackTrace.forEach { append("  at ").append(it).append("\\\\n") }', 1)
+          p.write_text(s)
+
+          # Mark every startup boundary around the new Activity host so a platform-side failure can
+          # be distinguished from Gecko/session/render attachment without changing behavior.
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
+          s=p.read_text()
+          s=s.replace('''    override fun onCreate(state: Bundle?) {\n        super.onCreate(state)\n''', '''    override fun onCreate(state: Bundle?) {\n        super.onCreate(state)\n        DiagnosticLog.event("FLOAT_ACT", "onCreate after-super")\n''', 1)
+          s=s.replace('''        service = BubbleService.active ?: run {\n''', '''        DiagnosticLog.event("FLOAT_ACT", "before service lookup")\n        service = BubbleService.active ?: run {\n''', 1)
+          s=s.replace('''        workspace = Workspace.get(this)\n''', '''        DiagnosticLog.event("FLOAT_ACT", "service acquired")\n        workspace = Workspace.get(this)\n        DiagnosticLog.event("FLOAT_ACT", "workspace acquired ready=${workspace.ready}")\n''', 1)
+          s=s.replace('''        window.setBackgroundDrawableResource(android.R.color.transparent)\n''', '''        DiagnosticLog.event("FLOAT_ACT", "before window flags type=${window.attributes.type}")\n        window.setBackgroundDrawableResource(android.R.color.transparent)\n''', 1)
+          s=s.replace('''        setFinishOnTouchOutside(false)\n\n        mode =''', '''        setFinishOnTouchOutside(false)\n        DiagnosticLog.event("FLOAT_ACT", "window flags configured type=${window.attributes.type}")\n\n        mode =''', 1)
+          s=s.replace('''        rectangle = initialBox(intent)\n''', '''        DiagnosticLog.event("FLOAT_ACT", "mode selected=$mode before initialBox")\n        rectangle = initialBox(intent)\n        DiagnosticLog.event("FLOAT_ACT", "initialBox=$rectangle")\n''', 1)
+          s=s.replace('''        applyWindowGeometry(rectangle, flagsChanged = true)\n        updateGlassPolicy()\n        build(mode)\n        setContentView(root)\n        RenderPolicy.vote(this, root, window.attributes)\n        workspace.listen(listener)\n''', '''        DiagnosticLog.event("FLOAT_ACT", "before applyWindowGeometry")\n        applyWindowGeometry(rectangle, flagsChanged = true)\n        DiagnosticLog.event("FLOAT_ACT", "after applyWindowGeometry attrsType=${window.attributes.type}")\n        updateGlassPolicy()\n        DiagnosticLog.event("FLOAT_ACT", "after updateGlassPolicy")\n        build(mode)\n        DiagnosticLog.event("FLOAT_ACT", "after build children=${root.childCount}")\n        setContentView(root)\n        DiagnosticLog.event("FLOAT_ACT", "after setContentView attached=${root.isAttachedToWindow}")\n        RenderPolicy.vote(this, root, window.attributes)\n        DiagnosticLog.event("FLOAT_ACT", "after RenderPolicy.vote")\n        workspace.listen(listener)\n        DiagnosticLog.event("FLOAT_ACT", "after workspace.listen")\n''', 1)
+          s=s.replace('''        service.activityHostReady(this)\n''', '''        DiagnosticLog.event("FLOAT_ACT", "before activityHostReady")\n        service.activityHostReady(this)\n        DiagnosticLog.event("FLOAT_ACT", "after activityHostReady")\n''', 1)
+          p.write_text(s)
+
+          g=Path('app/build.gradle.kts')
+          b=g.read_text()
+          b=b.replace('versionCode = 157', 'versionCode = 163', 1)
+          b=b.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
+                      'versionName = "0.7.35-activity-crashdiag"', 1)
+          g.write_text(b)
+          PY
+          grep -q 'const val ENABLED = true' app/src/main/java/com/mekromn/bubble/DiagnosticLog.kt
+          grep -q 'versionCode = 163' app/build.gradle.kts
+          grep -q '0.7.35-activity-crashdiag' app/build.gradle.kts
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+
+      - name: Prove diagnostic build changes no renderer implementation
+        run: |
+          set -euo pipefail
+          BASE=d35ea3355a667ea380f9971849001fac0fbccd35
+          git diff --exit-code "$BASE" HEAD -- \
+            app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt \
+            app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt \
+            app/src/main/java/com/mekromn/bubble/RenderPolicy.kt \
+            app/src/main/java/com/mekromn/bubble/FloatingPerformancePolicy.kt \
+            app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt \
+            app/src/main/java/com/mekromn/bubble/Workspace.kt
+
+      - name: Build optimized diagnostic ARM64 APK
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance -PgeckoAbi=arm64-v8a
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-163-ACTIVITY-CRASHDIAG-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-163-ACTIVITY-CRASHDIAG-ARM64.apk > dist/signature.txt
+          grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-163-ACTIVITY-CRASHDIAG-ARM64.apk > dist/AndroidManifest.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
+          assert root.attrib['package']=='com.mekromn.bubble.debug'
+          assert root.attrib[ns+'versionCode']=='163'
+          assert root.attrib[ns+'versionName']=='0.7.35-activity-crashdiag'
+          app=root.find('application')
+          assert app.attrib.get(ns+'debuggable','false')=='false'
+          PY
+          sha256sum dist/Bubble-163-ACTIVITY-CRASHDIAG-ARM64.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-163-activity-crashdiag-arm64
+          path: dist/
+          retention-days: 7
