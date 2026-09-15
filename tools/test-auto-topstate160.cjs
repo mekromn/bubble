@@ -12,6 +12,9 @@ const styles=read('app/src/main/res/values/styles.xml');
 assert.match(anchor,/class FloatingPriorityAnchorActivity : Activity\(\)/);
 assert.match(anchor,/width = 1/); assert.match(anchor,/height = 1/);
 assert.match(anchor,/FLAG_NOT_TOUCHABLE/); assert.match(anchor,/FLAG_NOT_TOUCH_MODAL/);
+assert.match(anchor,/@Volatile private var wanted = false/);
+assert.match(anchor,/if \(!wanted\) \{\s*finishAndRemoveTask\(\)/);
+assert.match(anchor,/fun setWanted\(value: Boolean\)/);
 assert.ok(!/Handler|postDelayed|Choreographer|Gecko|RenderPolicy|setFrameRate|preferredRefreshRate/.test(anchor),
   'Priority anchor must remain zero-work and renderer/frame-rate neutral');
 
@@ -19,7 +22,8 @@ assert.match(service,/onFloatingModeChanged\(mode: FloatingMode\?\)/);
 assert.match(service,/mode == FloatingMode\.CHAT/);
 assert.match(service,/FloatingPriorityAnchorActivity::class\.java/);
 assert.match(service,/FLAG_ACTIVITY_NEW_TASK/);
-assert.match(service,/FloatingPriorityAnchorActivity\.finishIfPresent\(\)/);
+assert.match(service,/FloatingPriorityAnchorActivity\.setWanted\(wanted\)/);
+assert.match(service,/catch \(_: RuntimeException\) \{\s*priorityAnchorRequested = false\s*FloatingPriorityAnchorActivity\.setWanted\(false\)/);
 assert.match(service,/private fun removeSurfaces\(\) \{\s*setPriorityAnchor\(false\)/);
 
 assert.match(floating,/service\.onFloatingModeChanged\(mode\)/);
@@ -28,4 +32,4 @@ assert.match(manifest,/\.FloatingPriorityAnchorActivity/);
 assert.match(manifest,/android:taskAffinity="\$\{applicationId\}\.priority_anchor"/);
 assert.match(styles,/Theme\.Bubble\.PriorityAnchor/);
 
-console.log('Bubble 160 auto TOP-state guards passed: Build-158 floating mode drives a 1x1 zero-work resumed Activity only while CHAT is active.');
+console.log('Bubble 160 auto TOP-state guards passed: Build-158 floating CHAT drives a race-safe 1x1 zero-work resumed Activity and cancels late launches when CHAT closes.');
