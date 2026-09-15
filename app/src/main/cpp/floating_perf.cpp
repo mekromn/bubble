@@ -39,6 +39,8 @@ struct PerfState {
     int createStatus = 0;
     int threadCount = 0;
     int interactions = 0;
+    bool autoCpu = false;
+    bool autoGpu = false;
 
     ~PerfState() {
         if (session) APerformanceHint_closeSession(session);
@@ -183,6 +185,9 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_mekromn_bubble_NativePerformanceBrid
     const int status = APerformanceHint_createSessionUsingConfig(manager, config, &session);
     ASessionCreationConfig_release(config);
     if (status != 0 || !session) {
+        // EBUSY can still return a session pointer. It is explicitly undefined for a graphics
+        // pipeline that exceeded the cumulative thread limit, so close it instead of using/leaking it.
+        if (session) APerformanceHint_closeSession(session);
         ANativeWindow_release(window);
         rememberAttempt(bits, status != 0 ? status : kManagerUnavailable, static_cast<int>(tids.size()));
         return 0;
@@ -203,7 +208,9 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_mekromn_bubble_NativePerformanceBrid
     state->featureBits = bits | kCreated;
     state->createStatus = status;
     state->threadCount = static_cast<int>(tids.size());
-    APerformanceHint_notifyWorkloadReset(session, true, true, "bubble-floating-page");
+    state->autoCpu = autoCpu;
+    state->autoGpu = autoGpu;
+    APerformanceHint_notifyWorkloadReset(session, autoCpu, autoGpu, "bubble-floating-page");
 
     const jlong id = state->id;
     {
@@ -223,7 +230,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_mekromn_bubble_NativePerformanceBridg
     lastInteractions.store(it->second->interactions, std::memory_order_relaxed);
     // One hint at gesture start is enough to pre-announce the scroll/fling burst. The framework
     // rate-limits these hints; Bubble does not call into ADPF for individual webpage frames.
-    APerformanceHint_notifyWorkloadIncrease(it->second->session, true, true, "scroll-gesture");
+    APerformanceHint_notifyWorkloadIncrease(
+        it->second->session,
+        it->second->autoCpu,
+        it->second->autoGpu,
+        "scroll-gesture");
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_mekromn_bubble_NativePerformanceBridge_nativeStop(
