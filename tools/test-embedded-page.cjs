@@ -3,6 +3,7 @@ const fs=require('node:fs'),assert=require('node:assert/strict');
 const read=p=>fs.readFileSync(p,'utf8');
 const relay=read('app/src/main/java/com/mekromn/bubble/FloatingGeckoWindow.kt');
 const direct=read('app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt');
+const directCode=direct.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'');
 const chrome=read('app/src/main/java/com/mekromn/bubble/FloatingWindow.kt');
 const browser=read('app/src/main/java/com/mekromn/bubble/BrowserActivity.kt');
 const mask=read('app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt');
@@ -11,10 +12,10 @@ const selector=read('app/src/main/java/com/mekromn/bubble/RendererArena.kt');
 const handoff=read('app/src/main/java/com/mekromn/bubble/FullscreenHandoff.kt');
 
 // Both direct production and relay fallback now live in FloatingWindow's one ViewRoot. There must be
-// no second page WindowManager owner/synchronizer in either renderer.
+// no second page WindowManager owner/synchronizer in executable renderer code.
 assert(!/TYPE_APPLICATION_OVERLAY|updateViewLayout|removeViewImmediate/.test(relay));
-assert(!/TYPE_APPLICATION_OVERLAY|updateViewLayout|removeViewImmediate|OnPreDrawListener|OnLayoutChangeListener/.test(direct));
-assert.match(direct,/parent\.addView\(root, 0, FrameLayout\.LayoutParams\(-1, -1\)\)/);
+assert(!/TYPE_APPLICATION_OVERLAY|updateViewLayout|removeViewImmediate|OnPreDrawListener|OnLayoutChangeListener/.test(directCode));
+assert.match(directCode,/parent\.addView\(root, 0, FrameLayout\.LayoutParams\(-1, -1\)\)/);
 
 // User-confirmed relay remains intact as a fallback, but it is not the selected steady renderer.
 assert.match(relay,/parent.addView\(root, 0,/);
@@ -28,13 +29,13 @@ assert.match(relay,/capturePagePixels/);
 // Production steady state delegates page production to Mozilla GeckoView's constructor-owned
 // SurfaceView. Same ViewRoot does not mean a copied View texture or Bubble-owned page buffer.
 assert.match(selector,/var transport: Transport = RendererArena\.Transport\.DIRECT_GECKO_SURFACE|var transport: Transport = Transport\.DIRECT_GECKO_SURFACE/);
-assert.match(direct,/LiveGeckoView\(context\)/);
-assert(!/setViewBackend\(/.test(direct));
-assert.match(direct,/SurfaceView/);
-assert.match(direct,/RendererArena\.Transport\.DIRECT_GECKO_SURFACE/);
-assert.match(direct,/view\.capturePixels\(\)/);
-assert(!/NativeAhbBridge|AImageReader|nativeCreate|nativeGetProducerSurface|GeckoDisplay\.SurfaceInfo|panZoomController\.onTouchEvent|textInput\.setView|accessibility\.setView/.test(direct));
-assert(!/class DirectSurfaceHost|requestNewSurface/.test(direct));
+assert.match(directCode,/LiveGeckoView\(context\)/);
+assert(!/setViewBackend\(/.test(directCode));
+assert.match(directCode,/SurfaceView/);
+assert.match(directCode,/RendererArena\.Transport\.DIRECT_GECKO_SURFACE/);
+assert.match(directCode,/view\.capturePixels\(\)/);
+assert(!/NativeAhbBridge|AImageReader|nativeCreate|nativeGetProducerSurface|GeckoDisplay\.SurfaceInfo|panZoomController\.onTouchEvent|textInput\.setView|accessibility\.setView/.test(directCode));
+assert(!/class DirectSurfaceHost|requestNewSurface/.test(directCode));
 
 // Floating chrome owns host selection and the single card geometry. A drag/resize is one WM update.
 assert.match(chrome,/RendererArena\.createHost\(context\)/);
@@ -58,7 +59,7 @@ assert.match(browser,/override fun onStart[\s\S]*continueFullscreenEntryIfNeeded
 // Card background clips exactly around the same-ViewRoot Gecko child; no offscreen page cache.
 assert.match(mask,/canvas\.clipOutRect\(cutout\)/);
 assert(!/SEAM_GUARD_PX/.test(mask));
-assert(!/canvas.saveLayer|Bitmap\.createBitmap|LAYER_TYPE_HARDWARE|PorterDuff/.test(mask+relay+direct));
+assert(!/canvas.saveLayer|Bitmap\.createBitmap|LAYER_TYPE_HARDWARE|PorterDuff/.test(mask+relay+directCode));
 assert(!/getLocationInSurface|transformMatrixToGlobal/.test(geometry));
 assert.match(geometry,/opacity \*= current.alpha/);
 
