@@ -137,18 +137,19 @@ class BubbleService : Service() {
 
     private fun setPriorityAnchor(enabled: Boolean) {
         val wanted = enabled && !stopping && !isParked
+        // Record intent before the Activity launch binder round-trip. If CHAT is collapsed before
+        // onCreate arrives, the late Activity self-finishes instead of leaving Bubble TOP by mistake.
+        FloatingPriorityAnchorActivity.setWanted(wanted)
         if (priorityAnchorRequested == wanted) return
         priorityAnchorRequested = wanted
-        if (!wanted) {
-            FloatingPriorityAnchorActivity.finishIfPresent()
-            return
-        }
+        if (!wanted) return
         try {
             super.startActivity(Intent(this, FloatingPriorityAnchorActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
             })
         } catch (_: RuntimeException) {
             priorityAnchorRequested = false
+            FloatingPriorityAnchorActivity.setWanted(false)
         }
     }
 
