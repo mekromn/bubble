@@ -32,12 +32,12 @@ import kotlin.math.abs
 import kotlin.math.min
 
 /**
- * Build 161: the expanded floating browser IS the Activity window.
+ * Build 162: the expanded floating browser IS the Activity window.
  *
  * There is no helper/anchor Activity and no service-owned expanded browser overlay. The same window
  * that puts Bubble in Android's TOP/RESUMED scheduling class owns the exact single-ViewRoot chrome
- * and Gecko SurfaceView. Its PhoneWindow is elevated to TYPE_APPLICATION_OVERLAY so the expanded
- * browser can remain in the overlay layer while retaining Activity lifecycle/scheduling semantics.
+ * and Gecko SurfaceView. Its PhoneWindow stays a normal application window using the floating,
+ * translucent Activity theme plus explicit geometry; Android owns the Activity token/type pairing.
  *
  * This is intentionally a physical-device experiment. Android can still impose lifecycle/window
  * policy when another task is launched; compilation cannot prove persistence or scheduling parity.
@@ -120,14 +120,9 @@ class FloatingBrowserActivity : Activity() {
             return
         }
 
-        // The Activity's own PhoneWindow is the floating browser window. No second interactive
-        // WindowManager root is created for expanded mode.
-        runCatching { window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) }
-            .onFailure {
-                service.activityHostFailed(this, "Android rejected Activity overlay window type")
-                finishAndRemoveTask()
-                return
-            }
+        // The Activity's own normal application PhoneWindow is the floating browser window.
+        // Do not change it to TYPE_APPLICATION_OVERLAY: Android may accept setType() locally but
+        // reject that type/application-token pairing later when the decor is attached.
         window.setBackgroundDrawableResource(android.R.color.transparent)
         window.setDimAmount(0f)
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
