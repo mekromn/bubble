@@ -17,10 +17,20 @@
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:colorAccent">#CCCCCC</item>
     </style>
+    <style name="Theme.Bubble.FloatingActivity" parent="android:style/Theme.Material.Dialog.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowCloseOnTouchOutside">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:colorAccent">#CCCCCC</item>
+    </style>
     <!--
-      System background blur requires a translucent, floating Window. This tiny service-owned
-      window sits below FloatingWindow and contributes only shape-clipped compositor blur; it never
-      receives input and never owns Gecko/content.
+      Legacy service-overlay blur theme retained for fallback/history paths. Build 161 expanded
+      browser content does not create these windows; its real Activity window owns the glass.
     -->
     <style name="Theme.Bubble.GlassOverlay" parent="android:style/Theme.Material.Dialog.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
