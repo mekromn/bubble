@@ -25,8 +25,8 @@ import kotlin.math.abs
 /** Neutral black glass. Native translucent gradients/highlights, no screen capture or blur loop. */
 internal object Ui {
     const val BG = GlassPalette.BACKGROUND
-    const val SURFACE = GlassPalette.SURFACE
-    const val SURFACE_HIGH = GlassPalette.RAISED
+    val SURFACE: Int get() = if (VisualEffects.transparencyEnabled()) GlassPalette.SURFACE else 0xff101010.toInt()
+    val SURFACE_HIGH: Int get() = if (VisualEffects.transparencyEnabled()) GlassPalette.RAISED else 0xff222222.toInt()
     const val ACCENT = GlassPalette.ACCENT
     const val ACTIVE = GlassPalette.ACTIVE
     // Source compatibility for existing controls. These values are deliberately GREY, not hues.
@@ -34,7 +34,7 @@ internal object Ui {
     const val MINT = ACTIVE
     const val TEXT = GlassPalette.TEXT
     const val MUTED = GlassPalette.MUTED
-    const val LINE = GlassPalette.EDGE
+    val LINE: Int get() = if (VisualEffects.transparencyEnabled()) GlassPalette.EDGE else 0xff606060.toInt()
     val ease = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val normalFont = Typeface.create("sans-serif", Typeface.NORMAL)
     private val mediumFont = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -42,24 +42,46 @@ internal object Ui {
     fun shape(c: Context, color: Int = SURFACE, radius: Float = 24f, border: Int? = null): GradientDrawable =
         GradientDrawable().apply {
             orientation = GradientDrawable.Orientation.TL_BR
+            val transparent = VisualEffects.transparencyEnabled()
             when (color) {
-                SURFACE -> colors = intArrayOf(GlassPalette.TOP, GlassPalette.MIDDLE, GlassPalette.BOTTOM)
-                SURFACE_HIGH -> colors = intArrayOf(0xc8404040.toInt(), 0xca202020.toInt(), 0xd20a0a0a.toInt())
+                SURFACE -> colors = if (transparent) {
+                    intArrayOf(GlassPalette.TOP, GlassPalette.MIDDLE, GlassPalette.BOTTOM)
+                } else {
+                    intArrayOf(0xff323232.toInt(), 0xff101010.toInt(), 0xff050505.toInt())
+                }
+                SURFACE_HIGH -> colors = if (transparent) {
+                    intArrayOf(0xc8404040.toInt(), 0xca202020.toInt(), 0xd20a0a0a.toInt())
+                } else {
+                    intArrayOf(0xff404040.toInt(), 0xff202020.toInt(), 0xff0a0a0a.toInt())
+                }
                 BG -> colors = intArrayOf(0xff151515.toInt(), BG, 0xff020202.toInt())
-                else -> setColor(color)
+                else -> setColor(if (!transparent && android.graphics.Color.alpha(color) < 255) {
+                    android.graphics.Color.rgb(android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))
+                } else color)
             }
             cornerRadius = dp(c, radius).toFloat()
             val rim = border ?: if (radius > 0 && (color == SURFACE || color == SURFACE_HIGH)) LINE else null
-            if (rim != null) setStroke(dp(c, 1f).coerceAtLeast(1), rim)
+            if (rim != null) setStroke(dp(c, 1f).coerceAtLeast(1),
+                if (!transparent && android.graphics.Color.alpha(rim) < 255)
+                    android.graphics.Color.rgb(android.graphics.Color.red(rim), android.graphics.Color.green(rim), android.graphics.Color.blue(rim))
+                else rim)
         }
     /** Slightly denser fallback when system cross-window blur is unavailable at runtime. */
     fun glassPanel(c: Context, radius: Float = 26f, blurAvailable: Boolean): GradientDrawable =
         GradientDrawable().apply {
             orientation = GradientDrawable.Orientation.TL_BR
-            colors = if (blurAvailable) intArrayOf(0x96383838.toInt(), 0xa2141414.toInt(), 0xb4080808.toInt())
-            else intArrayOf(0xe63a3a3a.toInt(), 0xec171717.toInt(), 0xf2090909.toInt())
+            val transparent = VisualEffects.transparencyEnabled()
+            colors = when {
+                !transparent -> intArrayOf(0xff383838.toInt(), 0xff141414.toInt(), 0xff080808.toInt())
+                blurAvailable -> intArrayOf(0x96383838.toInt(), 0xa2141414.toInt(), 0xb4080808.toInt())
+                else -> intArrayOf(0xe63a3a3a.toInt(), 0xec171717.toInt(), 0xf2090909.toInt())
+            }
             cornerRadius = dp(c, radius).toFloat()
-            setStroke(dp(c, 1f).coerceAtLeast(1), if (blurAvailable) 0x72d0d0d0 else LINE)
+            setStroke(dp(c, 1f).coerceAtLeast(1), when {
+                !transparent -> 0xffd0d0d0.toInt()
+                blurAvailable -> 0x72d0d0d0
+                else -> LINE
+            })
         }
     fun ripple(c: Context, color: Int = SURFACE, radius: Float = 24f) =
         RippleDrawable(ColorStateList.valueOf(GlassPalette.RIPPLE), shape(c, color, radius), null)
