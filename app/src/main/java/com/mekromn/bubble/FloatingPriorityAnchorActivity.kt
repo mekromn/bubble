@@ -57,7 +57,6 @@ internal class FloatingPriorityAnchorActivity : Activity() {
         val info = ActivityManager.RunningAppProcessInfo()
         ActivityManager.getMyMemoryState(info)
         lastImportance = info.importance
-        lastRefreshRate = display?.refreshRate ?: 0f
     }
 
     override fun onDestroy() {
@@ -67,8 +66,6 @@ internal class FloatingPriorityAnchorActivity : Activity() {
 
     companion object {
         @Volatile var lastImportance: Int = Int.MIN_VALUE
-            private set
-        @Volatile var lastRefreshRate: Float = 0f
             private set
         private var current = WeakReference<FloatingPriorityAnchorActivity>(null)
 
