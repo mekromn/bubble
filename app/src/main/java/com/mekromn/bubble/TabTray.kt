@@ -21,10 +21,15 @@ import java.util.function.Consumer
 /**
  * Fullscreen native black-glass chat switcher.
  *
- * This is deliberately a translucent Dialog window instead of an opaque child of BrowserActivity:
- * Android 12+ can then apply the same compositor background-blur primitive used by Bubble's
- * floating chooser while the real Gecko SurfaceView remains sharp underneath. No screenshot,
- * PixelCopy, polling blur loop, or page bitmap cache is used.
+ * With transparency enabled this is deliberately a translucent Dialog window: Android 12+ can apply
+ * the same compositor background-blur primitive used by Bubble's floating chooser while the real
+ * Gecko SurfaceView remains sharp underneath. No screenshot, PixelCopy, polling blur loop, or page
+ * bitmap cache is used.
+ *
+ * With global transparency disabled the contract changes completely: the chooser window is truly
+ * opaque, has zero background blur, owns no blur listener, and advertises PixelFormat.OPAQUE. The
+ * underlying Gecko page/session remains untouched but SurfaceFlinger no longer has to blend it into
+ * this full-screen native sheet.
  */
 internal class TabTray(
     c: Context,
@@ -161,19 +166,25 @@ internal class TabTray(
         if (Build.VERSION.SDK_INT >= 30) win.setDecorFitsSystemWindows(false)
         win.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         win.setDimAmount(0f)
+        val transparent = VisualEffects.transparencyEnabled()
         val manager = context.getSystemService(WindowManager::class.java)
-        val blurAvailable = Build.VERSION.SDK_INT >= 31 && manager.isCrossWindowBlurEnabled
+        val blurAvailable = transparent && Build.VERSION.SDK_INT >= 31 && manager.isCrossWindowBlurEnabled
         win.setBackgroundDrawable(Ui.glassPanel(context, 0f, blurAvailable))
         if (Build.VERSION.SDK_INT >= 31) {
-            // Same compositor primitive and expanded-panel radius family as OverlayGlass.
-            win.setBackgroundBlurRadius(Ui.dp(context, 18f).coerceIn(36, 72))
-            registerBlurListener(manager)
+            if (transparent) {
+                // Same compositor primitive and expanded-panel radius family as OverlayGlass.
+                win.setBackgroundBlurRadius(Ui.dp(context, 18f).coerceIn(36, 72))
+                registerBlurListener(manager)
+            } else {
+                win.setBackgroundBlurRadius(0)
+                releaseBlurListener()
+            }
         }
         val attributes = win.attributes.apply {
             gravity = Gravity.TOP or Gravity.LEFT
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
-            format = PixelFormat.TRANSLUCENT
+            format = if (transparent) PixelFormat.TRANSLUCENT else PixelFormat.OPAQUE
             dimAmount = 0f
             flags = flags and WindowManager.LayoutParams.FLAG_DIM_BEHIND.inv()
             title = "Bubble Your chats"
@@ -184,10 +195,12 @@ internal class TabTray(
     }
 
     private fun registerBlurListener(manager: WindowManager) {
-        if (Build.VERSION.SDK_INT < 31 || blurListener != null) return
+        if (!VisualEffects.transparencyEnabled() || Build.VERSION.SDK_INT < 31 || blurListener != null) return
         val listener = Consumer<Boolean> { enabled ->
             root.post {
-                if (isShowing) window?.setBackgroundDrawable(Ui.glassPanel(context, 0f, enabled))
+                if (isShowing && VisualEffects.transparencyEnabled()) {
+                    window?.setBackgroundDrawable(Ui.glassPanel(context, 0f, enabled))
+                }
             }
         }
         blurManager = manager; blurListener = listener
