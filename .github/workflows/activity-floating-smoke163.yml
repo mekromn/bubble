@@ -20,6 +20,84 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Apply candidate Activity-construction fix in smoke workspace only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
+          s=p.read_text()
+          old='''    private val root = object : FrameLayout(this) {
+        override fun onWindowFocusChanged(hasFocus: Boolean) {
+            super.onWindowFocusChanged(hasFocus)
+            post { if (!destroyed && ::workspace.isInitialized) workspace.applyPolicy() }
+        }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+                back()
+                return true
+            }
+            return super.dispatchKeyEvent(event)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (event.action == MotionEvent.ACTION_OUTSIDE && mode == FloatingMode.CHOOSER &&
+                SystemClock.uptimeMillis() >= ignoreOutsideUntil && !workspace.quickMenuVisible) {
+                minimize()
+                return true
+            }
+            return super.onTouchEvent(event)
+        }
+    }
+'''
+          new='''    private lateinit var root: FrameLayout
+
+    private fun createRoot(): FrameLayout = object : FrameLayout(this) {
+        override fun onWindowFocusChanged(hasFocus: Boolean) {
+            super.onWindowFocusChanged(hasFocus)
+            post { if (!destroyed && ::workspace.isInitialized) workspace.applyPolicy() }
+        }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+                back()
+                return true
+            }
+            return super.dispatchKeyEvent(event)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (event.action == MotionEvent.ACTION_OUTSIDE && mode == FloatingMode.CHOOSER &&
+                SystemClock.uptimeMillis() >= ignoreOutsideUntil && !workspace.quickMenuVisible) {
+                minimize()
+                return true
+            }
+            return super.onTouchEvent(event)
+        }
+    }
+'''
+          if old not in s:
+              raise SystemExit('expected pre-attach root initializer not found')
+          s=s.replace(old,new,1)
+          marker='''    override fun onCreate(state: Bundle?) {
+        super.onCreate(state)
+'''
+          replacement='''    override fun onCreate(state: Bundle?) {
+        super.onCreate(state)
+        // Activity field initializers run before Activity.attach(), so View construction here must
+        // happen only after super.onCreate() when the Context/theme/system services are valid.
+        root = createRoot()
+'''
+          if marker not in s:
+              raise SystemExit('onCreate marker not found')
+          s=s.replace(marker,replacement,1)
+          p.write_text(s)
+          PY
+          grep -q 'private lateinit var root: FrameLayout' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          ! grep -q 'private val root = object : FrameLayout(this)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          grep -q 'root = createRoot()' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
