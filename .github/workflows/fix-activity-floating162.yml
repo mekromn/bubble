@@ -1,0 +1,52 @@
+name: Patch Bubble 162 Activity window type
+
+on:
+  push:
+    branches: [activity-floating162]
+    paths:
+      - '.github/workflows/fix-activity-floating162.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: activity-floating162
+          fetch-depth: 0
+
+      - name: Replace invalid overlay-type Activity with supported floating PhoneWindow
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
+          s=p.read_text()
+          old=''' * and Gecko SurfaceView. Its PhoneWindow is elevated to TYPE_APPLICATION_OVERLAY so the expanded\n * browser can remain in the overlay layer while retaining Activity lifecycle/scheduling semantics.\n'''
+          new=''' * and Gecko SurfaceView. Its PhoneWindow stays a normal application window using the floating,\n * translucent Activity theme plus explicit geometry; Android owns the Activity token/type pairing.\n'''
+          if old in s:
+              s=s.replace(old,new,1)
+          block='''        // The Activity's own PhoneWindow is the floating browser window. No second interactive\n        // WindowManager root is created for expanded mode.\n        runCatching { window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) }\n            .onFailure {\n                service.activityHostFailed(this, "Android rejected Activity overlay window type")\n                finishAndRemoveTask()\n                return\n            }\n'''
+          replacement='''        // The Activity's own normal application PhoneWindow is the floating browser window.\n        // Do not change it to TYPE_APPLICATION_OVERLAY: Android may accept setType() locally but\n        // reject that type/application-token pairing later when the decor is attached.\n'''
+          if block not in s:
+              raise SystemExit('expected Build-161 overlay-type block not found')
+          s=s.replace(block,replacement,1)
+          s=s.replace(' * Build 161: the expanded floating browser IS the Activity window.',
+                      ' * Build 162: the expanded floating browser IS the Activity window.',1)
+          p.write_text(s)
+          PY
+          ! grep -q 'window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          grep -q 'normal application PhoneWindow' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+
+      - name: Commit source fix
+        run: |
+          set -euo pipefail
+          git config user.name 'Bubble CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          git commit -m 'fix: keep floating Activity on valid application window type'
+          git push origin HEAD:activity-floating162
