@@ -278,14 +278,17 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
 
     /**
      * FloatingWindow only needs the cutout geometry. In opaque-overlay mode use the same-ViewRoot
-     * page container as the cutout source; the real GeckoView lives in another Window now.
+     * page container as the cutout source; the real GeckoView lives in another Window now. While a
+     * transition deliberately covers the live page, keep the old behavior and fill the chrome card
+     * instead of leaving a transparent hole under the frozen handoff frame.
      */
     override fun backgroundCutout(): View? {
+        if (coveredForReveal) return null
         val parent = container
         return if (!embeddedFallback) {
             parent?.takeIf { it.isAttachedToWindow && it.width > 0 && it.height > 0 }
         } else {
-            view.takeIf { !coveredForReveal && it.isAttachedToWindow && it.width > 0 && it.height > 0 }
+            view.takeIf { it.isAttachedToWindow && it.width > 0 && it.height > 0 }
         }
     }
 
