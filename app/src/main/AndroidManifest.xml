@@ -11,6 +11,14 @@
             <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="https"/><data android:scheme="http"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
         </activity>
+        <activity
+            android:name=".FloatingBrowserActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.floating_activity"
+            android:theme="@style/Theme.Bubble.FloatingActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density|uiMode" />
         <activity android:name=".RendererArenaActivity" android:exported="true" android:label="Bubble Renderer Benchmark" android:excludeFromRecents="true" android:taskAffinity="${applicationId}.renderer_ab">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
