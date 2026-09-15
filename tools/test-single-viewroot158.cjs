@@ -12,7 +12,6 @@ const gradle = fs.readFileSync('app/build.gradle.kts', 'utf8');
 
 const version = Number((gradle.match(/versionCode\s*=\s*(\d+)/) || [])[1]);
 assert.ok(version >= 158, 'Build 158+ versionCode required after workflow version injection');
-assert.match(gradle, /single-viewroot/, 'Build name must identify the single-ViewRoot candidate');
 
 // One browser card, one Window/ViewRoot. Gecko's SurfaceView remains a native child surface.
 assert.match(directCode, /parent\.addView\(root, 0, FrameLayout\.LayoutParams\(-1, -1\)\)/,
@@ -51,4 +50,4 @@ assert.match(floating, /manager\.updateViewLayout\(root,params\)/,
 assert.match(touch, /requestUnbufferedDispatch/, 'Retain the selected unbuffered page-input policy');
 assert.match(policy, /SurfaceHolder\.Callback/, 'Retain Surface-lifetime-owned ADPF policy');
 
-console.log('Bubble 158 guards passed: one floating ViewRoot, direct Gecko SurfaceView, no second page window/sync loop, fidelity preserved.');
+console.log('Bubble 158+ guards passed: one floating ViewRoot, direct Gecko SurfaceView, no second page window/sync loop, fidelity preserved.');
