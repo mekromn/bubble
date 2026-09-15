@@ -1,0 +1,164 @@
+name: Bubble scrolling A-B-A-B validation
+
+on:
+  push:
+    branches: [scroll-ab-152-155]
+    paths:
+      - '.github/workflows/scroll-ab-152-155.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-abab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Checkout exact Bubble 150 source
+        uses: actions/checkout@v5
+        with:
+          ref: 488868cd722a174b8dfccdafd738ac70b23e84fc
+          path: a150
+          fetch-depth: 1
+
+      - name: Checkout exact Bubble 151 source
+        uses: actions/checkout@v5
+        with:
+          ref: 3458157ae6c86fbda060a8200d025bcbf0d19a8c
+          path: b151
+          fetch-depth: 1
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+
+      - name: Validate unmodified A and B source trees
+        run: |
+          set -euo pipefail
+          (
+            cd a150
+            node tools/test-stock-picker-compress147.cjs
+            node tools/test-direct-attach148.cjs
+            node tools/test-global-opacity149.cjs
+            node tools/test-efficiency150.cjs
+            node tools/test-foreground.cjs
+            node tools/test-fast-build.cjs
+            node tools/test-hardware-policy.cjs
+            node tools/test-embedded-page.cjs
+            bash tools/test-relay-native.sh
+          )
+          (
+            cd b151
+            node tools/test-stock-picker-compress147.cjs
+            node tools/test-direct-attach148.cjs
+            node tools/test-global-opacity149.cjs
+            node tools/test-efficiency150.cjs
+            node tools/test-efficiency151.cjs
+            node tools/test-foreground.cjs
+            node tools/test-fast-build.cjs
+            node tools/test-hardware-policy.cjs
+            node tools/test-embedded-page.cjs
+            bash tools/test-relay-native.sh
+          )
+
+      - name: Build A152 from exact Bubble 150 production source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('a150/app/build.gradle.kts')
+          s=p.read_text()
+          s=re.sub(r'versionCode = \d+', 'versionCode = 152', s, count=1)
+          s=re.sub(r'versionName = "[^"]+"', 'versionName = "0.7.24-scroll-a150"', s, count=1)
+          p.write_text(s)
+          PY
+          (cd a150 && gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance -PgeckoAbi=arm64-v8a)
+          mkdir -p dist
+          cp a150/app/build/outputs/apk/performance/app-performance.apk dist/Bubble-152-A150-SCROLL-CONTROL-ARM64.apk
+
+      - name: Build B153 from exact Bubble 151 production source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('b151/app/build.gradle.kts')
+          s=p.read_text()
+          s=re.sub(r'versionCode = \d+', 'versionCode = 153', s, count=1)
+          s=re.sub(r'versionName = "[^"]+"', 'versionName = "0.7.25-scroll-b151"', s, count=1)
+          p.write_text(s)
+          PY
+          (cd b151 && gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance -PgeckoAbi=arm64-v8a)
+          cp b151/app/build/outputs/apk/performance/app-performance.apk dist/Bubble-153-B151-SCROLL-TEST-ARM64.apk
+
+      - name: Build A154 repeat from the same Bubble 150 source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('a150/app/build.gradle.kts')
+          s=p.read_text()
+          s=re.sub(r'versionCode = \d+', 'versionCode = 154', s, count=1)
+          s=re.sub(r'versionName = "[^"]+"', 'versionName = "0.7.26-scroll-a150-repeat"', s, count=1)
+          p.write_text(s)
+          PY
+          (cd a150 && gradle --no-daemon :app:assemblePerformance -PgeckoAbi=arm64-v8a)
+          cp a150/app/build/outputs/apk/performance/app-performance.apk dist/Bubble-154-A150-SCROLL-REPEAT-ARM64.apk
+
+      - name: Build B155 repeat from the same Bubble 151 source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('b151/app/build.gradle.kts')
+          s=p.read_text()
+          s=re.sub(r'versionCode = \d+', 'versionCode = 155', s, count=1)
+          s=re.sub(r'versionName = "[^"]+"', 'versionName = "0.7.27-scroll-b151-repeat"', s, count=1)
+          p.write_text(s)
+          PY
+          (cd b151 && gradle --no-daemon :app:assemblePerformance -PgeckoAbi=arm64-v8a)
+          cp b151/app/build/outputs/apk/performance/app-performance.apk dist/Bubble-155-B151-SCROLL-REPEAT-ARM64.apk
+
+      - name: Verify identity, signing and hardware policy
+        run: |
+          set -euo pipefail
+          for apk in dist/*.apk; do
+            base="${apk%.apk}"
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" > "${base}.signature.txt"
+            "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print "$apk" > "${base}.manifest.xml"
+            sha256sum "$apk" >> dist/SHA256SUMS
+          done
+          python3 a150/tools/audit-hardware-apk.py dist/Bubble-152-A150-SCROLL-CONTROL-ARM64.apk --out dist/Bubble-152-A150-HARDWARE_AUDIT.json
+          python3 b151/tools/audit-hardware-apk.py dist/Bubble-153-B151-SCROLL-TEST-ARM64.apk --out dist/Bubble-153-B151-HARDWARE_AUDIT.json
+          python3 a150/tools/audit-hardware-apk.py dist/Bubble-154-A150-SCROLL-REPEAT-ARM64.apk --out dist/Bubble-154-A150-HARDWARE_AUDIT.json
+          python3 b151/tools/audit-hardware-apk.py dist/Bubble-155-B151-SCROLL-REPEAT-ARM64.apk --out dist/Bubble-155-B151-HARDWARE_AUDIT.json
+          cat > dist/TEST_ORDER.txt <<'TXT'
+          Install and test in this exact order; Android sees monotonically increasing version codes:
+          152 A = exact Bubble 150 production code, version metadata only changed
+          153 B = exact Bubble 151 production code, version metadata only changed
+          154 A = exact Bubble 150 production code again
+          155 B = exact Bubble 151 production code again
+
+          Source A: 488868cd722a174b8dfccdafd738ac70b23e84fc
+          Source B: 3458157ae6c86fbda060a8200d025bcbf0d19a8c
+          Package/signing/data profile are intentionally unchanged.
+          TXT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-scroll-ab-152-155-arm64
+          path: dist/
+          retention-days: 7
