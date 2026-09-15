@@ -25,7 +25,8 @@ class BubbleService : Service() {
     private var pendingOrigin: WindowBox? = null
     private var forceBubble = false
     private var acknowledgement: ResultReceiver? = null
-    private var lastSummary = ""
+    private var lastNotificationState: NotificationState? = null
+    private var channelReady = false
     private var stopping = false
     private var foreground = false
     private val changed: () -> Unit = { if (!stopping) { fulfillPending(); updateNotification() } }
@@ -38,6 +39,16 @@ class BubbleService : Service() {
             updateNotification()
         }
     }
+
+    private data class NotificationState(
+        val parked: Boolean,
+        val edgeVisible: Boolean,
+        val edgeMode: Boolean,
+        val total: Int,
+        val generating: Int,
+        val unread: Int
+    )
+
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onCreate() {
         super.onCreate(); active = this
@@ -175,28 +186,51 @@ class BubbleService : Service() {
     private fun removeSurfaces() { edge?.destroy(); edge = null; window?.destroy(); window = null }
     internal fun releaseForActivity() { stopping = true; pendingMode = null; removeSurfaces(); stopSelf() }
     private fun createChannel() {
+        if (channelReady) return
         getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Floating workspace", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Restore hidden workspace, switch back to bubble, or stop the service"; setShowBadge(false)
         })
+        channelReady = true
     }
-    private fun summary(): String = "${workspace.tabs.size} tabs · ${workspace.tabs.count { it.generating }} generating · ${workspace.tabs.count { it.unread }} unread"
-    private fun notification(): Notification {
+
+    /** One pass regardless of tab count; updateNotification reuses this exact snapshot for the UI. */
+    private fun notificationState(): NotificationState {
+        var generating = 0
+        var unread = 0
+        for (tab in workspace.tabs) {
+            if (tab.generating) generating++
+            if (tab.unread) unread++
+        }
+        return NotificationState(
+            parked = isParked,
+            edgeVisible = edge != null,
+            edgeMode = access.ready && access.options.enabled,
+            total = workspace.tabs.size,
+            generating = generating,
+            unread = unread
+        )
+    }
+    private fun summary(state: NotificationState): String =
+        "${state.total} tabs · ${state.generating} generating · ${state.unread} unread"
+
+    private fun notification(state: NotificationState = notificationState()): Notification {
         val stop = PendingIntent.getService(this, 0, Intent(this, BubbleService::class.java).setAction(STOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val edgeMode = access.ready && access.options.enabled
-        val restore = NotificationReturnActivity.pending(this, null, if (!isParked && edge != null) FloatingMode.CHOOSER else FloatingMode.BUBBLE)
+        val restore = NotificationReturnActivity.pending(this, null, if (!state.parked && state.edgeVisible) FloatingMode.CHOOSER else FloatingMode.BUBBLE)
         val builder = Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(when { isParked -> "Bubble hidden · tap to restore"; edge != null -> "Edge gestures ready · tap for chats"; else -> "Bubble workspace is live" })
-            .setContentText(summary()).setContentIntent(restore)
-            .addAction(Notification.Action.Builder(null, if (edgeMode) (if (isParked) "Restore edge" else "Open chats") else "Show bubble", restore).build())
-        if (edgeMode) builder.addAction(Notification.Action.Builder(null, "Use bubble instead", NotificationReturnActivity.pending(this, null, FloatingMode.BUBBLE, true)).build())
+            .setContentTitle(when { state.parked -> "Bubble hidden · tap to restore"; state.edgeVisible -> "Edge gestures ready · tap for chats"; else -> "Bubble workspace is live" })
+            .setContentText(summary(state)).setContentIntent(restore)
+            .addAction(Notification.Action.Builder(null, if (state.edgeMode) (if (state.parked) "Restore edge" else "Open chats") else "Show bubble", restore).build())
+        if (state.edgeMode) builder.addAction(Notification.Action.Builder(null, "Use bubble instead", NotificationReturnActivity.pending(this, null, FloatingMode.BUBBLE, true)).build())
         return builder.addAction(Notification.Action.Builder(null, "Stop service", stop).build())
             .setOnlyAlertOnce(true).setOngoing(true).setVisibility(Notification.VISIBILITY_PRIVATE).setCategory(Notification.CATEGORY_SERVICE).build()
     }
     private fun updateNotification(force: Boolean = false) {
         if (stopping || !foreground || (!force && !workspace.ready)) return
-        val key = "$isParked:${edge != null}:${access.options.enabled}:${summary()}"
-        if (!force && lastSummary == key) return
-        createChannel(); getSystemService(NotificationManager::class.java).notify(NOTICE_ID, notification()); lastSummary = key
+        val state = notificationState()
+        if (!force && lastNotificationState == state) return
+        createChannel()
+        getSystemService(NotificationManager::class.java).notify(NOTICE_ID, notification(state))
+        lastNotificationState = state
     }
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
