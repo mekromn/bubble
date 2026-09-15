@@ -44,7 +44,6 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     }
     private var container: FrameLayout? = null
     private var coveredForReveal = false
-    private var requestedRate = 0f
 
     /** Attach to Bubble's existing interactive floating window; never create another ViewRoot. */
     override fun show(parent: FrameLayout): Boolean {
@@ -52,16 +51,14 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
             Toast.makeText(context, "The direct Gecko renderer requires Android 16", Toast.LENGTH_LONG).show()
             return false
         }
-        if (container === parent && root.parent === parent) {
-            applyRate()
-            return true
-        }
+        if (container === parent && root.parent === parent) return true
         if (container != null) hide()
         return try {
             parent.addView(root, 0, FrameLayout.LayoutParams(-1, -1))
             container = parent
-            requestedRate = RenderPolicy.vote(context, root).takeIf { it > 0f } ?: 120f
-            applyRate()
+            // One vote installs the SurfaceHolder lifecycle callback. Surface recreation is handled
+            // by that callback; ordinary parent geometry animation never needs to re-vote.
+            RenderPolicy.vote(context, root)
             view.alpha = if (coveredForReveal) 0f else 1f
             true
         } catch (failure: RuntimeException) {
@@ -77,7 +74,8 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     /** Called for UI/window animation/layout changes, never from webpage frame production. */
     override fun geometryChanged() {
         if (!root.isAttachedToWindow) return
-        applyRate()
+        // Geometry synchronization still needs a UI-frame invalidation for SurfaceView transforms,
+        // but frame-rate contracts are stable and are deliberately not touched here.
         root.invalidate()
         view.postInvalidateOnAnimation()
     }
@@ -115,9 +113,4 @@ internal class DirectGeckoWindow(private val context: Context) : FloatingPageHos
     }
 
     override fun destroy() = hide()
-
-    private fun applyRate() {
-        val rate = requestedRate.takeIf { it > 0f } ?: return
-        RenderPolicy.voteTree(view, rate)
-    }
 }
