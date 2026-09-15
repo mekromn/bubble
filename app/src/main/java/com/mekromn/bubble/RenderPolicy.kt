@@ -29,10 +29,18 @@ import java.util.WeakHashMap
  * Android 15+ touch boost is explicitly enabled and the power-savings-balanced frame-rate policy is
  * disabled for Bubble windows. That intentionally spends more display power to favor smoothness.
  * Surface frame-rate hints are applied once per Surface lifetime, never every frame.
+ *
+ * Efficiency rule: discovering the maximum same-resolution rate and re-applying an identical
+ * View.setRequestedFrameRate() value are both pure redundant work. Cache both while retaining the
+ * exact same maximum-rate contract and Surface lifecycle callback behavior.
  */
 internal object RenderPolicy {
     private data class SurfaceVote(var rate: Float, var voted: Boolean = false)
+    private data class RateKey(val displayId: Int, val width: Int, val height: Int)
+
     private val surfaceVotes = WeakHashMap<SurfaceView, SurfaceVote>()
+    private val viewVotes = WeakHashMap<View, Float>()
+    private val rateCache = HashMap<RateKey, Float>()
 
     fun vote(context: Context, view: View, params: WindowManager.LayoutParams? = null): Float {
         // Set before addView, even if display-mode information is not ready yet.
@@ -40,12 +48,7 @@ internal object RenderPolicy {
         val display = view.display
             ?: context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
             ?: return 0f
-        val current = display.mode
-        val rate = display.supportedModes
-            .asSequence()
-            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
-            .maxOfOrNull { it.refreshRate }
-            ?: current.refreshRate
+        val rate = maximumRate(display)
 
         params?.let {
             // Refresh only. Do not set preferredDisplayModeId: doing so makes Android ignore this
@@ -61,10 +64,32 @@ internal object RenderPolicy {
         return rate
     }
 
+    private fun maximumRate(display: Display): Float {
+        val current = display.mode
+        val key = RateKey(display.displayId, current.physicalWidth, current.physicalHeight)
+        synchronized(rateCache) { rateCache[key]?.let { return it } }
+        val rate = display.supportedModes
+            .asSequence()
+            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+            .maxOfOrNull { it.refreshRate }
+            ?: current.refreshRate
+        synchronized(rateCache) { rateCache[key] = rate }
+        return rate
+    }
+
     /** Apply the same producer-level rate contract to an already-selected maximum rate. */
     fun voteTree(view: View, rate: Float) {
         if (rate <= 0f) return
-        if (Build.VERSION.SDK_INT >= 35) view.setRequestedFrameRate(rate)
+        if (Build.VERSION.SDK_INT >= 35) {
+            val needsVote = synchronized(viewVotes) {
+                val old = viewVotes[view]
+                if (old == rate) false else {
+                    viewVotes[view] = rate
+                    true
+                }
+            }
+            if (needsVote) view.setRequestedFrameRate(rate)
+        }
         if (view is SurfaceView) voteSurfaceView(view, rate)
         if (view is ViewGroup) {
             // View.setRequestedFrameRate does NOT propagate from a ViewGroup to its children.
