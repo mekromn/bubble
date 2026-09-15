@@ -17,7 +17,7 @@ import java.util.UUID
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 
-/** Gecko file prompts are owned by Bubble: Android picker -> compression dialog -> one staged attachment. */
+/** Gecko file prompts are owned by Bubble: Android picker -> Attach or Compress -> original tab. */
 class FloatingFileActivity : Activity() {
     private var token = ""
     override fun onCreate(state: Bundle?) {
@@ -49,19 +49,28 @@ class FloatingFileActivity : Activity() {
         }
     }
 
-    @Deprecated("Select-and-compress result")
+    @Deprecated("Select/attach/compress result")
     override fun onActivityResult(code: Int, result: Int, data: Intent?) {
         super.onActivityResult(code, result, data)
         if (code != PICK) return
         val request = pending?.takeIf { it.id == token } ?: run { finish(); return }
         if (result != RESULT_OK) { finishRequest(request, emptyList(), null); return }
-        val path = data?.getStringExtra(ArchivePickerActivity.RESULT_LOCAL_PATH).orEmpty()
-        val file = File(path)
-        if (path.isBlank() || !file.isFile || !file.canRead()) {
-            finishRequest(request, emptyList(), "Select and Compress did not return a readable attachment.")
+
+        val returnedPaths = ArrayList<String>()
+        data?.getStringArrayListExtra(ArchivePickerActivity.RESULT_LOCAL_PATHS)
+            ?.filterTo(returnedPaths) { it.isNotBlank() }
+        if (returnedPaths.isEmpty()) {
+            data?.getStringExtra(ArchivePickerActivity.RESULT_LOCAL_PATH)
+                ?.takeIf { it.isNotBlank() }
+                ?.let(returnedPaths::add)
+        }
+
+        val files = returnedPaths.map(::File)
+        if (files.isEmpty() || files.any { !it.isFile || !it.canRead() }) {
+            finishRequest(request, emptyList(), "Attachment dialog did not return readable files.")
             return
         }
-        finishRequest(request, listOf(Uri.fromFile(file)), null)
+        finishRequest(request, files.map(Uri::fromFile), null)
     }
 
     override fun onDestroy() {
