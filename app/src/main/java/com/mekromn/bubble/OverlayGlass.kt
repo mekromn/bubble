@@ -33,6 +33,9 @@ import kotlin.math.min
  * Blur availability is listener-driven and cached; normal Workspace renders never poll WindowManager.
  * Blur-only windows intentionally cast no frame-rate vote: they produce no app frames and should not
  * keep the display in a high-refresh mode by themselves.
+ *
+ * Global opaque mode is stronger: it removes these blur-only windows and their platform listener
+ * entirely, so SurfaceFlinger has no Bubble background-blur work to perform.
  */
 internal object OverlayGlass {
     private enum class Shape { OFF, FULL, TOP, BOTTOM }
@@ -68,6 +71,7 @@ internal object OverlayGlass {
 
     /** Cached after apply() registers the platform listener. */
     fun available(manager: WindowManager): Boolean {
+        if (!VisualEffects.transparencyEnabled()) return false
         if (Build.VERSION.SDK_INT < 31) return false
         if (blurManager === manager) blurEnabled?.let { return it }
         return runCatching { manager.isCrossWindowBlurEnabled }.getOrDefault(false)
@@ -78,6 +82,10 @@ internal object OverlayGlass {
      * Calling this with identical geometry is a no-op: no WindowManager relayout is emitted.
      */
     fun apply(context: Context, manager: WindowManager, params: WindowManager.LayoutParams, expanded: Boolean): Boolean {
+        if (!VisualEffects.transparencyEnabled()) {
+            release()
+            return false
+        }
         if (Build.VERSION.SDK_INT < 31) return false
         val floating = BubbleService.active?.window ?: return available(manager)
         val currentOwner = floating.transitionView
