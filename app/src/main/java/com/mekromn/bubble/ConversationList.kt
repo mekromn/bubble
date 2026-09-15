@@ -28,6 +28,7 @@ internal class ConversationList(context: Context, private val select: (String) -
     private var rows = emptyList<Row>(); private var query = ""; private var filter = TabFilter.ALL
     private var pendingReveal: String? = null
     private var lastSelectedForReveal = ""
+    private val rowCache = HashMap<String, Row>()
     var onResultCount: ((Int) -> Unit)? = null
     private val cards = Rows()
     private val drag = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
@@ -58,24 +59,58 @@ internal class ConversationList(context: Context, private val select: (String) -
         itemAnimator = DefaultItemAnimator().apply { supportsChangeAnimations = false; addDuration = 160; removeDuration = 140; moveDuration = 180; changeDuration = 0 }
         clipToPadding = false; setPadding(d(8), d(4), d(8), d(8)); contentDescription = "Conversation list"
     }
+
+    /**
+     * Hot-path rule: Workspace may coalesce many state updates into one frame, but a visible chooser
+     * can still refresh often while pages load/generate. Reuse the exact Row instance when its pixels
+     * would be unchanged, avoid sortedByDescending/list-copy churn, and submit to DiffUtil only when
+     * at least one visible row or ordering relationship actually changed.
+     */
     fun refresh(workspace: Workspace) {
         if (lastSelectedForReveal != workspace.selectedId) {
             lastSelectedForReveal = workspace.selectedId
             pendingReveal = workspace.selectedId
         }
-        val next = workspace.tabs.sortedByDescending { it.pinned }.map { tab ->
+
+        val next = ArrayList<Row>(workspace.tabs.size)
+        fun append(tab: ChatTab) {
             val selected = tab.id == workspace.selectedId
             val status = TabStatusPolicy.of(tab, selected && workspace.chatVisible)
-            val prefix = buildString {
+            val title = tab.displayName
+            val subtitle = buildString {
                 if (workspace.profiles.size > 1) append(workspace.profileName(tab.profileId)).append(" · ")
                 if (tab.pinned) append("Pinned · ")
+                append(status.detail)
+                if (tab.muted) append(" · alerts muted")
             }
-            val suffix = if (tab.muted) " · alerts muted" else ""
-            Row(tab.id, tab.displayName, prefix + status.detail + suffix,
-                selected, tab.unread, status.busy, tab.pinned, status.readiness)
+            val old = rowCache[tab.id]
+            val row = if (old != null &&
+                old.title == title && old.subtitle == subtitle && old.selected == selected &&
+                old.unread == tab.unread && old.busy == status.busy && old.pinned == tab.pinned &&
+                old.readiness == status.readiness) {
+                old
+            } else {
+                Row(tab.id, title, subtitle, selected, tab.unread, status.busy, tab.pinned, status.readiness)
+                    .also { rowCache[tab.id] = it }
+            }
+            next += row
         }
-        if (rows == next) { revealPending(); return }
-        rows = next; submit()
+
+        // Stable pin-first grouping without allocating/sorting a second full list.
+        for (tab in workspace.tabs) if (tab.pinned) append(tab)
+        for (tab in workspace.tabs) if (!tab.pinned) append(tab)
+
+        // Closed tabs are the only ordinary case where the cache grows stale; clean only then.
+        if (rowCache.size > workspace.tabs.size) {
+            val live = HashSet<String>(workspace.tabs.size * 2)
+            for (tab in workspace.tabs) live += tab.id
+            rowCache.keys.retainAll(live)
+        }
+
+        val identical = rows.size == next.size && rows.indices.all { rows[it] === next[it] }
+        if (identical) { revealPending(); return }
+        rows = next
+        submit()
     }
     /** Reveal the tab the user came from when opening the switcher, instead of jumping to the top. */
     fun reveal(id: String) { pendingReveal = id; revealPending() }
@@ -97,14 +132,31 @@ internal class ConversationList(context: Context, private val select: (String) -
         }
     }
     private fun d(value: Int) = Ui.dp(context, value.toFloat())
+
+    /** Pre-composite translucent row colors in global opaque mode so the list itself stops blending. */
+    private fun opaqueOver(color: Int, alpha: Int, background: Int = 0xff101010.toInt()): Int {
+        val a = alpha.coerceIn(0, 255)
+        val inv = 255 - a
+        fun channel(fg: Int, bg: Int) = (fg * a + bg * inv + 127) / 255
+        return Color.rgb(
+            channel(Color.red(color), Color.red(background)),
+            channel(Color.green(color), Color.green(background)),
+            channel(Color.blue(color), Color.blue(background))
+        )
+    }
     private fun fill(readiness: TabReadiness, selected: Boolean): Int {
         val base = readiness.fill
-        // Selection needs to be immediately obvious even in peripheral vision. Keep ordinary tabs
-        // subtle, but make the active tab a dense version of its current semantic status color.
-        return Color.argb(if (selected) 0xd4 else 0x38, Color.red(base), Color.green(base), Color.blue(base))
+        val alpha = if (selected) 0xd4 else 0x38
+        return if (VisualEffects.transparencyEnabled()) {
+            Color.argb(alpha, Color.red(base), Color.green(base), Color.blue(base))
+        } else opaqueOver(base, alpha)
     }
-    private fun edge(readiness: TabReadiness, selected: Boolean): Int = if (selected) readiness.edge else
-        Color.argb(0x78, Color.red(readiness.edge), Color.green(readiness.edge), Color.blue(readiness.edge))
+    private fun edge(readiness: TabReadiness, selected: Boolean): Int {
+        if (selected) return readiness.edge
+        return if (VisualEffects.transparencyEnabled()) {
+            Color.argb(0x78, Color.red(readiness.edge), Color.green(readiness.edge), Color.blue(readiness.edge))
+        } else opaqueOver(readiness.edge, 0x78)
+    }
 
     private inner class Holder(val row: LinearLayout, val activeMark: View, val dragHandle: GlyphView,
         val title: TextView, val statusDot: View, val subtitle: TextView, val closeButton: GlyphView) : ViewHolder(row) {
