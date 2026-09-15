@@ -21,6 +21,10 @@ internal class FloatingPriorityAnchorActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         current = WeakReference(this)
+        if (!wanted) {
+            finishAndRemoveTask()
+            return
+        }
 
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
@@ -48,6 +52,7 @@ internal class FloatingPriorityAnchorActivity : Activity() {
     override fun onResume() {
         super.onResume()
         current = WeakReference(this)
+        if (!wanted && !isFinishing) finishAndRemoveTask()
     }
 
     override fun onDestroy() {
@@ -56,7 +61,13 @@ internal class FloatingPriorityAnchorActivity : Activity() {
     }
 
     companion object {
+        @Volatile private var wanted = false
         private var current = WeakReference<FloatingPriorityAnchorActivity>(null)
+
+        fun setWanted(value: Boolean) {
+            wanted = value
+            if (!value) finishIfPresent()
+        }
 
         fun finishIfPresent() {
             val activity = current.get() ?: return
