@@ -1,6 +1,7 @@
 package com.mekromn.bubble
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -25,6 +26,10 @@ class RendererArenaActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // If a previous isolation run left the tiny anchor task alive, opening the controller is the
+        // explicit return to the benchmark task. Retire it before starting another comparison.
+        FloatingPriorityAnchorActivity.finishIfPresent()
+
         val pad = (18f * resources.displayMetrics.density).toInt()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -42,6 +47,26 @@ class RendererArenaActivity : Activity() {
         ))
         addArm(column, "A · relay_latest_bp baseline", RendererArena.Transport.RELAY_LATEST_BP)
         addArm(column, "B · direct Gecko SurfaceView", RendererArena.Transport.DIRECT_GECKO_SURFACE)
+
+        column.addView(label(
+            "TOP-STATE ISOLATION\nYou found that merely leaving this Activity behind the floating browser makes scrolling almost fullscreen-smooth. The control below replaces this controller with a 1x1 transparent Activity that performs no polling, animation, Gecko work, renderer changes or frame-rate vote. If floating stays fast, Android Activity/TOP scheduling is the causal difference rather than the benchmark UI."
+        ))
+        column.addView(Button(this).apply {
+            text = "Open zero-work TOP-state anchor · then scroll floating"
+            isAllCaps = false
+            setOnClickListener {
+                if (BubbleService.active?.window == null) {
+                    status.text = "Open a floating webpage first, then run the TOP-state isolation control."
+                    return@setOnClickListener
+                }
+                val intent = Intent(this@RendererArenaActivity, FloatingPriorityAnchorActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                }
+                startActivity(intent)
+                overridePendingTransition(0, 0)
+                finish()
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         column.addView(label(
             "SCROLLING PHYSICAL A/B\nOpen the real floating page you want to test, then start a run here. This controller closes. For every block, wait for the instruction, then repeat the same natural up/down scrolling workload. Method order is counterbalanced and hidden."
@@ -153,6 +178,12 @@ class RendererArenaActivity : Activity() {
             append("Requested renderer: ").append(RendererArena.transport.name).append('\n')
             append("Active floating renderer: ").append(activeRenderer?.name ?: "none").append('\n')
             append("Input: ").append(PageTouchDispatch.arm.shortLabel).append(" (fixed to 140 during renderer A/B)\n")
+            if (FloatingPriorityAnchorActivity.lastImportance != Int.MIN_VALUE) {
+                append("Last zero-work anchor process importance: ")
+                    .append(FloatingPriorityAnchorActivity.lastImportance).append('\n')
+                append("Last anchor Display.refreshRate: ")
+                    .append(String.format(java.util.Locale.US, "%.1f Hz", FloatingPriorityAnchorActivity.lastRefreshRate)).append('\n')
+            }
             if (scrolling.running) {
                 append("Scrolling run: block ").append(scrolling.block).append('/').append(scrolling.totalBlocks)
                     .append(" · ").append(scrolling.phase).append('\n')
