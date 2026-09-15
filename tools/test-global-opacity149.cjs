@@ -12,7 +12,9 @@ const sheet = read('app/src/main/java/com/mekromn/bubble/ControlsSheet.kt');
 const access = read('app/src/main/java/com/mekromn/bubble/AccessMenu.kt');
 const gradle = read('app/build.gradle.kts');
 
-assert.match(gradle, /versionCode = 149/);
+const version = Number((gradle.match(/versionCode = (\d+)/) || [])[1]);
+assert.ok(Number.isFinite(version) && version >= 149,
+  `Global opaque mode requires Bubble versionCode >= 149, got ${version}`);
 assert.match(effects, /KEY_TRANSPARENCY/);
 assert.match(effects, /getBoolean\(KEY_TRANSPARENCY, true\)/,
   'Existing glass look should remain the default until user disables it');
@@ -38,4 +40,4 @@ for (const forbidden of ['setResolution', 'scaleX=.5', 'scaleY=.5', 'setFrameRat
   assert.equal(effects.includes(forbidden), false, `Visual-effects preference must not lower webpage fidelity: ${forbidden}`);
 }
 
-console.log('Bubble 149 global opaque-mode guards passed: persistent chrome opaque, blur windows released, dim blend removed, Gecko fidelity untouched.');
+console.log('Bubble 149+ global opaque-mode guards passed: persistent chrome opaque, blur windows released, dim blend removed, Gecko fidelity untouched.');
