@@ -70,9 +70,17 @@ internal object AccessMenu {
                     Toast.makeText(c, if (saved) {
                         "Saved. Transparency is ${if (transparency.isChecked) "ON" else "OFF"}."
                     } else preferences.error ?: "Settings could not be saved.", Toast.LENGTH_LONG).show()
-                    if (transparencyChanged) (c as? android.app.Activity)?.recreate()
                 }
                 panel.dismiss()
+                if (transparencyChanged) {
+                    // Dismiss first so replacing an overlay cannot strand a PopupWindow attached to
+                    // the window being retired. Fullscreen rebuilds only native chrome; Workspace and
+                    // Gecko sessions remain process-owned. Floating mode swaps only its overlay host.
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        BubbleService.active?.visualEffectsChanged()
+                        (c as? android.app.Activity)?.recreate()
+                    }
+                }
             }
         }, LinearLayout.LayoutParams(-1, d(48)))
     }
