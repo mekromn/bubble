@@ -21,33 +21,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply 162 Activity-window crash fix and metadata
+      - name: Inject installable 162 metadata only
         run: |
           set -euo pipefail
+          ! grep -q 'window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
           python3 - <<'PY'
           from pathlib import Path
-
-          p=Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
+          p=Path('app/build.gradle.kts')
           s=p.read_text()
-          old='''        // The Activity's own PhoneWindow is the floating browser window. No second interactive\n        // WindowManager root is created for expanded mode.\n        runCatching { window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) }\n            .onFailure {\n                service.activityHostFailed(this, "Android rejected Activity overlay window type")\n                finishAndRemoveTask()\n                return\n            }\n'''
-          replacement='''        // The Activity's own normal application PhoneWindow is the floating browser window.\n        // Never retag an Activity token as TYPE_APPLICATION_OVERLAY: WindowManager may reject\n        // that token/type pairing only when the decor is attached, which crashes the transition.\n'''
-          if old not in s:
-              raise SystemExit('expected Build-161 Activity overlay block not found')
-          s=s.replace(old,replacement,1)
-          s=s.replace(' * Build 161: the expanded floating browser IS the Activity window.',
-                      ' * Build 162: the expanded floating browser IS the Activity window.',1)
-          s=s.replace(' * and Gecko SurfaceView. Its PhoneWindow is elevated to TYPE_APPLICATION_OVERLAY so the expanded\n * browser can remain in the overlay layer while retaining Activity lifecycle/scheduling semantics.\n',
-                      ' * and Gecko SurfaceView. Its PhoneWindow remains a normal application window using the floating,\n * translucent Activity theme plus explicit geometry; Android owns the token/type pairing.\n',1)
-          p.write_text(s)
-
-          g=Path('app/build.gradle.kts')
-          b=g.read_text()
-          b=b.replace('versionCode = 157', 'versionCode = 162', 1)
-          b=b.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
+          s=s.replace('versionCode = 157', 'versionCode = 162', 1)
+          s=s.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
                       'versionName = "0.7.34-single-viewroot-activity-window"', 1)
-          g.write_text(b)
+          p.write_text(s)
           PY
-          ! grep -q 'window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
           grep -q 'versionCode = 162' app/build.gradle.kts
           grep -q 'versionName = "0.7.34-single-viewroot-activity-window"' app/build.gradle.kts
 
@@ -120,7 +106,6 @@ jobs:
           python3 tools/audit-hardware-apk.py dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk --out dist/HARDWARE_AUDIT.json
           sha256sum dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk > dist/SHA256SUMS
           git rev-parse HEAD > dist/SOURCE.txt
-          git diff -- app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt app/build.gradle.kts > dist/BUILD_162_TRANSFORM.patch
 
       - uses: actions/upload-artifact@v4
         with:
