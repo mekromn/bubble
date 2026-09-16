@@ -46,14 +46,14 @@ jobs:
           b=g.read_text()
           b=b.replace('versionCode = 157', 'versionCode = 163', 1)
           b=b.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
-                      'versionName = "0.7.35-activity-root-init-fix"', 1)
+                      'versionName = "0.7.35-single-viewroot-activity-root-init-fix"', 1)
           g.write_text(b)
           PY
           grep -q 'private val root by lazy(LazyThreadSafetyMode.NONE)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
           ! grep -q 'private val root = object : FrameLayout(this)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
           ! grep -q 'window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
           grep -q 'versionCode = 163' app/build.gradle.kts
-          grep -q 'versionName = "0.7.35-activity-root-init-fix"' app/build.gradle.kts
+          grep -q 'versionName = "0.7.35-single-viewroot-activity-root-init-fix"' app/build.gradle.kts
 
       - uses: actions/setup-java@v5
         with:
@@ -111,7 +111,7 @@ jobs:
           root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
           assert root.attrib['package']=='com.mekromn.bubble.debug'
           assert root.attrib[ns+'versionCode']=='163'
-          assert root.attrib[ns+'versionName']=='0.7.35-activity-root-init-fix'
+          assert root.attrib[ns+'versionName']=='0.7.35-single-viewroot-activity-root-init-fix'
           app=root.find('application')
           assert app.attrib.get(ns+'debuggable','false')=='false'
           assert app.attrib.get(ns+'hardwareAccelerated')=='true'
