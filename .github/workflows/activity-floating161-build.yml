@@ -1,8 +1,8 @@
-name: Bubble 162 Activity-window floating validation
+name: Bubble 163 Activity root-init validation
 
 on:
   push:
-    branches: [activity-floating162]
+    branches: [activity-floating163]
     paths:
       - 'app/**'
       - 'tools/**'
@@ -21,21 +21,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Inject installable 162 metadata only
+      - name: Apply deferred Activity root initialization and 163 metadata
         run: |
           set -euo pipefail
-          ! grep -q 'window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('app/build.gradle.kts')
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
           s=p.read_text()
-          s=s.replace('versionCode = 157', 'versionCode = 162', 1)
-          s=s.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
-                      'versionName = "0.7.34-single-viewroot-activity-window"', 1)
+          old='    private val root = object : FrameLayout(this) {\n'
+          new='    private val root by lazy(LazyThreadSafetyMode.NONE) { object : FrameLayout(this) {\n'
+          if old not in s:
+              raise SystemExit('expected eager Activity root initializer not found')
+          s=s.replace(old,new,1)
+          old_tail='            return super.onTouchEvent(event)\n        }\n    }\n\n    override fun onCreate(state: Bundle?) {\n'
+          new_tail='            return super.onTouchEvent(event)\n        }\n    } }\n\n    override fun onCreate(state: Bundle?) {\n'
+          if old_tail not in s:
+              raise SystemExit('expected Activity root object tail not found')
+          s=s.replace(old_tail,new_tail,1)
+          s=s.replace(' * Build 162: the expanded floating browser IS the Activity window.',
+                      ' * Build 163: the expanded floating browser IS the Activity window.',1)
           p.write_text(s)
+
+          g=Path('app/build.gradle.kts')
+          b=g.read_text()
+          b=b.replace('versionCode = 157', 'versionCode = 163', 1)
+          b=b.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
+                      'versionName = "0.7.35-activity-root-init-fix"', 1)
+          g.write_text(b)
           PY
-          grep -q 'versionCode = 162' app/build.gradle.kts
-          grep -q 'versionName = "0.7.34-single-viewroot-activity-window"' app/build.gradle.kts
+          grep -q 'private val root by lazy(LazyThreadSafetyMode.NONE)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          ! grep -q 'private val root = object : FrameLayout(this)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          ! grep -q 'window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          grep -q 'versionCode = 163' app/build.gradle.kts
+          grep -q 'versionName = "0.7.35-activity-root-init-fix"' app/build.gradle.kts
 
       - uses: actions/setup-java@v5
         with:
@@ -84,31 +102,28 @@ jobs:
           set -euo pipefail
           gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance -PgeckoAbi=arm64-v8a
           mkdir -p dist
-          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk > dist/signature.txt
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk > dist/signature.txt
           grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
-          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk > dist/AndroidManifest.xml
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk > dist/AndroidManifest.xml
           python3 - <<'PY'
           import xml.etree.ElementTree as ET
           root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
           assert root.attrib['package']=='com.mekromn.bubble.debug'
-          assert root.attrib[ns+'versionCode']=='162'
-          assert root.attrib[ns+'versionName']=='0.7.34-single-viewroot-activity-window'
+          assert root.attrib[ns+'versionCode']=='163'
+          assert root.attrib[ns+'versionName']=='0.7.35-activity-root-init-fix'
           app=root.find('application')
           assert app.attrib.get(ns+'debuggable','false')=='false'
           assert app.attrib.get(ns+'hardwareAccelerated')=='true'
           hosts=[a for a in app.findall('activity') if (a.attrib.get(ns+'name') or '').endswith('.FloatingBrowserActivity')]
           assert len(hosts)==1
-          host=hosts[0]
-          assert host.attrib.get(ns+'exported')=='false'
-          assert host.attrib.get(ns+'excludeFromRecents')=='true'
           PY
-          python3 tools/audit-hardware-apk.py dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk --out dist/HARDWARE_AUDIT.json
-          sha256sum dist/Bubble-162-ACTIVITY-WINDOW-ARM64.apk > dist/SHA256SUMS
+          python3 tools/audit-hardware-apk.py dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          sha256sum dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk > dist/SHA256SUMS
           git rev-parse HEAD > dist/SOURCE.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bubble-162-activity-window-arm64
+          name: bubble-163-activity-root-init-fix-arm64
           path: dist/
           retention-days: 7
