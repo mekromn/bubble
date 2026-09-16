@@ -1,0 +1,142 @@
+name: Bubble 163 Activity root-init crash fix
+
+on:
+  push:
+    branches: [activity-floating163]
+    paths:
+      - 'app/**'
+      - 'tools/**'
+      - '.github/workflows/activity-floating163-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Apply deterministic Activity-construction crash fix and 163 metadata
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt')
+          s=p.read_text()
+          old='''    private val root = object : FrameLayout(this) {
+'''
+          new='''    // Activity fields are initialized before Activity.attach() installs the base Context.
+    // Constructing a View with `this` here therefore crashes before onCreate on real devices.
+    // Defer the one ViewRoot container until first use inside onCreate, after super.onCreate().
+    private val root by lazy(LazyThreadSafetyMode.NONE) { object : FrameLayout(this) {
+'''
+          if old not in s:
+              raise SystemExit('expected eager Activity root initializer not found')
+          s=s.replace(old,new,1)
+          tail='''            return super.onTouchEvent(event)
+        }
+    }
+
+    override fun onCreate(state: Bundle?) {
+'''
+          tail_new='''            return super.onTouchEvent(event)
+        }
+    } }
+
+    override fun onCreate(state: Bundle?) {
+'''
+          if tail not in s:
+              raise SystemExit('expected Activity root object tail not found')
+          s=s.replace(tail,tail_new,1)
+          s=s.replace(' * Build 162: the expanded floating browser IS the Activity window.',
+                      ' * Build 163: the expanded floating browser IS the Activity window.',1)
+          p.write_text(s)
+
+          g=Path('app/build.gradle.kts')
+          b=g.read_text()
+          b=b.replace('versionCode = 157','versionCode = 163',1)
+          b=b.replace('versionName = "0.7.29-opaque-floating-page-baremetal"',
+                      'versionName = "0.7.35-activity-root-init-fix"',1)
+          g.write_text(b)
+          PY
+          grep -q 'private val root by lazy(LazyThreadSafetyMode.NONE)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          ! grep -q 'private val root = object : FrameLayout(this)' app/src/main/java/com/mekromn/bubble/FloatingBrowserActivity.kt
+          grep -q 'versionCode = 163' app/build.gradle.kts
+          grep -q 'versionName = "0.7.35-activity-root-init-fix"' app/build.gradle.kts
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-37.1' 'build-tools;36.0.0'
+
+      - name: Prove Build-158 direct renderer remains untouched
+        run: |
+          set -euo pipefail
+          BASE=ec66f727be884aa80ba592ff9e3e1bb6815aff28
+          git diff --exit-code "$BASE" HEAD -- \
+            app/src/main/java/com/mekromn/bubble/DirectGeckoWindow.kt \
+            app/src/main/java/com/mekromn/bubble/EmbeddedPageBackground.kt \
+            app/src/main/java/com/mekromn/bubble/RenderPolicy.kt \
+            app/src/main/java/com/mekromn/bubble/FloatingPerformancePolicy.kt \
+            app/src/main/java/com/mekromn/bubble/PageTouchDispatch.kt \
+            app/src/main/java/com/mekromn/bubble/Workspace.kt \
+            app/src/main/java/com/mekromn/bubble/RendererArenaActivity.kt
+
+      - name: Activity-host architecture and retained invariants
+        run: |
+          set -euo pipefail
+          node tools/test-activity-floating162.cjs
+          node tools/test-single-viewroot158.cjs
+          node tools/test-stock-picker-compress147.cjs
+          node tools/test-direct-attach148.cjs
+          node tools/test-global-opacity149.cjs
+          node tools/test-efficiency150.cjs
+          node tools/test-efficiency151.cjs
+          node tools/test-foreground.cjs
+          node tools/test-fast-build.cjs
+          node tools/test-hardware-policy.cjs
+          node tools/test-embedded-page.cjs
+          bash tools/test-relay-native.sh
+
+      - name: Build optimized ARM64 candidate
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testPerformanceUnitTest :app:assemblePerformance :app:lintPerformance -PgeckoAbi=arm64-v8a
+          mkdir -p dist
+          cp app/build/outputs/apk/performance/app-performance.apk dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk > dist/signature.txt
+          grep -q '001a6f40ddcff14aec3aca71964fec58c29a32bdd0c649285bce60ae940c2b1f' dist/signature.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk > dist/AndroidManifest.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('dist/AndroidManifest.xml').getroot(); ns='{http://schemas.android.com/apk/res/android}'
+          assert root.attrib['package']=='com.mekromn.bubble.debug'
+          assert root.attrib[ns+'versionCode']=='163'
+          assert root.attrib[ns+'versionName']=='0.7.35-activity-root-init-fix'
+          app=root.find('application')
+          assert app.attrib.get(ns+'debuggable','false')=='false'
+          assert app.attrib.get(ns+'hardwareAccelerated')=='true'
+          PY
+          python3 tools/audit-hardware-apk.py dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk --out dist/HARDWARE_AUDIT.json
+          sha256sum dist/Bubble-163-ACTIVITY-ROOT-INIT-FIX-ARM64.apk > dist/SHA256SUMS
+          git rev-parse HEAD > dist/SOURCE.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-163-activity-root-init-fix-arm64
+          path: dist/
+          retention-days: 7
