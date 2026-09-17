@@ -1,0 +1,80 @@
+name: Moonshine beta13 headless recognition service
+
+on:
+  push:
+    branches:
+      - futo-moonshine-headless-service
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Checkout exact beta13
+        run: |
+          git clone --branch v1.4.2-beta.13 --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/Today20092/voice-input.git voice-input
+          cd voice-input
+          test "$(git rev-parse HEAD)" = "b9790abf7cbc12fa238618077a4d5e8e69970661"
+
+      - name: Apply headless service patch
+        run: |
+          python3 tools/patch_moonshine_headless.py voice-input
+          grep -F 'class MoonshineRecognitionService' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          grep -F 'android:name=".MoonshineRecognitionService"' voice-input/app/src/main/AndroidManifest.xml
+          grep -F 'Color(0xFF5E97F6)' voice-input/app/src/main/java/org/futo/voiceinput/theme/presets/AMOLEDDarkBlue.kt
+          grep -F 'versionCode 49' voice-input/app/build.gradle
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Android build components
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;28.2.13676358" "cmake;3.22.1"
+
+      - name: Build standalone release
+        working-directory: voice-input
+        run: ./gradlew :app:assembleStandaloneRelease --no-daemon --stacktrace
+
+      - name: Collect output
+        run: |
+          APK="$(find voice-input/app/build/outputs/apk/standalone/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee badging.txt
+          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='49'" badging.txt
+          mkdir -p release/tools/lib
+          cp "$APK" release/Moonshine-beta13-MEBOARD-HEADLESS-SERVICE-compiler.apk
+          cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" release/tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" release/tools/lib/
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" release/tools/
+          sha256sum release/*.apk > release/SHA256SUMS.txt
+
+      - name: Upload compiler artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonshine-beta13-meboard-headless-service
+          retention-days: 30
+          path: |
+            release/Moonshine-beta13-MEBOARD-HEADLESS-SERVICE-compiler.apk
+            release/SHA256SUMS.txt
+            release/tools/apksigner
+            release/tools/lib/apksigner.jar
+            release/tools/zipalign
+            badging.txt
