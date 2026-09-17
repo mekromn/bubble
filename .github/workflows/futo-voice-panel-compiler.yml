@@ -67,7 +67,7 @@ jobs:
           test -n "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee compiler-apk-signature.txt || true
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee compiler-apk-badging.txt
-          grep -F "versionName='1.4.2-beta.13'" compiler-apk-badging.txt
+          grep -F "versionName='1.4.2-beta.13-moonshine'" compiler-apk-badging.txt
           mkdir -p release/tools/lib
           cp "$APK" release/futo-voice-input-moonshine-v1.4.2-beta.13_AMOLED_BLUE_KEYBOARD_PANEL_UNSIGNED.apk
           cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" release/tools/
