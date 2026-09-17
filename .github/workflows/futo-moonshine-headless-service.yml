@@ -31,9 +31,10 @@ jobs:
           grep -F 'class MoonshineRecognitionService' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
           grep -F 'setNextAttributionSource(callback.callingAttributionSource)' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
           grep -F '.setContext(context)' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
-          grep -F 'android:name=".MoonshineRecognitionService"' voice-input/app/src/main/AndroidManifest.xml
+          grep -F 'startForeground(' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          grep -F 'android:foregroundServiceType="microphone"' voice-input/app/src/main/AndroidManifest.xml
           grep -F 'Color(0xFF5E97F6)' voice-input/app/src/main/java/org/futo/voiceinput/theme/presets/AMOLEDDarkBlue.kt
-          grep -F 'versionCode 51' voice-input/app/build.gradle
+          grep -F 'versionCode 52' voice-input/app/build.gradle
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -61,7 +62,7 @@ jobs:
           APK="$(find voice-input/app/build/outputs/apk/standalone/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee badging.txt
-          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='51'" badging.txt
+          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='52'" badging.txt
           mkdir -p release/tools/lib
           cp "$APK" release/Moonshine-beta13-MEBOARD-HEADLESS-SERVICE-compiler.apk
           cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" release/tools/
