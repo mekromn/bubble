@@ -27,13 +27,24 @@ new = '''    override fun onStartListening(recognizerIntent: Intent?, callback: 
 if old not in s:
     raise SystemExit('onStartListening anchor not found')
 s = s.replace(old, new, 1)
-
 service.write_text(s)
+
+# RecognitionService requires the microphone itself to be opened through the
+# caller-attribution context. Merely checking permission through that context is
+# insufficient because the legacy AudioRecord constructor does not consume it.
+audio = root / 'app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt'
+a = audio.read_text()
+old_recorder = '''            recorder = AudioRecord(\n                MediaRecorder.AudioSource.VOICE_RECOGNITION,\n                AUDIO_SAMPLE_RATE,\n                AudioFormat.CHANNEL_IN_MONO,\n                AudioFormat.ENCODING_PCM_16BIT,\n                AUDIO_SAMPLE_RATE * 2 * 5\n            )\n'''
+new_recorder = '''            recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {\n                AudioRecord.Builder()\n                    .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)\n                    .setAudioFormat(\n                        AudioFormat.Builder()\n                            .setSampleRate(AUDIO_SAMPLE_RATE)\n                            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)\n                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)\n                            .build()\n                    )\n                    .setBufferSizeInBytes(AUDIO_SAMPLE_RATE * 2 * 5)\n                    .setContext(context)\n                    .build()\n            } else {\n                AudioRecord(\n                    MediaRecorder.AudioSource.VOICE_RECOGNITION,\n                    AUDIO_SAMPLE_RATE,\n                    AudioFormat.CHANNEL_IN_MONO,\n                    AudioFormat.ENCODING_PCM_16BIT,\n                    AUDIO_SAMPLE_RATE * 2 * 5\n                )\n            }\n'''
+if old_recorder not in a:
+    raise SystemExit('AudioRecord constructor anchor not found')
+a = a.replace(old_recorder, new_recorder, 1)
+audio.write_text(a)
 
 gradle = root / 'app/build.gradle'
 g = gradle.read_text()
-g = g.replace('versionCode 49', 'versionCode 50', 1)
-g = g.replace('versionName "1.4.2-beta.13-meboard1"', 'versionName "1.4.2-beta.13-meboard2-attribution"', 1)
+g = g.replace('versionCode 49', 'versionCode 51', 1)
+g = g.replace('versionName "1.4.2-beta.13-meboard1"', 'versionName "1.4.2-beta.13-meboard3-audiorecord-attribution"', 1)
 gradle.write_text(g)
 
-print('Moonshine RecognitionService caller attribution patch applied')
+print('Moonshine RecognitionService + AudioRecord caller attribution patch applied')
