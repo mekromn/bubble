@@ -27,7 +27,10 @@ jobs:
       - name: Apply headless service patch
         run: |
           python3 tools/patch_moonshine_headless.py voice-input
+          python3 tools/patch_moonshine_force_backend.py voice-input
           grep -F 'class MoonshineRecognitionService' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          grep -F 'session.forceBackend(SpeechBackendType.Moonshine)' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          grep -F 'private suspend fun selectedBackendType()' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
           grep -F 'android:name=".MoonshineRecognitionService"' voice-input/app/src/main/AndroidManifest.xml
           grep -F 'Color(0xFF5E97F6)' voice-input/app/src/main/java/org/futo/voiceinput/theme/presets/AMOLEDDarkBlue.kt
           grep -F 'versionCode 49' voice-input/app/build.gradle
