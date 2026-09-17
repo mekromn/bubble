@@ -20,13 +20,12 @@ import org.futo.voiceinput.ml.RunState
 import org.futo.voiceinput.recognition.RecognitionModel
 
 /**
- * Headless Moonshine recognition endpoint for keyboard integration.
- * No Activity or Compose UI is launched. The caller remains responsible for UI.
+ * Headless recognition endpoint for MeBoard integration.
+ * No Activity or Compose UI is launched. Moonshine's normal settings continue
+ * to select the active speech backend/model.
  */
 class MoonshineRecognitionService : RecognitionService(), LifecycleOwner {
     companion object {
-        const val EVENT_STATUS = 0x4D53
-        const val EVENT_LANGUAGE = 0x4D54
         const val KEY_STATUS = "org.futo.voiceinput.moonshine.STATUS"
         const val KEY_LANGUAGE = "org.futo.voiceinput.moonshine.LANGUAGE"
     }
@@ -39,14 +38,17 @@ class MoonshineRecognitionService : RecognitionService(), LifecycleOwner {
     private var speechBegan = false
     private var speechEnded = false
 
+    private fun metadataBundle(key: String, value: String): Bundle = Bundle().apply {
+        putStringArrayList(RecognizerIntent.EXTRA_RESULTS, arrayListOf())
+        putString(key, value)
+    }
+
     private fun status(text: String) {
-        val bundle = Bundle().apply { putString(KEY_STATUS, text) }
-        try { clientCallback?.event(EVENT_STATUS, bundle) } catch (_: Throwable) { }
+        try { clientCallback?.partialResults(metadataBundle(KEY_STATUS, text)) } catch (_: Throwable) { }
     }
 
     private fun language(language: String) {
-        val bundle = Bundle().apply { putString(KEY_LANGUAGE, language) }
-        try { clientCallback?.event(EVENT_LANGUAGE, bundle) } catch (_: Throwable) { }
+        try { clientCallback?.partialResults(metadataBundle(KEY_LANGUAGE, language)) } catch (_: Throwable) { }
     }
 
     private fun transcriptBundle(text: String): Bundle = Bundle().apply {
@@ -132,7 +134,7 @@ class MoonshineRecognitionService : RecognitionService(), LifecycleOwner {
         }
 
         override fun updateMagnitude(magnitude: Float, state: MagnitudeState) {
-            try { clientCallback?.rmsChanged((magnitude.coerceIn(0f, 1f) * 10f)) } catch (_: Throwable) { }
+            try { clientCallback?.rmsChanged(magnitude.coerceIn(0f, 1f) * 10f) } catch (_: Throwable) { }
             if (!speechBegan && state == MagnitudeState.TALKING) {
                 speechBegan = true
                 try { clientCallback?.beginningOfSpeech() } catch (_: Throwable) { }
@@ -187,7 +189,6 @@ class MoonshineRecognitionService : RecognitionService(), LifecycleOwner {
 path = root / 'app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt'
 path.write_text(service)
 
-# Add service next to VoiceInputMethodService. Use the platform recognition-service binding permission.
 manifest = root / 'app/src/main/AndroidManifest.xml'
 s = manifest.read_text()
 marker = '<service\n            android:name=".VoiceInputMethodService"'
@@ -207,7 +208,6 @@ if 'android:name=".MoonshineRecognitionService"' not in s:
     s = s[:idx] + service_xml + s[idx:]
 manifest.write_text(s)
 
-# Preserve the separate AMOLED Dark Blue preset used by the user's mod.
 blue = r'''package org.futo.voiceinput.theme.presets
 
 import androidx.compose.material3.darkColorScheme
@@ -264,7 +264,6 @@ if 'name="amoled_dark_blue_theme_name"' not in s:
     s = s.replace('</resources>', '    <string name="amoled_dark_blue_theme_name">AMOLED Dark Blue</string>\n</resources>', 1)
 strings.write_text(s)
 
-# Bump only our mod build, keeping the beta13 source baseline.
 gradle = root / 'app/build.gradle'
 s = gradle.read_text()
 s = s.replace('versionCode 48', 'versionCode 49', 1)
