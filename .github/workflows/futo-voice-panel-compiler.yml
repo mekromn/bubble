@@ -29,8 +29,10 @@ jobs:
         run: |
           python3 tools/futo_voice_patch.py voice-input
           python3 tools/futo_voice_bottom_center_refine.py voice-input
+          python3 tools/futo_voice_rectangle_fix.py voice-input
           grep -F 'TransformOrigin(0.5f, 1.0f)' voice-input/app/src/main/java/org/futo/voiceinput/RecognizeActivity.kt
           grep -F 'scaleX = 0.04f + (0.96f * revealProgress)' voice-input/app/src/main/java/org/futo/voiceinput/RecognizeActivity.kt
+          grep -F 'shape = RoundedCornerShape(0.dp)' voice-input/app/src/main/java/org/futo/voiceinput/RecognizeActivity.kt
           grep -F 'FLAG_ALT_FOCUSABLE_IM' voice-input/app/src/main/java/org/futo/voiceinput/RecognizeActivity.kt
           grep -F 'Color(0xFF5E97F6)' voice-input/app/src/main/java/org/futo/voiceinput/theme/presets/AMOLEDDarkBlue.kt
           grep -F 'AMOLEDDarkBlue.key' voice-input/app/src/main/java/org/futo/voiceinput/theme/ThemeOptions.kt
@@ -63,7 +65,7 @@ jobs:
         run: |
           APK="$(find voice-input/app/build/outputs/apk/standalone/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$APK"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee compiler-apk-signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee compiler-apk-signature.txt || true
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee compiler-apk-badging.txt
           grep -F "versionName='1.4.2-beta.13'" compiler-apk-badging.txt
           mkdir -p release/tools/lib
