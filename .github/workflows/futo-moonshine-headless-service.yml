@@ -24,17 +24,17 @@ jobs:
           cd voice-input
           test "$(git rev-parse HEAD)" = "b9790abf7cbc12fa238618077a4d5e8e69970661"
 
-      - name: Apply headless service patch
+      - name: Apply headless injected-audio patch
         run: |
           python3 tools/patch_moonshine_headless.py voice-input
-          python3 tools/patch_moonshine_attribution.py voice-input
+          python3 tools/patch_moonshine_external_audio.py voice-input
           grep -F 'class MoonshineRecognitionService' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
-          grep -F 'setNextAttributionSource(callback.callingAttributionSource)' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
-          grep -F '.setContext(context)' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
-          grep -F 'startForeground(' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
-          grep -F 'android:foregroundServiceType="microphone"' voice-input/app/src/main/AndroidManifest.xml
+          grep -F 'RecognizerIntent.EXTRA_AUDIO_SOURCE' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          grep -F 'createFromAudioSource' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
+          grep -F 'FileInputStream(source.fileDescriptor)' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
           grep -F 'Color(0xFF5E97F6)' voice-input/app/src/main/java/org/futo/voiceinput/theme/presets/AMOLEDDarkBlue.kt
-          grep -F 'versionCode 52' voice-input/app/build.gradle
+          grep -F 'versionCode 53' voice-input/app/build.gradle
+          ! grep -F 'startForeground(' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -62,7 +62,7 @@ jobs:
           APK="$(find voice-input/app/build/outputs/apk/standalone/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee badging.txt
-          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='52'" badging.txt
+          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='53'" badging.txt
           mkdir -p release/tools/lib
           cp "$APK" release/Moonshine-beta13-MEBOARD-HEADLESS-SERVICE-compiler.apk
           cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" release/tools/
