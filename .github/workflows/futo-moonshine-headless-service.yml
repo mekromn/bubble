@@ -24,17 +24,17 @@ jobs:
           cd voice-input
           test "$(git rev-parse HEAD)" = "b9790abf7cbc12fa238618077a4d5e8e69970661"
 
-      - name: Apply headless injected-audio patch
+      - name: Apply MeBoard session IPC patches
         run: |
           python3 tools/patch_moonshine_headless.py voice-input
           python3 tools/patch_moonshine_external_audio.py voice-input
-          grep -F 'class MoonshineRecognitionService' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
-          grep -F 'RecognizerIntent.EXTRA_AUDIO_SOURCE' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          python3 tools/patch_meboard_engine_service.py voice-input
+          grep -F 'class MeboardEngineService' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
+          grep -F 'CMD_STOP = 2' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
           grep -F 'createFromAudioSource' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
-          grep -F 'FileInputStream(source.fileDescriptor)' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
-          grep -F 'Color(0xFF5E97F6)' voice-input/app/src/main/java/org/futo/voiceinput/theme/presets/AMOLEDDarkBlue.kt
-          grep -F 'versionCode 53' voice-input/app/build.gradle
-          ! grep -F 'startForeground(' voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
+          grep -F 'android:name=".MeboardEngineService"' voice-input/app/src/main/AndroidManifest.xml
+          grep -F 'versionCode 54' voice-input/app/build.gradle
+          ! grep -F 'startForeground(' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -62,9 +62,9 @@ jobs:
           APK="$(find voice-input/app/build/outputs/apk/standalone/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee badging.txt
-          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='53'" badging.txt
+          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='54'" badging.txt
           mkdir -p release/tools/lib
-          cp "$APK" release/Moonshine-beta13-MEBOARD-HEADLESS-SERVICE-compiler.apk
+          cp "$APK" release/Moonshine-beta13-MEBOARD-SESSION-ENGINE-compiler.apk
           cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" release/tools/
           cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" release/tools/lib/
           cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" release/tools/
@@ -73,10 +73,10 @@ jobs:
       - name: Upload compiler artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moonshine-beta13-meboard-headless-service
+          name: moonshine-beta13-meboard-session-engine
           retention-days: 30
           path: |
-            release/Moonshine-beta13-MEBOARD-HEADLESS-SERVICE-compiler.apk
+            release/Moonshine-beta13-MEBOARD-SESSION-ENGINE-compiler.apk
             release/SHA256SUMS.txt
             release/tools/apksigner
             release/tools/lib/apksigner.jar
