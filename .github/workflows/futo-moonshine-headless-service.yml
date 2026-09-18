@@ -29,6 +29,7 @@ jobs:
           python3 tools/patch_moonshine_headless.py voice-input
           python3 tools/patch_moonshine_external_audio.py voice-input
           python3 tools/patch_meboard_engine_service.py voice-input
+          python3 tools/patch_meboard_engine_service.py voice-input
           grep -F 'class MeboardEngineService' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
           grep -F 'CMD_STOP = 2' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
           grep -F 'createFromAudioSource' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
