@@ -33,7 +33,7 @@ jobs:
           grep -F 'CMD_STOP = 2' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
           grep -F 'createFromAudioSource' voice-input/app/src/main/java/org/futo/voiceinput/AudioRecognizer.kt
           grep -F 'android:name=".MeboardEngineService"' voice-input/app/src/main/AndroidManifest.xml
-          grep -F 'versionCode 54' voice-input/app/build.gradle
+          grep -F 'versionCode 55' voice-input/app/build.gradle\n          grep -F 'TRUSTED_CERT_SHA256' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt\n          test ! -f voice-input/app/src/main/java/org/futo/voiceinput/MoonshineRecognitionService.kt
           ! grep -F 'startForeground(' voice-input/app/src/main/java/org/futo/voiceinput/MeboardEngineService.kt
 
       - name: Set up JDK
@@ -62,9 +62,9 @@ jobs:
           APK="$(find voice-input/app/build/outputs/apk/standalone/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee badging.txt
-          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='54'" badging.txt
+          grep -F "package: name='org.futo.voiceinput.moonshine' versionCode='55'" badging.txt
           mkdir -p release/tools/lib
-          cp "$APK" release/Moonshine-beta13-MEBOARD-SESSION-ENGINE-compiler.apk
+          cp "$APK" release/Moonshine-beta13-MEBOARD-SESSION-ENGINE-v55-compiler.apk
           cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" release/tools/
           cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" release/tools/lib/
           cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" release/tools/
@@ -73,10 +73,10 @@ jobs:
       - name: Upload compiler artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moonshine-beta13-meboard-session-engine
+          name: moonshine-beta13-meboard-session-engine-v55
           retention-days: 30
           path: |
-            release/Moonshine-beta13-MEBOARD-SESSION-ENGINE-compiler.apk
+            release/Moonshine-beta13-MEBOARD-SESSION-ENGINE-v55-compiler.apk
             release/SHA256SUMS.txt
             release/tools/apksigner
             release/tools/lib/apksigner.jar
